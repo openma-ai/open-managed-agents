@@ -2,10 +2,10 @@
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 import { env, exports } from "cloudflare:workers";
 import { describe, it, expect } from "vitest";
-import { resolveModel } from "../../apps/agent/src/harness/provider";
-import { evaluateOutcome } from "../../apps/agent/src/harness/outcome-evaluator";
+import { resolveModel } from "../../packages/agent-harness/src/provider";
+import { evaluateOutcome } from "../../packages/agent-harness/src/outcome-evaluator";
 import { outboundByHost } from "../../apps/agent/src/outbound";
-import { registerHarness } from "../../apps/agent/src/harness/registry";
+import { registerHarness } from "../../packages/agent-harness/src/registry";
 import type { Env } from "@open-managed-agents/shared";
 
 // ============================================================
@@ -365,7 +365,7 @@ describe("Edge cases - concurrent and complex operations", () => {
 
   it("agent with predefined subagents gets call_agent tools via buildTools", async () => {
     // buildTools creates one call_agent tool per predefined multiagent subagent
-    const { buildTools } = await import("../../apps/agent/src/harness/tools");
+    const { buildTools } = await import("../../packages/agent-harness/src/tools");
     const { TestSandbox } = await import("../../apps/agent/src/runtime/sandbox");
     const sandbox = new TestSandbox();
     const tools = await buildTools({
@@ -395,7 +395,7 @@ describe("Edge cases - concurrent and complex operations", () => {
   });
 
   it("agent created with mcp_servers requires explicit runtime routing", async () => {
-    const { buildTools } = await import("../../apps/agent/src/harness/tools");
+    const { buildTools } = await import("../../packages/agent-harness/src/tools");
     const { TestSandbox } = await import("../../apps/agent/src/runtime/sandbox");
     const sandbox = new TestSandbox();
     await expect(buildTools({
@@ -405,8 +405,8 @@ describe("Edge cases - concurrent and complex operations", () => {
       system: "",
       tools: [{ type: "agent_toolset_20260401" }],
       mcp_servers: [
-        { name: "github", type: "sse", url: "https://mcp.github.com/sse" },
-        { name: "slack", type: "sse", url: "https://mcp.slack.com/sse" },
+        { name: "github", type: "http", url: "https://mcp.github.com/mcp" },
+        { name: "slack", type: "http", url: "https://mcp.slack.com/mcp" },
       ],
       version: 1,
       created_at: new Date().toISOString(),
@@ -416,7 +416,7 @@ describe("Edge cases - concurrent and complex operations", () => {
   });
 
   it("resolveSkills returns empty for non-registered skills (all skills via KV now)", async () => {
-    const { resolveSkills } = await import("../../apps/agent/src/harness/skills");
+    const { resolveSkills } = await import("../../packages/agent-harness/src/skills");
     const skills = resolveSkills([
       { skill_id: "web_research" },
       { skill_id: "pptx" },

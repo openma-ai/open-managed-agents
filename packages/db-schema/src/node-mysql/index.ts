@@ -68,6 +68,33 @@ const heldAfterExhaustedMigration = {
   toSnapshot: "173fcc90-140f-4d11-92d5-9c8d917213e9",
 } as const;
 
+/** ManagedRuntimeHost orphan table (and the since-retired fence table): new
+ * tables only, so the CREATE TABLE IF NOT EXISTS pass below installs them. */
+const runtimeResourceTablesMigration = {
+  fromSnapshot: heldAfterExhaustedMigration.toSnapshot,
+  toSnapshot: "a569ec0b-0d55-4c2a-bd30-401b50191e4b",
+} as const;
+
+/** Sandbox token hashes on the execution attempt row (#561). */
+const sandboxTokenHashesMigration = {
+  fromSnapshot: runtimeResourceTablesMigration.toSnapshot,
+  toSnapshot: "b328314c-2463-496b-9428-8396e54e5a8c",
+} as const;
+
+/** Runtime Host restore pointer and the claim's sandbox token hashes on the
+ * Work row (ADR 0005). Preserve legacy publications before retiring the fence. */
+const workClaimPublicationMigration = {
+  fromSnapshot: sandboxTokenHashesMigration.toSnapshot,
+  toSnapshot: "6f23cfa4-a1c3-4c7a-8efa-040a495a1191",
+} as const;
+
+/** 0034 changes expression indexes only. Its Drizzle identity is distinct;
+ * native Work-input generated columns/indexes are validated by composition. */
+const workInputsMigration = {
+  fromSnapshot: workClaimPublicationMigration.toSnapshot,
+  toSnapshot: "7a941c58-b1de-4d32-83e6-545034000001",
+} as const;
+
 /**
  * Install the main-node schema in a fresh MySQL database from the canonical
  * SQLite snapshot.  The snapshot is structural input, not SQL to be
@@ -89,7 +116,9 @@ export async function migrateNodeMysqlSchema(
   const journal = JSON.parse(
     await readFile(join(migrationsDirectory, "meta/_journal.json"), "utf8"),
   ) as { entries: Array<{ idx: number; tag: string }> };
-  const latest = journal.entries.at(-1);
+  // 0035 is native receipt DDL, installed/verified by migrateNodeDatabase.
+  // It deliberately has no SQLite structural snapshot to translate into TEXT keys.
+  const latest = journal.entries.filter(entry => entry.tag !== '0035_custom_invocations').at(-1);
   if (!latest) throw new Error("The main-node migration journal is empty");
   const snapshot = JSON.parse(
     await readFile(
@@ -132,6 +161,10 @@ export async function migrateNodeMysqlSchema(
       legacyAgentsRetirementMigration.toSnapshot,
       modelCardPricingMigration.toSnapshot,
       heldAfterExhaustedMigration.toSnapshot,
+      runtimeResourceTablesMigration.toSnapshot,
+      sandboxTokenHashesMigration.toSnapshot,
+      workClaimPublicationMigration.toSnapshot,
+      workInputsMigration.toSnapshot,
     ];
     // Walk the known additive chain toward the journal tip. Each step is
     // idempotent so an interrupted upgrade can resume on the next boot.
@@ -139,6 +172,10 @@ export async function migrateNodeMysqlSchema(
       const installedIndex = migrationSnapshots.indexOf(installed.snapshot_id);
       const targetIndex = migrationSnapshots.indexOf(snapshot.id);
       if (installedIndex >= 0 && installedIndex < targetIndex) {
+        if (installed.snapshot_id === workInputsMigration.fromSnapshot) {
+          installed = { snapshot_id: workInputsMigration.toSnapshot };
+          continue;
+        }
         if (installed.snapshot_id === usageAttributionMigration.fromSnapshot) {
           await migrateUsageAttributionIndex(sql);
           installed = { snapshot_id: usageAttributionMigration.toSnapshot };
@@ -167,6 +204,37 @@ export async function migrateNodeMysqlSchema(
             "BIGINT",
           );
           installed = { snapshot_id: heldAfterExhaustedMigration.toSnapshot };
+          continue;
+        }
+        if (installed.snapshot_id === runtimeResourceTablesMigration.fromSnapshot) {
+          installed = { snapshot_id: runtimeResourceTablesMigration.toSnapshot };
+          continue;
+        }
+        if (installed.snapshot_id === sandboxTokenHashesMigration.fromSnapshot) {
+          await ensureMysqlNullableColumn(sql, "managed_session_executions", "sandbox_token_hashes", "TEXT");
+          installed = { snapshot_id: sandboxTokenHashesMigration.toSnapshot };
+          continue;
+        }
+        if (installed.snapshot_id === workClaimPublicationMigration.fromSnapshot) {
+          await ensureMysqlNullableColumn(sql, "managed_environment_work", "runtime_publication_json", "TEXT");
+          await ensureMysqlNullableColumn(sql, "managed_environment_work", "sandbox_token_hashes", "TEXT");
+          const fenceTable = await sql.prepare(
+            "SELECT 1 AS present FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?",
+          ).bind("runtime_resource_fences").first();
+          if (fenceTable !== null) {
+            await sql.exec(`UPDATE managed_environment_work AS work
+              JOIN runtime_resource_fences AS fence
+                ON fence.workspace_id = work.workspace_id
+               AND fence.environment_id = work.environment_id
+               AND fence.session_id = work.session_id
+               AND fence.work_id = work.id
+              SET work.runtime_publication_json = JSON_SET(fence.publication_json,
+                '$.generation', fence.publication_generation, '$.revision', fence.revision)
+              WHERE fence.publication_json IS NOT NULL
+                AND work.runtime_publication_json IS NULL`);
+          }
+          await sql.exec("DROP TABLE IF EXISTS runtime_resource_fences");
+          installed = { snapshot_id: workClaimPublicationMigration.toSnapshot };
           continue;
         }
       }

@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { env, exports } from "cloudflare:workers";
+import { waitForSessionExecution } from "./_session-execution";
 import { describe, it, expect, beforeAll, beforeEach } from "vitest";
 import { ensureModelCards } from "./_model-cards";
 import { registerTestHarnesses } from "../harnesses";
@@ -554,18 +555,19 @@ describe("Outcomes", () => {
     // Then send a user message to trigger harness execution
     // The harness will run and produce agent.message events.
     // Outcome evaluation will fail (no real LLM) but the harness itself runs fine.
+    const inputId = `sevt_${crypto.randomUUID()}`;
     const msgRes = await post(`/v1/oma/sessions/${sessionId}/events`, {
       events: [
         {
           type: "user.message",
-          content: [{ type: "text", text: "Write fibonacci" }],
+          id: inputId, content: [{ type: "text", text: "Write fibonacci" }],
         },
       ],
     });
     expect(msgRes.status).toBe(202);
 
     // Wait for harness to complete (outcome eval will error but session recovers)
-    await new Promise((r) => setTimeout(r, 500));
+    await waitForSessionExecution(sessionId, [inputId]);
 
     // Connect via WebSocket to verify the harness did run
     const doId = env.SESSION_DO!.idFromName(sessionId);

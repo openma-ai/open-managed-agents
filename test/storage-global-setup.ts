@@ -22,17 +22,25 @@ const MINIO_IMAGE =
 const REGION = "us-east-1";
 const POSTGRES_DATABASES = {
   agentsSql: "openma_agents_sql_test",
+  workInputs: "openma_work_inputs_test_ci",
+  customInvocations: "openma_custom_test_ci",
   sessionsSql: "openma_sessions_sql_test",
   feishuSchema: "openma_feishu_schema_test",
   betterAuth: "openma_better_auth_test",
   eventFanout: "openma_event_fanout_test",
   queue: "openma_queue_test",
   s3Memory: "openma_s3_memory_test",
-  runtimeFence: "openma_runtime_fence_test",
+  runtimeOrphans: "openma_runtime_orphans_test",
 } as const;
 
 function databaseUrl(connectionUri: string, database: string): string {
   const url = new URL(connectionUri);
+  // The authority gates deliberately require a loopback URL so a test cannot
+  // accidentally point at a shared or production database. Testcontainers
+  // may return `localhost` (or a host override) here even though the mapped
+  // port is local to the runner; normalize the host while retaining the
+  // container's mapped port and credentials.
+  url.hostname = "127.0.0.1";
   url.pathname = `/${database}`;
   return url.toString();
 }
@@ -103,13 +111,15 @@ export default async function setup(project: TestProject): Promise<() => Promise
     const config: StorageIntegrationConfig = {
       postgres: {
         agentsSql: databaseUrl(connectionUri, POSTGRES_DATABASES.agentsSql),
+        workInputs: databaseUrl(connectionUri, POSTGRES_DATABASES.workInputs),
+        customInvocations: databaseUrl(connectionUri, POSTGRES_DATABASES.customInvocations),
         sessionsSql: databaseUrl(connectionUri, POSTGRES_DATABASES.sessionsSql),
         feishuSchema: databaseUrl(connectionUri, POSTGRES_DATABASES.feishuSchema),
         betterAuth: databaseUrl(connectionUri, POSTGRES_DATABASES.betterAuth),
         eventFanout: databaseUrl(connectionUri, POSTGRES_DATABASES.eventFanout),
         queue: databaseUrl(connectionUri, POSTGRES_DATABASES.queue),
         s3Memory: databaseUrl(connectionUri, POSTGRES_DATABASES.s3Memory),
-        runtimeFence: databaseUrl(connectionUri, POSTGRES_DATABASES.runtimeFence),
+        runtimeOrphans: databaseUrl(connectionUri, POSTGRES_DATABASES.runtimeOrphans),
       },
       s3: {
         endpoint,

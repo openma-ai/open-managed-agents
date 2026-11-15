@@ -19,8 +19,8 @@
     "@open-managed-agents/managed-runtime-host": "workspace:*",
     "@open-managed-agents/managed-runtime-sandbox": "workspace:*",
     "@open-managed-agents/runtime-resource-contract": "workspace:*",
-    "@open-managed-agents/runtime-resource-fence-sql": "workspace:*",
     "@open-managed-agents/sandbox": "workspace:*",
+    "@open-managed-agents/sandbox-orphan-store-sql": "workspace:*",
     "@open-managed-agents/shared": "workspace:*",
     "@open-managed-agents/sql-client": "workspace:*"
   },

@@ -1,12 +1,40 @@
+import {nodeWorkOutputJournal} from './node-work-output-journal.js';
+import {preparePiCoreMcp} from './core-custom-mcp-plan.js';
+import { log as logInfo } from "@open-managed-agents/shared/log";
+import { writePiCustomAnswers } from "./pi-custom-tools.js";
+import { createWorkInputsHttpClient } from "./work-inputs-http.js";
+import { createWorkInputReader } from "./work-input-adapter.js";
+import { InferenceProtocolUnsupportedError } from "@open-managed-agents/acp-runtime/inference-config";
+import { NodeManagedAcpStartupConfigurationFailure, NodeManagedAcpWorkItemFailure } from "./work-item-failure.js";
+import { createWorkTurnCoordinator, type WorkTurnCoordinator } from "./work-turn-coordinator.js";
+import type { WorkControlRuntime, WorkFinalizationPort, WorkTurnCompletion } from "./work-control-runtime.js";
+export type { WorkControlRuntime, WorkFinalizationPort, WorkTurnCompletion } from "./work-control-runtime.js";
+import { parseInstalledHarnesses } from "@open-managed-agents/acp-runtime/installed-harnesses";
+import { createExecutionChannelsHttpResolver } from "./execution-channels-http.js";
 import {
   resolveAcpRelease, prepareAcpRelease, validateAcpRelease, acpReleaseMatchesSource,
   parseAcpReleaseSource, isPinnedAcpVersion, type AcpRelease, type AcpReleaseSource,
 } from "@openma/common/acp-artifacts";
+import type { ManagedAcpExecutionChannelsRequest, ManagedAcpExecutionChannelsResult, ManagedAcpExecutionChannels } from "@open-managed-agents/shared/acp-execution-channels-rpc";
+import { sandboxTokenRandomPart } from "@open-managed-agents/sandbox-gateway";
 import type { AcpRuntime } from "@open-managed-agents/acp-runtime";
 import { posix, join } from "node:path";
 import { homedir } from "node:os";
+import { randomUUID } from "node:crypto";
 import { safeSkillArchivePath } from "@open-managed-agents/acp-runtime/skill-package";
 import { unzipSync } from "fflate";
+import {
+  SESSION_WORKSPACE_ROOT,
+  sessionMemoryResourceFact,
+  sessionResourceFacts,
+  reconcileSessionResourceEnvironment,
+  sessionResourceReminders,
+  sessionSkillResourceFact,
+  sessionSkillVersionRoot,
+  type SessionMemoryResourceFact,
+  type SessionResourceReminder,
+  type SessionSkillResourceFact,
+} from "@open-managed-agents/runtime-resource-contract";
 import { createAcpRuntime } from "@open-managed-agents/acp-runtime/placement";
 import { resolveKnownAgent } from "@open-managed-agents/acp-runtime/registry";
 import { NodeSpawner } from "@open-managed-agents/acp-runtime/node-spawner";
@@ -14,7 +42,6 @@ import {
   managedMcpProxyFromWorkEnvironment,
   projectAcpSandboxMcpServers,
 } from "@open-managed-agents/acp-runtime/sandbox-agent";
-import type { InferenceWireProtocol } from "@open-managed-agents/acp-runtime/inference-config";
 import { wireHostedInferenceForAcpLaunch } from "@open-managed-agents/harness-inference-adapters";
 import { bindAcpAgentState, type AcpStatefulAgentSpec } from "@open-managed-agents/acp-runtime/native-state";
 import {
@@ -24,10 +51,6 @@ import {
 } from "@open-managed-agents/harness-supervisor";
 
 import {
-  createManagedAcpSupervisorHarness,
-} from "./index.js";
-import {
-  createManagedHarnessHttpControlChannel,
   createManagedHarnessHttpRecoveryHistory,
   createManagedHarnessHttpSkillSource,
   type ManagedHarnessHttpScheduler,
@@ -36,6 +59,7 @@ import {
 } from "./http-control.js";
 import {
   createAcpNativeSessionState,
+  createRecoverableNativeSession,
   createNodeAcpHarnessStateIo,
   type NodeAcpHarnessStateIo,
 } from "./node.js";
@@ -51,7 +75,14 @@ const CONTROL_PLANE_ENV_KEYS = [
   "ANTHROPIC_SESSION_ID",
   "ANTHROPIC_WORK_ID",
   "ANTHROPIC_WORK_SECRET",
+  "OPENMA_SANDBOX_TOKEN",
 ] as const;
+
+/** main's Node startup retry: three attempts, 2s then 4s apart, capped at 30s. */
+const ACP_STARTUP_RETRY = {
+  attempts: 3,
+  delayMs: (attempt: number): number => Math.min(30_000, 2_000 * 2 ** (attempt - 1)),
+};
 
 export interface ManagedAcpSessionAgentSnapshot {
   readonly id: string;
@@ -103,6 +134,8 @@ export interface NodeManagedAcpSupervisorAppOptions {
   workspacePath?: string;
   heartbeatIntervalMs?: number;
   fetch?: typeof globalThis.fetch;
+  /** Existing control-plane authority; Work bearer never doubles as model/MCP. */
+  resolveExecutionChannels?(request: ManagedAcpExecutionChannelsRequest): Promise<ManagedAcpExecutionChannelsResult>;
   acpRuntime?: AcpRuntime;
   /** Versioned release cache, independent of the environment image. */
   artifacts?: { root?: string; fetch?: typeof globalThis.fetch };
@@ -112,7 +145,17 @@ export interface NodeManagedAcpSupervisorAppOptions {
   resolveAgent?(
     input: NodeManagedAcpAgentResolverInput,
   ): AcpStatefulAgentSpec | null | Promise<AcpStatefulAgentSpec | null>;
+  /** Trusted Work claim returned by the host authority, never inferred from the bearer. */
+  workClaim?: { generation: number; holder: string };
+  /** Real turn activity drain and post-terminal publication. Required to start. */
+  finalization?: Pick<WorkFinalizationPort, "drainTurn">;
+  onTurnComplete?(turn: WorkTurnCompletion): Promise<void>;
+  /** Local bookkeeping only; durable authority remains in the control plane. */
+  onTurnAdmitted?(turnId: string): void;
+  onTurnPublished?(turnId: string): void;
   control?: {
+    /** Explicitly injected gated common runtime until the new API is published. */
+    runtime?: WorkControlRuntime;
     pollIntervalMs?: number;
     scheduler?: ManagedHarnessHttpScheduler;
     retry?: { maxAttempts?: number };
@@ -123,6 +166,8 @@ export interface NodeManagedAcpSupervisorAppOptions {
     drainDeadlineMs?: number;
     drainPollIntervalMs?: number;
     abortGraceMs?: number;
+    /** Side-effect-free ACP start attempts before the run fails startup. */
+    startupRetry?: { attempts: number; delayMs(attempt: number): number };
   };
 }
 
@@ -137,10 +182,21 @@ export interface NodeManagedAcpSupervisorApp {
 }
 
 interface ActiveRunContext {
+  workspacePath: string;
   outputPath: string | null;
-  proxy: { gatewayBaseUrl: string; sessionsToken: string };
+  channels: ManagedAcpExecutionChannels | null;
   history: ManagedHarnessRecoveryHistoryPort;
+  recoveryHistory: ManagedHarnessRecoveryHistoryPort;
   skills: ManagedHarnessHttpSkillSource;
+  /** Project one retrying startup attempt under this run's Work claim. */
+  reportStartupRetry(id: string): Promise<void>;
+}
+
+/** One supervised run's startup fence; exhaustion fails only this run. */
+interface StartupRun {
+  signal: AbortSignal;
+  nonce: string;
+  exhausted(error: unknown): void;
 }
 
 /**
@@ -165,7 +221,7 @@ export function createNodeManagedAcpSupervisorApp(
   if (explicitSources && (
     installedHarnesses !== null || options.agentId !== undefined || options.resolveAgent !== undefined
   )) throw new TypeError(`${sourceVariable} cannot be combined with installed harness or agent overrides`);
-  const workspacePath = options.workspacePath ?? "/workspace";
+  const workspacePath = options.workspacePath ?? SESSION_WORKSPACE_ROOT;
   const heartbeatIntervalMs = options.heartbeatIntervalMs ?? 5_000;
   const stateIo = options.stateIo ?? createNodeAcpHarnessStateIo({ workspacePath });
   const acpRuntime = options.acpRuntime ?? createAcpRuntime({
@@ -193,6 +249,57 @@ export function createNodeManagedAcpSupervisorApp(
     // protocol ordering instead of carrying unreachable nullable branches.
     let active!: ActiveRunContext;
     let activeSession!: ManagedAcpSessionSnapshot;
+    let startup!: StartupRun;
+    let nativeStartAttempted = false;
+    let turns!: WorkTurnCoordinator;
+    let platformInstructions = "";
+    let currentInputIds = new Set<string>();
+    let prepareNativePrompt: (() => Promise<void>) | undefined;
+    let piCustomPlan: Awaited<ReturnType<typeof preparePiCoreMcp>> = null;
+    let coreMcpBaseUrl = "";
+    const startupRetry = options.lifecycle?.startupRetry ?? ACP_STARTUP_RETRY;
+    const sleep = options.supervisorScheduler?.sleep ?? abortableSleep;
+    // A failed spawn/initialize leaves no ACP session and no agent output, so
+    // main retries it with retrying + rescheduled facts. Exhaustion is a
+    // startup failure for the Work item to settle atomically; this process
+    // fences the run first so it never reports it as a turn error or prompts
+    // a session that never started.
+    const startupRetryingRuntime: AcpRuntime = {
+      async start(sessionOptions) {
+        const run = startup;
+        nativeStartAttempted = true;
+        for (let attempt = 1; ; attempt += 1) {
+          try {
+            const session = await acpRuntime.start(sessionOptions);
+            const native = createRecoverableNativeSession({
+              session, sessionOptions, runtime: acpRuntime,
+              state: sessionState, sessionId: () => activeSession.id,
+              nativeReady: session => turns.nativeReady(session),
+              instructions: () => platformInstructions,
+              history: async () => (await active.recoveryHistory.list(activeSession.id)).filter(event =>
+                event.type !== "user.message" || event.processed_at != null && !currentInputIds.has(String(event.id))),
+              maxCharacters: options.recovery?.maxCharacters,
+            });
+            prepareNativePrompt = native.beforeRootPrompt;
+            turns.nativeReady(native.session);
+            return native.session;
+          } catch (error) {
+            if (run.signal.aborted) throw error;
+            let retry = attempt < startupRetry.attempts;
+            if (retry) {
+              retry = await active.reportStartupRetry(`${run.nonce}:${attempt}`).then(() => true, () => false);
+            }
+            if (!retry) {
+              const startupFailure = new NodeManagedAcpWorkItemFailure("startup", error);
+              run.exhausted(startupFailure);
+              throw startupFailure;
+            }
+            await sleep(startupRetry.delayMs(attempt), run.signal).catch(() => undefined);
+            if (run.signal.aborted) throw error;
+          }
+        }
+      },
+    };
     const sessionState = createAcpNativeSessionState({
       io: stateIo,
       ...(identity === undefined ? {} : { harness: identity }),
@@ -206,27 +313,45 @@ export function createNodeManagedAcpSupervisorApp(
             `No installed ACP agent is configured for ${harness.id}@${harness.version}`,
           );
         }
-        const skillInstructions = await materializeSkills({
-          io: stateIo,
-          source: active.skills,
-          skills: session.agent.skills,
+        const nativeAgentId = resolved.id ?? options.agentId ?? harness.id;
+        if (session.agent.tools.some(tool => tool.type === "custom") && nativeAgentId !== "pi-acp") {
+          // This is an OMA integration limit, not an ACP/MCP protocol limit.
+          // Never silently drop custom definitions before a sampling/recovery
+          // adapter for the selected native harness has been implemented.
+          throw new NodeManagedAcpStartupConfigurationFailure(
+            "core_custom_lifecycle_unavailable",
+            new Error(`Core custom tool lifecycle is not implemented for native harness ${nativeAgentId}`),
+          );
+        }
+        // Model-visible resource guidance comes from what this run actually
+        // materialized (Skill manifests), what the Work materializer mounted
+        // (Session memory_store records' mount_path) and the outputs
+        // directory this run collects; env values alone are not visibility.
+        const resourceFacts = sessionResourceFacts({
+          workspaceRoot: active.workspacePath,
+          skills: await materializeSkills({
+            io: stateIo,
+            source: active.skills,
+            skills: session.agent.skills,
+          }),
+          memoryStores: workMemoryResourceFacts(session.resources),
+          outputs: active.outputPath === null ? null : { path: active.outputPath },
         });
         const instructions = [
           session.agent.system?.trimEnd() ?? "",
-          skillInstructions,
+          renderResourceReminders(sessionResourceReminders(resourceFacts, { includeWorkspace: true })),
         ].filter((part) => part.length > 0).join("\n\n");
-        if (instructions.length > 0) {
-          await stateIo.writeFile("/workspace/AGENTS.md", `${instructions}\n`);
-        }
+        platformInstructions = instructions;
         const scrubbedEnvironment = Object.fromEntries(
           CONTROL_PLANE_ENV_KEYS.map((key) => [key, undefined]),
         );
+        turns.selectNativeHarness(resolved.id ?? options.agentId ?? harness.id);
         const baseAgent: AcpStatefulAgentSpec = {
           ...resolved,
           id: resolved.id ?? options.agentId ?? harness.id,
-          cwd: resolved.cwd ?? "/workspace",
+          cwd: resolved.cwd ?? resourceFacts.workspaceRoot,
           env: {
-            ...(resolved.env ?? {}),
+            ...reconcileSessionResourceEnvironment(resourceFacts, resolved.env ?? {}, Object.keys(process.env)),
             ...scrubbedEnvironment,
             ...(active.outputPath === null
               ? { OUTPUT_PATH: undefined }
@@ -242,25 +367,39 @@ export function createNodeManagedAcpSupervisorApp(
           : session.agent.model.id;
         let agent: AcpStatefulAgentSpec = baseAgent;
         const inference = session.agent.inference;
-        if (inference?.provider_id) {
-          const hosted = wireHostedInferenceForAcpLaunch({
+        if ((inference?.provider_id || session.agent.mcp_servers.some(server => server.type === "url")) && active.channels === null) throw new Error("ACP execution channels authority is required; Work credentials cannot authorize model/MCP");
+        if (active.channels !== null) {
+          const boundAgentId = binding.agent.id;
+          if (boundAgentId !== undefined && ["claude-acp", "claude-agent-acp", "claude-code-acp"].includes(boundAgentId)) {
+            const endpoints = active.channels.hostedInference.model.protocolEndpoints;
+            const providerId = active.channels.hostedInference.model.providerId?.toLowerCase();
+            const providerSupportsAnthropic = ["anthropic", "ant", "ant-compatible"].includes(providerId ?? "");
+            const endpointSupportsAnthropic = !Array.isArray(endpoints)
+              || endpoints.some(endpoint => endpoint.protocol === "anthropic-messages");
+            if (!providerSupportsAnthropic || !endpointSupportsAnthropic) {
+              throw new NodeManagedAcpStartupConfigurationFailure("anthropic_protocol_required", new Error("Configured model has no anthropic-messages endpoint"));
+            }
+          }
+          const hosted = (() => { try { return wireHostedInferenceForAcpLaunch({
             sessionId: session.id,
-            gatewayBaseUrl: active.proxy.gatewayBaseUrl,
-            sessionsToken: active.proxy.sessionsToken,
+            gatewayBaseUrl: active.channels!.hostedInference.gatewayBaseUrl,
+            sessionsToken: active.channels!.hostedInference.sessionsToken,
             env: baseAgent.env ?? {},
             agent: binding.agent,
             nativePath: binding.nativePath,
             model: {
-              wireModel: modelHandle,
-              providerId: inference.provider_id,
-              baseUrl: inference.base_url,
-              protocolEndpoints: inference.protocol_endpoints?.map((endpoint) => ({
-                protocol: endpoint.protocol as InferenceWireProtocol,
-                proxyPathSegment: endpoint.proxy_path_segment,
-                upstreamBaseUrl: endpoint.upstream_base_url,
-              })),
+              wireModel: active.channels!.hostedInference.model.wireModel ?? modelHandle,
+              providerId: active.channels!.hostedInference.model.providerId,
+              baseUrl: active.channels!.hostedInference.model.baseUrl,
+              protocolEndpoints: active.channels!.hostedInference.model.protocolEndpoints,
             },
           });
+          } catch (error) {
+            if (error instanceof InferenceProtocolUnsupportedError && binding.agent.id === "claude-acp") {
+              throw new NodeManagedAcpStartupConfigurationFailure("anthropic_protocol_required", error);
+            }
+            throw error;
+          } })();
           for (const file of hosted.files) {
             await stateIo.writeFile(file.path, file.content);
           }
@@ -269,14 +408,28 @@ export function createNodeManagedAcpSupervisorApp(
             env: hosted.env,
           };
         }
+        if (binding.agent.id === "pi-acp") {
+          const custom = await preparePiCoreMcp(stateIo,binding.nativePath, session.agent.tools);
+          piCustomPlan = custom;
+          if (custom) {
+            await stateIo.writeFile(custom.extensionPath, custom.source);
+            await writePiCustomAnswers(stateIo, custom.answersPath, await active.recoveryHistory.list(session.id));
+          }
+        }
+        logInfo({op:"acp.tools.configured",session_id:session.id,work_id:environment.ANTHROPIC_WORK_ID,
+          claim_generation:options.workClaim?.generation,harness_id:binding.agent.id,
+          custom_tool_count:session.agent.tools.filter(tool=>tool.type==="custom").length,
+          mcp_server_count:session.agent.mcp_servers.length,core_mcp_registration:piCustomPlan!==null},
+          "Native ACP tool configuration prepared");
         return {
           agent,
-          mcpServers: projectAcpSandboxMcpServers({
+          clientCallbacks: { requestPermission: request => turns.requestPermission(request) },
+          mcpServers: [...projectAcpSandboxMcpServers({
             sessionId: session.id,
-            gatewayBaseUrl: active.proxy.gatewayBaseUrl,
-            sessionsToken: active.proxy.sessionsToken,
+            gatewayBaseUrl: active.channels?.mcpProxy.gatewayBaseUrl,
+            sessionsToken: active.channels?.mcpProxy.sessionsToken,
             servers: session.agent.mcp_servers,
-          }),
+          }), ...(piCustomPlan ? [piCustomPlan.server] : [])],
           sessionRequestMeta: {
             openma: {
               session_id: session.id,
@@ -290,6 +443,23 @@ export function createNodeManagedAcpSupervisorApp(
         };
       },
     });
+    const prepareBeforeNative = async <T>(prepare: () => Promise<T>): Promise<T> => {
+      try { return await prepare(); }
+      catch (error) {
+        if (nativeStartAttempted || startup.signal.aborted) throw error;
+        const failure = error instanceof NodeManagedAcpStartupConfigurationFailure ? error
+          : new NodeManagedAcpWorkItemFailure("startup", error);
+        startup.exhausted(failure);
+        throw failure;
+      }
+    };
+    const guardedSessionState = {
+      beforeStart: (command: Parameters<typeof sessionState.beforeStart>[0]) => prepareBeforeNative(() => sessionState.beforeStart(command)),
+      prepare: (command: Parameters<typeof sessionState.prepare>[0]) => prepareBeforeNative(() => sessionState.prepare(command)),
+      onReady: sessionState.onReady.bind(sessionState),
+      checkpoint: sessionState.checkpoint.bind(sessionState),
+      release: sessionState.release.bind(sessionState),
+    };
     const semanticRecovery = createManagedEventSemanticRecovery({
       history: {
         async list(sessionId) {
@@ -298,9 +468,63 @@ export function createNodeManagedAcpSupervisorApp(
       },
       maxCharacters: options.recovery?.maxCharacters,
     });
-    return createManagedAcpSupervisorHarness({
+    const runtime = options.control?.runtime;
+    // The composition must supply the installed gated Work control runtime;
+    // never fall back to a public-history runner without consumption fences.
+    if (!runtime) throw new Error("Work input dispatch runtime is unavailable; common capability injection required");
+    const createSupervisor = runtime.createSupervisor;
+    if (!options.finalization || typeof options.finalization.drainTurn !== "function") {
+      throw new Error("Work finalization drainTurn port is required");
+    }
+    const finalization = options.finalization;
+    turns = createWorkTurnCoordinator({
+      outputJournal: nodeWorkOutputJournal(workspacePath),
+      runtime,
+      fallbackHarnessId: options.agentId ?? harness.id,
+      fetch: options.fetch,
+      pollIntervalMs: options.control?.pollIntervalMs,
+      scheduler: options.control?.scheduler,
+      hasOutcomeEvaluator: options.onTurnComplete !== undefined,
+      async onPromptInput(event) {
+        const source = isRecord(event.source_position) ? event.source_position : undefined;
+        const batch = source && isRecord(source.input_batch) ? source.input_batch : undefined;
+        currentInputIds = new Set(batch && Array.isArray(batch.ids) ? batch.ids.map(String) : [String(event.id)]);
+        if (piCustomPlan) {
+          // Config is reconstructed before a missing-native-state restart;
+          // only native conversation artifacts are checkpointed.
+          await stateIo.writeFile(piCustomPlan.extensionPath, piCustomPlan.source);
+          await writePiCustomAnswers(stateIo, piCustomPlan.answersPath, await active.recoveryHistory.list(activeSession.id));
+        }
+        await prepareNativePrompt?.();
+      },
+      coreMcp: {
+        names:()=>new Set(piCustomPlan?.names.keys()??[]),
+        prepare:async(call,result,name)=>piCustomPlan?.prepare(call,result,name)??null,
+        admit:async turnId=>{await piCustomPlan?.admit(coreMcpBaseUrl,activeSession.id,turnId,environment.OPENMA_SANDBOX_TOKEN??'');},
+        clear:async()=>{await piCustomPlan?.clear();},
+      },
+      onTurnAdmitted: options.onTurnAdmitted,
+      onTurnPublished: options.onTurnPublished,
+      loadSession(session) {
+        activeSession = decodeManagedAcpSessionSnapshot(session);
+        return activeSession.agent.tools;
+      },
+      failRun: error => startup.exhausted(error),
+    });
+    const supervised = createSupervisor({
+      finalization: {
+        drainTurn: context => finalization.drainTurn(context),
+        afterTerminal: context => turns.afterTerminal(context.command.turnId),
+      },
+      onTurnComplete: options.onTurnComplete,
       connect: async (input) => {
         assertClaimedScope(environment, input.scope);
+        if (!runtime) throw new Error("Work input dispatch runtime is unavailable; common capability injection required");
+        const claim = options.workClaim;
+        if (!claim || !Number.isSafeInteger(claim.generation) || claim.generation < 1 || !claim.holder.trim()) {
+          throw new Error("Trusted Work generation and holder are required");
+        }
+        turns.reset({ ...input.scope, ...claim }, input.signal);
         const proxy = managedMcpProxyFromWorkEnvironment(environment);
         if (proxy === null) {
           throw new Error("A valid scoped ANTHROPIC_WORK_SECRET is required");
@@ -322,21 +546,48 @@ export function createNodeManagedAcpSupervisorApp(
             });
             await stateIo.writeFile(releasePath, `${JSON.stringify(release)}\n`);
           }
+          const artifactRoot = options.artifacts?.root ?? environment.OPENMA_ACP_ARTIFACT_ROOT ?? join(homedir(), ".oma", "acp", "registry");
+          // The installer intentionally excludes the ambient environment. Its
+          // package cache belongs with the configured artifact store, not HOME.
+          // Pass only this infrastructure value; never forward Work/model env.
+          const installerCache = join(artifactRoot, ".npm-cache");
+          logInfo({ op: "work.artifact.prepare", artifact_root: artifactRoot, installer_cache: installerCache }, "Preparing pinned harness artifact");
           const artifact = await prepareAcpRelease(release, {
-            root: options.artifacts?.root ?? environment.OPENMA_ACP_ARTIFACT_ROOT ?? join(homedir(), ".oma", "acp", "registry"),
+            root: artifactRoot,
+            env: { npm_config_cache: installerCache },
             fetch: options.artifacts?.fetch, signal: input.signal,
           });
           identity!.digest = release.digest;
           prepared = { id: harness.id, command: artifact.command, args: artifact.args, env: artifact.env };
         }
-        const history = createManagedHarnessHttpRecoveryHistory({
+        coreMcpBaseUrl = proxy.gatewayBaseUrl;
+        const recoveryReader = createWorkInputReader(createWorkInputsHttpClient({
           apiBaseUrl: proxy.gatewayBaseUrl,
+          sessionId: input.scope.sessionId,
           sessionsToken: proxy.sessionsToken,
           fetch: options.fetch,
-          retry: options.control?.retry,
-          scheduler: options.control?.scheduler,
-          signal: input.signal,
-        });
+        }));
+        const history: ManagedHarnessRecoveryHistoryPort = {
+          async list() {
+            const events: import("./semantic-recovery.js").ManagedRecoveryEvent[] = [];
+            let cursor: string | null = null;
+            // Canonical append order includes replies persisted after queued
+            // successors. Do not slice at the current input or deduplicate text.
+            do {
+              const page = await recoveryReader.read({cursor, limit:100, signal:input.signal});
+              for (const event of page.events) {
+                if (["user.message", "agent.message", "agent.tool_use", "agent.tool_result",
+                  "agent.custom_tool_use", "agent.mcp_tool_use", "agent.mcp_tool_result",
+                  "user.custom_tool_result", "agent.thread_context_compacted"].includes(event.type)) {
+                  events.push(event as import("./semantic-recovery.js").ManagedRecoveryEvent);
+                }
+              }
+              cursor = page.cursor;
+              if (!page.hasMore) break;
+            } while (true);
+            return events;
+          },
+        };
         const skills = createManagedHarnessHttpSkillSource({
           apiBaseUrl: proxy.gatewayBaseUrl,
           sessionsToken: proxy.sessionsToken,
@@ -345,35 +596,98 @@ export function createNodeManagedAcpSupervisorApp(
           scheduler: options.control?.scheduler,
           signal: input.signal,
         });
+        const resolveChannels = options.resolveExecutionChannels ?? (environment.OPENMA_SANDBOX_TOKEN
+          ? createExecutionChannelsHttpResolver({apiBaseUrl:proxy.gatewayBaseUrl,fetch:options.fetch}) : undefined);
+        const resolvedChannels = await resolveChannels?.({tenantId:input.scope.workspaceId,sessionId:input.scope.sessionId,
+          sessionsToken:options.resolveExecutionChannels ? proxy.sessionsToken : environment.OPENMA_SANDBOX_TOKEN!});
+        if (resolvedChannels?.type === "failed") {
+          if (resolvedChannels.phase === "model_lookup" && resolvedChannels.code === "model_unavailable") {
+            throw new NodeManagedAcpStartupConfigurationFailure("model_unavailable", new Error("Execution channels model lookup rejected"));
+          }
+          throw new Error(resolvedChannels.message);
+        }
+        if (resolvedChannels !== undefined) validateExecutionChannels(resolvedChannels, proxy.sessionsToken);
         active = {
+          workspacePath: input.workspacePath,
           outputPath: input.outputPath,
-          proxy,
-          history,
+          channels: resolvedChannels?.type === "ready" ? resolvedChannels.channels : null,
+          history: createManagedHarnessHttpRecoveryHistory({
+            apiBaseUrl: proxy.gatewayBaseUrl,
+            sessionsToken: proxy.sessionsToken,
+            fetch: options.fetch,
+            retry: options.control?.retry,
+            scheduler: options.control?.scheduler,
+            signal: input.signal,
+          }),
+          recoveryHistory: history,
           skills,
+          reportStartupRetry: (id) => publishStartupRetry({
+            apiBaseUrl: proxy.gatewayBaseUrl,
+            sessionsToken: proxy.sessionsToken,
+            sessionId: input.scope.sessionId,
+            id,
+            fetch: options.fetch ?? globalThis.fetch,
+            signal: input.signal,
+          }),
         };
-        return createManagedHarnessHttpControlChannel({
+        return turns.connect({
           scope: input.scope,
           harness: input.harness,
           workspacePath: input.workspacePath,
           apiBaseUrl: proxy.gatewayBaseUrl,
           sessionsToken: proxy.sessionsToken,
-          fetch: options.fetch,
-          pollIntervalMs: options.control?.pollIntervalMs,
-          scheduler: options.control?.scheduler,
-          retry: options.control?.retry,
-          onSessionLoaded(session) {
-            activeSession = decodeManagedAcpSessionSnapshot(session);
-          },
+          signal: input.signal,
         });
       },
-      acpRuntime,
-      sessionPreparation: sessionState,
-      sessionState,
+      acpRuntime: startupRetryingRuntime,
+      sessionPreparation: guardedSessionState,
+      sessionState: guardedSessionState,
       semanticRecovery,
       drainDeadlineMs: options.lifecycle?.drainDeadlineMs,
       drainPollIntervalMs: options.lifecycle?.drainPollIntervalMs,
       abortGraceMs: options.lifecycle?.abortGraceMs,
     });
+    return {
+      async start(input) {
+        nativeStartAttempted = false;
+        const controller = new AbortController();
+        const forwardAbort = () => controller.abort(input.signal.reason);
+        if (input.signal.aborted) forwardAbort();
+        else input.signal.addEventListener("abort", forwardAbort, { once: true });
+        const release = () => input.signal.removeEventListener("abort", forwardAbort);
+        let failStartup!: (error: unknown) => void;
+        const startupFailed = new Promise<never>((_resolve, reject) => { failStartup = reject; });
+        startupFailed.catch(() => undefined);
+        startup = {
+          signal: controller.signal,
+          nonce: randomUUID(),
+          exhausted(error) {
+            controller.abort(error);
+            failStartup(error);
+          },
+        };
+        let run: Awaited<ReturnType<typeof supervised.start>>;
+        try {
+          run = await supervised.start({ ...input, signal: controller.signal,
+            checkpoint: checkpoint => turns.checkpoint(checkpoint.turnId),
+          });
+        } catch (error) {
+          release();
+          throw error;
+        }
+        return {
+          completed: Promise.race([run.completed, startupFailed]),
+          async drain() { try { await run.drain(); } finally { release(); } },
+          async stop(reason) {
+            // Stop both common's run and this wrapper's startup/backoff. The
+            // inner supervisor owns a separate controller, so stopping it alone
+            // must not leave our retry loop able to launch another process.
+            controller.abort(new Error(reason ?? "Managed ACP startup stopped"));
+            try { await run.stop(reason); } finally { release(); }
+          },
+        };
+      },
+    };
   };
 
   return {
@@ -387,6 +701,66 @@ export function createNodeManagedAcpSupervisorApp(
       });
     },
   };
+}
+
+/** main's retrying startup facts. Stable IDs/body across a lost response; no
+ * provider exception text leaves the sandbox (same as the exhausted settlement). */
+async function publishStartupRetry(input: {
+  apiBaseUrl: string;
+  sessionsToken: string;
+  sessionId: string;
+  id: string;
+  fetch: typeof globalThis.fetch;
+  signal: AbortSignal;
+}): Promise<void> {
+  const processedAt = new Date().toISOString();
+  const id = `acp-startup:${input.id}`;
+  const body = JSON.stringify({ events: [
+    { id: `${id}:0`, type: "session.error", processed_at: processedAt,
+      error: { type: "unknown_error", message: "ACP startup failed", retry_status: "retrying" } },
+    { id: `${id}:1`, type: "session.status_rescheduled", processed_at: processedAt },
+  ] });
+  const send = () => input.fetch(
+    `${input.apiBaseUrl.replace(/\/+$/u, "")}/v1/oma/sessions/${encodeURIComponent(input.sessionId)}/runtime-events`,
+    { method: "POST", body, signal: input.signal,
+      headers: { authorization: `Bearer ${input.sessionsToken}`, "content-type": "application/json" } },
+  );
+  let response: Response;
+  try { response = await send(); }
+  catch (error) {
+    // Response loss only: the identical batch is confirmed or applied once.
+    if (input.signal.aborted) throw error;
+    response = await send();
+  }
+  if (!response.ok) throw new Error(`ACP startup retry projection rejected: ${response.status}`);
+}
+
+function abortableSleep(milliseconds: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) return reject(signal.reason);
+    const onAbort = () => { clearTimeout(timer); reject(signal.reason); };
+    const timer = setTimeout(() => { signal.removeEventListener("abort", onAbort); resolve(); }, milliseconds);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/** Structural startup barrier only. The injected authority still owns live
+ * claim/attempt and scope validation; token shape cannot establish ownership. */
+function validateExecutionChannels(result: ManagedAcpExecutionChannelsResult, workToken: string): void {
+  const invalid = () => { throw new Error("Invalid ACP execution channels capability"); };
+  if (result?.type !== "ready") return invalid();
+  const {mcpProxy,hostedInference} = result.channels ?? {};
+  const token = mcpProxy?.sessionsToken;
+  if (typeof token !== "string" || token === workToken || sandboxTokenRandomPart(token) === null
+    || hostedInference?.sessionsToken !== token) return invalid();
+  for (const raw of [mcpProxy.gatewayBaseUrl,hostedInference.gatewayBaseUrl]) {
+    if (typeof raw !== "string" || !raw.trim()) return invalid();
+    let url: URL; try { url = new URL(raw); } catch { return invalid(); }
+    if (!["http:","https:"].includes(url.protocol) || url.username || url.password) return invalid();
+  }
+  const model = hostedInference.model;
+  if (!model || typeof model.providerId !== "string" || !model.providerId.trim()
+    || !(model.baseUrl === null || typeof model.baseUrl === "string" && model.baseUrl.trim())) return invalid();
 }
 
 export function decodeManagedAcpSessionSnapshot(
@@ -497,14 +871,14 @@ async function materializeSkills(input: {
   io: NodeAcpHarnessStateIo;
   source: ManagedHarnessHttpSkillSource;
   skills: readonly ManagedAcpSkillSnapshot[];
-}): Promise<string> {
-  const manifests: string[] = [];
+}): Promise<SessionSkillResourceFact[]> {
+  const facts: SessionSkillResourceFact[] = [];
   for (const skill of input.skills) {
     const archive = unzipSync(await input.source.download({
       skillId: skill.skill_id,
       version: skill.version,
     }));
-    const root = `/workspace/.openma/skills/${encodeURIComponent(skill.skill_id)}/${encodeURIComponent(skill.version)}`;
+    const root = sessionSkillVersionRoot(skill.skill_id, skill.version, WORK_SKILLS_ROOT);
     let foundManifest = false;
     for (const [rawPath, content] of Object.entries(archive)) {
       if (rawPath.endsWith("/")) continue;
@@ -512,9 +886,13 @@ async function materializeSkills(input: {
       await input.io.writeFileBytes(`${root}/${path}`, content);
       if (posix.basename(path) === "SKILL.md") {
         foundManifest = true;
-        manifests.push(
-          `- ${skill.skill_id}@${skill.version}: ${root}/${path}`,
-        );
+        // The fact is the path just written, so its directory is exactly
+        // where relative paths (bundled scripts) in this SKILL.md resolve.
+        facts.push(sessionSkillResourceFact({
+          skillId: skill.skill_id,
+          name: typeof skill.name === "string" ? skill.name : null,
+          manifestPath: `${root}/${path}`,
+        }));
       }
     }
     if (!foundManifest) {
@@ -523,9 +901,48 @@ async function materializeSkills(input: {
       );
     }
   }
-  return manifests.length === 0
-    ? ""
-    : ["## OpenMA skills", "", ...manifests].join("\n");
+  return facts;
+}
+
+/** In-sandbox Skill root: jail-local under the protocol workspace (the host
+ * cache root SESSION_SKILLS_ROOT cannot cross the sandbox boundary). */
+const WORK_SKILLS_ROOT = `${SESSION_WORKSPACE_ROOT}/.openma/skills`;
+
+/** Memory facts for the stores the Environment Work materializer attached.
+ * It materializes each Session memory_store resource at its published
+ * `mount_path` with the record's access, so guidance uses the same record. */
+function workMemoryResourceFacts(resources: unknown): SessionMemoryResourceFact[] {
+  if (resources === undefined) return [];
+  if (!Array.isArray(resources)) throw invalidSession("resources");
+  const facts: SessionMemoryResourceFact[] = [];
+  resources.forEach((resource, index) => {
+    if (!isRecord(resource) || resource.type !== "memory_store") return;
+    const storeId = resource.memory_store_id;
+    if (!isNonEmptyString(storeId)) throw invalidSession(`resources[${index}].memory_store_id`);
+    const mountPath = resource.mount_path;
+    if (!isNonEmptyString(mountPath)) {
+      throw invalidSession(`resources[${index}].mount_path`);
+    }
+    const storeName = isNonEmptyString(resource.name) ? resource.name
+      : isNonEmptyString(mountPath) ? posix.basename(mountPath.replace(/\/+$/u, ""))
+      : storeId;
+    facts.push(sessionMemoryResourceFact({
+      storeId,
+      storeName,
+      path: mountPath,
+      access: resource.access === "read_only" ? "read_only" : "read_write",
+      description: typeof resource.description === "string" ? resource.description : null,
+      instructions: typeof resource.instructions === "string" ? resource.instructions : null,
+    }));
+  });
+  return facts;
+}
+
+/** Same `<source>` block rendering the host prompt composer uses. */
+function renderResourceReminders(reminders: readonly SessionResourceReminder[]): string {
+  return reminders
+    .map((reminder) => `<source name="${reminder.source}">\n${reminder.text}\n</source>`)
+    .join("\n\n");
 }
 
 function skillArray(value: unknown): ManagedAcpSkillSnapshot[] {
@@ -560,45 +977,6 @@ function parseHarnessSources(raw: string | undefined, variable: string): Record<
   } catch (error) {
     throw new TypeError(`${variable}: ${error instanceof Error ? error.message : "invalid release sources"}`);
   }
-}
-
-interface InstalledAcpHarness {
-  id: string;
-  version: string;
-  command: string;
-  args?: string[];
-}
-
-/** Image-owned inventory, distinct from the requested harness selection. */
-function parseInstalledHarnesses(raw: string | undefined): InstalledAcpHarness[] | null {
-  if (raw === undefined) return null;
-  let value: unknown;
-  try {
-    value = JSON.parse(raw);
-  } catch {
-    throw new TypeError("OPENMA_ACP_HARNESSES must be a JSON array");
-  }
-  if (!Array.isArray(value)) throw new TypeError("OPENMA_ACP_HARNESSES must be a JSON array");
-  const seen = new Set<string>();
-  return value.map((entry: unknown) => {
-    if (!isRecord(entry)
-      || !isNonEmptyString(entry.id) || entry.id.trim() !== entry.id
-      || !isNonEmptyString(entry.version) || entry.version.trim() !== entry.version
-      || !isNonEmptyString(entry.command) || !posix.isAbsolute(entry.command)
-      || (entry.args !== undefined && (!Array.isArray(entry.args)
-        || entry.args.some((arg: unknown) => typeof arg !== "string")))) {
-      throw new TypeError("OPENMA_ACP_HARNESSES entries require id, version, absolute command and optional string args");
-    }
-    const key = JSON.stringify([entry.id, entry.version]);
-    if (seen.has(key)) throw new TypeError(`OPENMA_ACP_HARNESSES duplicates ${entry.id}@${entry.version}`);
-    seen.add(key);
-    return {
-      id: entry.id,
-      version: entry.version,
-      command: entry.command,
-      ...(entry.args === undefined ? {} : { args: [...entry.args] as string[] }),
-    };
-  });
 }
 
 function defaultAgentResolver(agentId: string): AcpStatefulAgentSpec | null {

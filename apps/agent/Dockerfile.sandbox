@@ -1,1 +1,26 @@
-FROM docker.io/openma/sandbox-base:6d339f4be00850a6d55d6b67f82f70d4c17ce94daa6c1734f1c5653a9dce4c70
+FROM docker.io/openma/sandbox-base:435c9aa272b7444f6aaa36f3ecc10475ec7648c51186b8dfe58256e2e7f2c11e
+
+# The published base tag can lag the repository Dockerfile and currently
+# contains Debian bookworm's s3fs 1.90. Cloudflare Sandbox 1.0.3 always passes
+# -o compat_dir, which requires s3fs >= 1.92. Build the pinned compatible
+# release here so a lane deploy is self-contained and does not depend on a
+# separately published base image catching up first.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+      autoconf automake autotools-dev build-essential libcurl4-openssl-dev libfuse-dev \
+      libtool libxml2-dev libssl-dev make pkg-config \
+    && curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors \
+      https://github.com/s3fs-fuse/s3fs-fuse/archive/refs/tags/v1.95.tar.gz \
+      | tar xz -C /tmp \
+    && cd /tmp/s3fs-fuse-1.95 \
+    && ./autogen.sh \
+    && ./configure --prefix=/usr --with-openssl \
+    && make -j"$(nproc)" \
+    && make install \
+    && s3fs --version | grep -F '1.95' \
+    && rm -rf /tmp/s3fs-fuse-1.95 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Keep the pi-acp harness id; use the OpenMA adapter with HTTP MCP support.
+RUN npm install --global @openma/pi-acp@0.1.8 \
+    && npm cache clean --force

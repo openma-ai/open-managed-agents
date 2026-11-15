@@ -42,7 +42,7 @@ async function setup() {
     const result = rpc.method === "initialize"
       ? { protocolVersion: "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "public", version: "1" } }
       : rpc.method === "tools/list"
-        ? { tools: [{ name: "echo", inputSchema: { type: "object" } }] }
+        ? { tools: ["echo", "hidden", "other"].map(name => ({ name, inputSchema: { type: "object" } })) }
         : { content: [{ type: "text", text: rpc.params.arguments.text }] };
     response.writeHead(upstreamStatus, { "content-type": "application/json" });
     response.end(JSON.stringify({ jsonrpc: "2.0", id: rpc.id, result }));
@@ -74,12 +74,12 @@ async function setup() {
   const env = await call("/v1/environments", {
     name: "sandbox", config: { type: "cloud", networking: { type: "unrestricted" } },
   });
-  async function session(vaultIds: string[] = [], legacy = false) {
+  async function session(vaultIds: string[] = [], legacy = false, selected = false) {
     const prefix = legacy ? "/v1/oma" : "/v1";
     const agent = await call(`${prefix}/agents`, {
       name: "public MCP", model: "deepseek-flash", system: "Use echo.",
       mcp_servers: [{ name: "public", type: "url", url: serverUrl }],
-      tools: [{ type: "mcp_toolset", mcp_server_name: "public", default_config: { enabled: true } }],
+      tools: [{ type: "mcp_toolset", mcp_server_name: "public", default_config: { enabled: !selected }, configs: [{ name: "echo", enabled: true }] }],
     });
     return call(`${prefix}/sessions`, {
       agent: legacy ? agent.id : { type: "agent", id: agent.id, version: agent.version },
@@ -89,11 +89,12 @@ async function setup() {
   const legacyBinding = createLegacySessionMcpProxy({
     sessions: createSqliteSessionService({ db: cp.components.database.drizzle }),
     credentials: createSqliteCredentialService({ db: cp.components.database.drizzle }),
+    log: { info: () => undefined, warn: () => undefined },
   });
-  function proxy(sessionId: string, method = "tools/list", serverName = "public", requestHeaders: Record<string, string> = headers, binding = false) {
+  function proxy(sessionId: string, method = "tools/list", serverName = "public", requestHeaders: Record<string, string> = headers, binding = false, toolName = "echo") {
     const params = method === "initialize"
       ? { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "regression", version: "1" } }
-      : method === "tools/call" ? { name: "echo", arguments: { text: "hello" } } : {};
+      : method === "tools/call" ? { name: toolName, arguments: { text: "hello" } } : {};
     const request = new Request(`http://cp/v1/oma/mcp-proxy/${sessionId}/${serverName}`, {
       method: "POST", headers: {
         ...requestHeaders,
@@ -188,5 +189,20 @@ describe("Node MCP proxy anonymous access (#527)", () => {
     f.setStatus(401);
     expect((await f.proxy(session.id)).status).toBe(401);
     expect(f.seen.map(request => request.headers.authorization)).toEqual(["Bearer vault-token"]);
+  });
+});
+
+
+describe("Node MCP tool selection (#568)", () => {
+  it.each(["managed HTTP", "legacy HTTP", "legacy binding"])("enforces selection through %s", async mode => {
+    const f = await setup();
+    const session = await f.session([], mode !== "managed HTTP", true);
+    const list = await f.proxy(session.id, "tools/list", "public", headers, mode === "legacy binding");
+    expect((await list.json() as any).result.tools.map((t: any) => t.name)).toEqual(["echo"]);
+    const blocked = await f.proxy(session.id, "tools/call", "public", headers, mode === "legacy binding", "hidden");
+    expect(await blocked.json()).toMatchObject({ jsonrpc: "2.0", id: 1, error: { code: -32601 } });
+    const allowed = await f.proxy(session.id, "tools/call", "public", headers, mode === "legacy binding");
+    expect((await allowed.json() as any).result.content[0].text).toBe("hello");
+    expect(f.seen.map(r => r.method)).toEqual(["tools/list", "tools/call"]);
   });
 });

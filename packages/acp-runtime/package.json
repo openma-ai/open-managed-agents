@@ -13,9 +13,11 @@
     "./native-state": "./src/native-state.ts",
     "./sandbox-agent": "./src/sandbox-agent.ts",
     "./registry-pins": "./src/acp-registry-pins.ts",
+    "./installed-harnesses": "./src/installed-harnesses.ts",
     "./inference-config": "./src/inference/index.ts",
     "./skill-cache": "./src/skill-cache.ts",
-    "./skill-package": "./src/skill-package.ts"
+    "./skill-package": "./src/skill-package.ts",
+    "./environment-setup": "./src/environment-setup.ts"
   },
   "scripts": {
     "test": "vitest run --config vitest.config.ts",
@@ -25,7 +27,7 @@
   "dependencies": {
     "@open-managed-agents/inference-proxy": "workspace:*",
     "@open-managed-agents/sandbox": "workspace:*",
-    "@openma/common": "^0.9.1",
+    "@openma/common": "^0.14.0",
     "zod": "^3.23.0"
   },
   "devDependencies": {

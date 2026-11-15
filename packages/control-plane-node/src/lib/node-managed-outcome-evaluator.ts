@@ -1,3 +1,8 @@
+import {
+  createVerifierOutcomeEvaluator,
+  type SessionOutcomeRubricSourcePort,
+  type SessionOutcomeUsage,
+} from "@open-managed-agents/session-outcomes";
 import type {
   EvaluateManagedNodeOutcome,
   ManagedNodeOutcomeEvaluationPort,
@@ -26,52 +31,21 @@ export interface NodeManagedOutcomeEvaluatorDependencies<Model> {
     text: string;
     usage: NodeManagedJudgeUsage;
   }>;
+  /** Workspace Files for `{ type: "file" }` rubrics. Absent: such rubrics fail. */
+  rubricFiles?(workspaceId: string): SessionOutcomeRubricSourcePort;
 }
 
-function rubricText(outcome: EvaluateManagedNodeOutcome["outcome"]): string {
-  return outcome.rubric.type === "text"
-    ? outcome.rubric.content
-    : `[file rubric: ${outcome.rubric.fileId}]`;
-}
+const noRubricFiles: SessionOutcomeRubricSourcePort = {
+  read: async () => ({ type: "unavailable", reason: "file rubrics are not configured" }),
+};
 
-function judgePrompt(input: EvaluateManagedNodeOutcome): string {
-  return [
-    `Outcome: ${input.outcome.description}`,
-    `Rubric: ${rubricText(input.outcome)}`,
-    `Iteration: ${input.iteration}`,
-    "Session history (application event JSON):",
-    JSON.stringify(input.historyEvents),
-    "Return only JSON with result equal to satisfied, needs_revision, or failed, and a string explanation.",
-  ].join("\n\n");
-}
-
-function decodeJudgeResult(text: string): Pick<
-  ManagedNodeOutcomeEvaluationResult,
-  "result" | "explanation"
-> {
-  let value: unknown;
-  try {
-    value = JSON.parse(text);
-  } catch {
-    throw new Error("Outcome judge returned invalid JSON");
-  }
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("Outcome judge returned invalid JSON");
-  }
-  const record = value as Record<string, unknown>;
-  if (
-    record.result !== "satisfied" &&
-    record.result !== "needs_revision" &&
-    record.result !== "failed"
-  ) {
-    throw new Error("Outcome judge returned an invalid result");
-  }
-  if (typeof record.explanation !== "string") {
-    throw new Error("Outcome judge returned an invalid explanation");
-  }
-  return { result: record.result, explanation: record.explanation };
-}
-
+/**
+ * Node adapter for the per-iteration outcome evaluation Port. The judge
+ * prompt, tolerant verdict parsing, retries, rubric resolution and usage
+ * propagation are @open-managed-agents/session-outcomes' default LLM-judge
+ * evaluator (the same one Cloudflare uses); Node only supplies the model and
+ * the workspace file store.
+ */
 export class NodeManagedOutcomeEvaluator<Model>
   implements ManagedNodeOutcomeEvaluationPort
 {
@@ -87,21 +61,63 @@ export class NodeManagedOutcomeEvaluator<Model>
       session: input.session,
       environment: input.environment,
     });
-    const judged = await this.dependencies.judge({
-      model,
-      system:
-        "You are a strict outcome evaluator. Judge only against the supplied outcome, rubric, and event history.",
-      prompt: judgePrompt(input),
+    const evaluator = createVerifierOutcomeEvaluator<EvaluateManagedNodeOutcome["historyEvents"]>({
+      judge: () => async (prompt, signal) => {
+        const judged = await this.dependencies.judge({
+          model,
+          system: prompt.system,
+          prompt: prompt.user,
+          abortSignal: signal ?? input.abortSignal,
+        });
+        return {
+          text: judged.text,
+          usage: {
+            input_tokens: judged.usage.inputTokens,
+            output_tokens: judged.usage.outputTokens,
+          },
+        };
+      },
+      files: this.dependencies.rubricFiles?.(input.workspaceId) ?? noRubricFiles,
+      verifierContext: () => {
+        throw new Error("rule-based outcome verifiers are not available on Node");
+      },
+      history: (events) => applicationTranscriptEvents(events ?? []),
+    });
+    const prepared = await evaluator.prepare({
+      outcome: {
+        outcomeId: input.outcome.outcomeId,
+        description: input.outcome.description,
+        rubric: input.outcome.rubric,
+        maxIterations: input.outcome.maxIterations,
+      },
       abortSignal: input.abortSignal,
     });
+    if (prepared.type === "failed") {
+      return { result: "failed", explanation: prepared.explanation, usage: toUsage(undefined) };
+    }
+    const evaluation = await prepared.evaluator.evaluate({
+      iteration: input.iteration,
+      abortSignal: input.abortSignal,
+      snapshot: input.historyEvents,
+    });
     return {
-      ...decodeJudgeResult(judged.text),
-      usage: {
-        cacheCreationInputTokens: 0,
-        cacheReadInputTokens: 0,
-        inputTokens: judged.usage.inputTokens,
-        outputTokens: judged.usage.outputTokens,
-      },
+      result: evaluation.result,
+      explanation: evaluation.explanation,
+      usage: toUsage(evaluation.usage),
     };
   }
+}
+
+function toUsage(usage: SessionOutcomeUsage | undefined): ManagedNodeOutcomeEvaluationResult["usage"] {
+  return {
+    cacheCreationInputTokens: usage?.cache_creation_input_tokens ?? 0,
+    cacheReadInputTokens: usage?.cache_read_input_tokens ?? 0,
+    inputTokens: usage?.input_tokens ?? 0,
+    outputTokens: usage?.output_tokens ?? 0,
+  };
+}
+
+/** The judge reads agent.message text; application events carry it as content. */
+function applicationTranscriptEvents(events: EvaluateManagedNodeOutcome["historyEvents"]): unknown[] {
+  return events.map((event) => ({ ...event, processed_at: event.processedAt }));
 }

@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { CloudflareSandbox, resolveCloudflareSandboxNamespace } from "../src/runtime/sandbox";
-import { setSandboxForTest } from "../../../test/sandbox-stub";
+import {
+  CloudflareSandbox,
+  resolveCloudflareSandboxNamespace,
+  setCloudflareSandboxForTest as setSandboxForTest,
+} from "../src/runtime/sandbox";
 
 afterEach(() => setSandboxForTest(undefined));
 
@@ -57,7 +60,7 @@ describe("CloudflareSandbox catalog image", () => {
       .toThrow(/invalid container binding name/);
     expect(() => resolveCloudflareSandboxNamespace({ SANDBOX: {}, B: {} } as never, { alias: "x", binding: "B", workdir: "app" }))
       .toThrow(/invalid workdir/);
-    recordingSandbox();
+    // No test override: the real namespace lookup must fail.
     const sandbox = new CloudflareSandbox(env, "sess-missing", { alias: "fix-git", binding: "SANDBOX_FIX_GIT" });
     await expect(sandbox.exec("true")).rejects.toThrow(/SANDBOX_FIX_GIT/);
   });

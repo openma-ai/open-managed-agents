@@ -52,6 +52,18 @@ package never imports the app), `leaseTtlMs`, `controlPlaneBaseUrl`,
 `WORKSPACE_BUCKET`, `WORKSPACE_BUCKET_NAME`, `R2_ENDPOINT`, and the `R2_*`
 credentials).
 
+### R2 keys for mounts
+
+With `R2_ENDPOINT` set, Session outputs are mounted from the bucket named by
+`FILES_BUCKET_NAME` (required; startup of the mount fails naming the variable
+if it is missing). Choose one key layout:
+
+- **One key for every bucket:** set `R2_ACCESS_KEY_ID` and
+  `R2_SECRET_ACCESS_KEY`. Memory and outputs both use it.
+- **One key per bucket:** additionally set `R2_FILES_ACCESS_KEY_ID` and
+  `R2_FILES_SECRET_ACCESS_KEY` for the files bucket. Set both or neither; one
+  alone is an error.
+
 The **`cloudflare-bridge`** variant reaches an operator-deployed official
 Cloudflare Sandbox Bridge over HTTP instead. Its factory,
 `createCloudflareBridgeManagedRuntime`, takes `baseUrl`, `apiKey` (the
@@ -69,6 +81,20 @@ BlobStore for portable `/workspace` tar archives, plus
 | Outputs | `final_collect`, durable | `final_collect`, durable |
 | Process checkpoints | none | none |
 | Credential egress | **`enforced` / `live`, http+https** | `unsupported`/`snapshot` default |
+
+Credential egress on `cloudflare` is authorized by the session's sandbox token,
+the same `oma_sbx_` token the E2B and Node relays present and an in-sandbox
+ACP harness uses for the model and MCP gateways (one token per execution
+attempt). The container's outbound binding holds only that token's SHA-256,
+never the token, and every Vault or GitHub injection checks it against the
+current execution attempt. Between turns the binding holds no token. When the
+token is no longer current (the execution settled, or another owner took it
+over), a request carrying a Vault placeholder is refused with 401; other
+outbound traffic goes out without credentials. The next execution binds its
+own token, so a background process left over from an earlier turn regains
+Vault access while that execution runs: the binding is per container, not per
+process. Everything inside one session's sandbox is one trust boundary, so
+don't run code in it that the session shouldn't be able to act as.
 
 <Aside type="note">
   The bridge driver keeps OpenMA as the Work and fencing authority while the

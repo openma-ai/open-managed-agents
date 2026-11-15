@@ -6,15 +6,15 @@ export default defineConfig({
     pool: "threads",
     environment: "node",
     include: [
-      "test/unit/web-fetch-http.test.ts",
-      "test/unit/tool-http-fetch.test.ts",
+      "packages/agent-harness/test/web-fetch-http.test.ts",
+      "packages/agent-harness/test/tool-http-fetch.test.ts",
     ],
     testTimeout: 30_000,
     coverage: {
       provider: "v8",
       include: [
-        "apps/agent/src/harness/web-fetch-http.ts",
-        "apps/agent/src/harness/tool-http-fetch.ts",
+        "packages/agent-harness/src/web-fetch-http.ts",
+        "packages/agent-harness/src/tool-http-fetch.ts",
       ],
       reporter: ["text", "json-summary", "lcov"],
       reportsDirectory: "coverage/harness-web-http",

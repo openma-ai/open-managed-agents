@@ -1,18 +1,10 @@
 import { processSessionClocks, type SessionClockRegistry } from "@open-managed-agents/shared";
-import {
-  picoToCentsString,
-  type SessionBudgetGate,
-} from "@open-managed-agents/domain/sessions";
+import type { SessionBudgetGate } from "@open-managed-agents/domain/sessions";
 import type { ModelMessage } from "ai";
-import type {
-  HarnessRuntime,
-  HistoryStore,
-} from "@open-managed-agents/agent/harness/interface";
 import {
-  eventsToMessages,
-  eventsToMessagesAsync,
+  type HarnessRuntime, type HistoryStore, eventsToMessages, eventsToMessagesAsync,
   type FileResolver,
-} from "@open-managed-agents/agent/runtime/history";
+} from "@open-managed-agents/agent-harness";
 import type { SandboxExecutor } from "@open-managed-agents/sandbox";
 import { getLogger } from "@open-managed-agents/observability";
 import type { ContentBlock, SessionEvent } from "@open-managed-agents/shared";
@@ -20,20 +12,24 @@ import type {
   SessionBootstrapEvent,
   RuntimeProducedSessionEvent,
   SessionEventView,
+  SessionUsage,
   ToolResultContentBlock,
+} from "@open-managed-agents/managed-agents-application";
+import {
+  createSessionUsageMeter,
+  memorySessionUsageStore,
+  reportModelSpanUsage,
+  reportSessionUsage,
+  sessionTokenTotalsFromUsage,
+  sessionUsageSnapshot,
+  type ModelSpanLike,
+  type SessionUsageMeter,
 } from "@open-managed-agents/managed-agents-application";
 import {
   decodeRuntimeProducedSessionEvent,
   encodeRuntimeHistoryEvent,
   encodeRuntimeSessionEvent,
 } from "@open-managed-agents/managed-agents-adapters-runtime";
-import {
-  createNodeHarnessUsageLedger,
-  creditCacheTokensFromSpanEnd,
-  creditHarnessUsage,
-  ledgerToManagedSessionUsage,
-  type NodeHarnessUsageLedger,
-} from "./node-harness-usage.js";
 
 type UnstampedRuntimeProducedSessionEvent =
   RuntimeProducedSessionEvent extends infer Event
@@ -49,11 +45,19 @@ class ManagedNodeHistoryStore implements HistoryStore {
     initialEvents: SessionBootstrapEvent[],
     events: SessionEventView[],
   ) {
+    // Node admission records custom results without checking the call exists
+    // (Cloudflare refuses them). Such a receipt stays in the canonical log but
+    // is not a tool result for any call: projecting it would hand the model an
+    // orphan tool_result that providers reject.
+    const toolUseIds = new Set(events.flatMap((event) =>
+      event.type === "agent.tool_use" || event.type === "agent.custom_tool_use" || event.type === "agent.mcp_tool_use" ? [event.id] : []));
     this.events = [
       ...initialEvents.map(
         (event) => encodeRuntimeSessionEvent(event) as SessionEvent,
       ),
-      ...events.map(toHarnessHistoryEvent),
+      ...events
+        .filter((event) => event.type !== "user.custom_tool_result" || toolUseIds.has(event.customToolUseId))
+        .map(toHarnessHistoryEvent),
     ];
   }
 
@@ -241,6 +245,7 @@ function toHarnessToolResultContent(
 }
 
 export interface ManagedNodeHarnessRuntimeInput {
+  sessionThreadId?: string;
   initialEvents: SessionBootstrapEvent[];
   events: SessionEventView[];
   sandbox: SandboxExecutor;
@@ -256,7 +261,14 @@ export interface ManagedNodeHarnessRuntimeInput {
    *  absent the harness does not advertise steering and mid-run inputs fall
    *  back to drain-after-idle (their queued execution runs next). */
   takeSteeringInputs?: () => Promise<SessionEventView[]>;
+  /** The Session's persisted usage. Token totals continue from it, so the
+   *  projected Session.usage stays cumulative across executions (as on
+   *  Cloudflare). Omitted for child threads, whose totals start at 0. */
+  usage?: SessionUsage | null;
 }
+
+/** The one meter key of a runtime: each runtime meters exactly one thread. */
+const RUNTIME_USAGE_THREAD = "runtime";
 
 /** History is read back `ORDER BY processed_at` (millisecond precision) and
  * then by id. Two events stamped from one clock reading can swap when ids are
@@ -273,12 +285,13 @@ export function createStrictlyIncreasingEventStamp(
 
 export class ManagedNodeHarnessRuntime implements HarnessRuntime {
   readonly history: HistoryStore;
+  readonly sessionThreadId: string;
   readonly sandbox: SandboxExecutor;
   readonly abortSignal?: AbortSignal;
   private readonly applicationHistoryEvents: SessionEventView[];
   private outputChain: Promise<void> = Promise.resolve();
   private readonly nextStamp: () => string;
-  private readonly usageLedger: NodeHarnessUsageLedger;
+  private readonly usageMeter: SessionUsageMeter;
   /** Number of `agent.*` events (tool calls, messages, thinking) produced so far:
    * a turn that produced none has no side effects and is safe to re-run. */
   agentEventCount = 0;
@@ -289,6 +302,7 @@ export class ManagedNodeHarnessRuntime implements HarnessRuntime {
   readonly takeSteeringInputs?: () => Promise<SessionEvent[]>;
 
   constructor(private readonly input: ManagedNodeHarnessRuntimeInput) {
+    this.sessionThreadId = input.sessionThreadId ?? "sthr_primary";
     const take = input.takeSteeringInputs;
     if (take !== undefined) {
       this.takeSteeringInputs = async () => {
@@ -317,10 +331,17 @@ export class ManagedNodeHarnessRuntime implements HarnessRuntime {
       ? () => (input.sessionClocks ?? processSessionClocks).forSession(scope.workspaceId, scope.sessionId)
         .stampIso(input.clock.now().getTime())
       : createStrictlyIncreasingEventStamp(input.clock);
-    this.usageLedger = createNodeHarnessUsageLedger();
+    const seed = sessionTokenTotalsFromUsage(input.usage);
+    this.usageMeter = createSessionUsageMeter(memorySessionUsageStore({
+      threads: { [RUNTIME_USAGE_THREAD]: seed },
+      session: { input_tokens: seed.input_tokens, output_tokens: seed.output_tokens },
+    }));
   }
 
   private budgetGate: SessionBudgetGate | null = null;
+  /** This runtime's egress observation, never inferred after sibling drain. */
+  get turnBudgetReached(): boolean { return this.budgetGate?.reached === true; }
+  get turnBudgetGate(): SessionBudgetGate | null { return this.budgetGate; }
 
   /** Bind the execution's budget gate so usage snapshots carry list_cost. */
   setBudgetGate(gate: SessionBudgetGate | null): void {
@@ -330,36 +351,26 @@ export class ManagedNodeHarnessRuntime implements HarnessRuntime {
   /** Session usage snapshot; `listCost` (whole cents) is present only when
    * the model card is priced and the session has a budget. The amount is the
    * session egress meter's total (all threads), not derived from history. */
-  usageSnapshot() {
-    const usage = ledgerToManagedSessionUsage(this.usageLedger);
-    if (this.budgetGate === null) return usage;
-    return {
-      ...usage,
-      listCost: { amountMinor: picoToCentsString(BigInt(this.budgetGate.list_cost_pico)), currency: "USD" as const },
-      list_cost_pico: this.budgetGate.list_cost_pico,
-    };
+  usageSnapshot(): SessionUsage {
+    return sessionUsageSnapshot(this.usageMeter.thread(RUNTIME_USAGE_THREAD), this.budgetGate);
   }
 
   reportUsage = async (
     input_tokens: number,
     output_tokens: number,
   ): Promise<void> => {
-    creditHarnessUsage(this.usageLedger, { input_tokens, output_tokens });
-    this.broadcastProducedEvent({
-      type: "session.usage",
-      usage: this.usageSnapshot(),
-    });
+    this.broadcastProducedEvent(reportSessionUsage(
+      this.usageMeter, RUNTIME_USAGE_THREAD, { input_tokens, output_tokens }, this.budgetGate,
+    ));
   };
 
   broadcast = (event: SessionEvent): void => {
-    creditCacheTokensFromSpanEnd(
-      this.usageLedger,
-      event as { type?: string; model_usage?: Record<string, number | undefined> },
-    );
+    const cacheUsage = reportModelSpanUsage(this.usageMeter, RUNTIME_USAGE_THREAD, event as ModelSpanLike, this.budgetGate);
     const frame = structuredClone(event) as SessionEvent & {
       id?: string;
       processed_at?: string;
     };
+    if (this.sessionThreadId !== "sthr_primary") Object.assign(frame, { session_thread_id: this.sessionThreadId });
     if (typeof frame.id !== "string") frame.id = this.input.ids.nextEventId();
     if (typeof frame.processed_at !== "string") {
       frame.processed_at = this.stamp();
@@ -371,7 +382,7 @@ export class ManagedNodeHarnessRuntime implements HarnessRuntime {
       this.applicationHistoryEvents.push(applicationEvent);
     }
     this.enqueueDetached(frame);
-    this.publishSessionUsageIfCacheChanged(event);
+    if (cacheUsage !== null) this.broadcastProducedEvent(cacheUsage);
   };
 
   broadcastProducedEvent(event: UnstampedRuntimeProducedSessionEvent): string {
@@ -388,20 +399,6 @@ export class ManagedNodeHarnessRuntime implements HarnessRuntime {
     return stamped.id;
   }
 
-  private publishSessionUsageIfCacheChanged(event: SessionEvent): void {
-    if (event.type !== "span.model_request_end") return;
-    const usage = (event as { model_usage?: Record<string, number | undefined> })
-      .model_usage;
-    if (!usage) return;
-    const cc = usage.cache_creation_input_tokens || 0;
-    const cr = usage.cache_read_input_tokens || 0;
-    if (cc === 0 && cr === 0) return;
-    this.broadcastProducedEvent({
-      type: "session.usage",
-      usage: this.usageSnapshot(),
-    });
-  }
-
   /** Event history is read back ordered by `processed_at` (ms precision) and
    * then by random id, so events stamped in the same millisecond (tool_use and
    * its tool_result) could replay out of order on another owner. Stamps are
@@ -414,19 +411,11 @@ export class ManagedNodeHarnessRuntime implements HarnessRuntime {
     return structuredClone(this.applicationHistoryEvents);
   }
 
-  appendOutcomeFeedback(iteration: number, explanation: string): void {
+  /** Record the outcome grader's feedback turn (text from session-outcomes). */
+  appendOutcomeFeedback(text: string): void {
     this.history.append({
       type: "user.message",
-      content: [{
-        type: "text",
-        text: [
-          `<outcome_feedback iteration="${iteration}">`,
-          explanation || "(no explanation)",
-          "",
-          "Address the feedback and try again.",
-          "</outcome_feedback>",
-        ].join("\n"),
-      }],
+      content: [{ type: "text", text }],
     });
   }
 

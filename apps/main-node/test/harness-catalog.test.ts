@@ -2,8 +2,9 @@ import { afterAll, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { resolve, join } from "node:path";
 import * as harnesses from "@open-managed-agents/control-plane-node";
-import { resolveHarness } from "@open-managed-agents/agent/harness/registry";
-import { registerCoreHarnesses } from "@open-managed-agents/agent/harness/builtins";
+import {
+  resolveHarness, registerCoreHarnesses,
+} from "@open-managed-agents/agent-harness";
 import { createNodeControlPlane, type NodeControlPlane } from "../src/control-plane";
 import { loadNodeConfig } from "../src/config";
 import { nodeDefaults } from "../src/components";

@@ -26,8 +26,9 @@ wrong for CMA-aligned sessions.
    product GUI queue. Business-semantic queue chrome (Backchat / Console
    outbox UI) is **client-side**.
 3. **`user.interrupt` is separate.** Interrupt jumps the queue → session
-   goes idle → a following `user.message` starts the **next** turn. Do
-   not conflate interrupt with steer.
+   goes idle → a following `user.message` starts the **next** turn. Inputs
+   queued before the interrupt are **not** cancelled: they run as the lane's
+   next turns (CF and Node). Do not conflate interrupt with steer.
 3b. **`requires_action` / `budget_reached` settle-only (owner t307u):** while
    idle with `stop_reason: requires_action` (outstanding `event_ids`) or
    `budget_reached`, only settle events are accepted
@@ -69,7 +70,7 @@ wrong for CMA-aligned sessions.
 |---|---|
 | Running (ordinary) | Hold as mid-state; **steer** into current turn at next LLM/tool-call boundary (after-call); stamp on consume |
 | `retrying` / `status_rescheduled` | Hold; **no** flush; **no** new turn from these rows; after resume, ingest together into the continuing turn |
-| Idle after interrupt | Following message = **new** turn (interrupt path) |
+| Idle after interrupt | Queued and following messages = **new** turns, in order (nothing is cancelled) |
 | Idle `retries_exhausted` | **Retain** unconsumed mid-turn inputs (no delete); do not auto-start them as the next turn alone; they **advance with the next round of events**; user cannot withdraw; client may reconcile |
 | Idle `requires_action` / `budget_reached` | **Settle-only (t307u):** `user.message` → **400**; only tool_confirmation / tool_result / custom_tool_result / interrupt |
 
@@ -88,7 +89,7 @@ only on `SessionExecutionStorePort` (ADR 0006):
 - `takeQueuedSteeringInputs(store, { workspaceId, sessionId, laneId, … })`
   (`packages/session-runtime-contract/src/coordination.ts`) lists the lane's
   queued executions (`listQueued`) and CAS-steers each plain mid-run
-  `user.message` batch (`steerQueued` → `completed`, so it never runs as its
+  `user.message` batch (`steerPendingExecution` → `completed`, so it never runs as its
   own next turn). Tool confirmations / interrupts are never steered.
 - `NodeSessionExecutionWorker` hands that as a per-run hook
   (`takeSteeringInputs`); `DefaultNodeManagedSessionRuntimeDriver` wraps it
@@ -200,5 +201,6 @@ pending endpoint.
 - `cancelQueued` rejects held rows (`held_after_exhausted`); user cannot
   withdraw them.
 - Retrying / ordinary failure does **not** set the hold (unchanged).
-- CF SessionDO returns `{ holdQueuedOnLane: true }` from `processUserMessage`
-  into the shared `SessionExecutionHost` settle path (same port semantics).
+- CF SessionDO returns `{ holdQueuedOnLane: true }` from `runAcceptedTurn`
+  into the shared `SessionExecutionHost` settle path (same port semantics),
+  for every exhausted turn, including one resumed by tool answers.

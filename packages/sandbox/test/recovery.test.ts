@@ -79,6 +79,15 @@ describe("probeSandboxLiveness", () => {
 });
 
 describe("withSandboxRecovery", () => {
+  it.each([false,true])("preserves dispatched unknown when the lost sandbox replacement fails=%s", async replaceFails => {
+    const {recovery,created}=harness({replaceFails});
+    let effects=0;
+    created[0]!.exec=async()=>{effects++;throw Object.assign(new Error("committed then lost transport"),{outcome:"dispatched_unknown"});};
+    created[0]!.dead=true;
+    await expect(recovery.sandbox.exec("external-effect")).rejects.toMatchObject({outcome:"dispatched_unknown"});
+    expect(effects).toBe(1);
+    expect(await recovery.close()).toBeNull();
+  });
   it("passes ordinary failures through and never replaces a live sandbox", async () => {
     const { recovery, replace } = harness();
     await expect(recovery.sandbox.exec("ls")).resolves.toBe("sb1:ls");

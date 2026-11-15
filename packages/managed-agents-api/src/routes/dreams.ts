@@ -3,7 +3,6 @@ import {
   resolveApplicationPort,
   type ApplicationPortSource,
 } from "../application-port-source";
-import { DREAMING_BETA, requireBeta } from "../beta";
 import {
   dreamCreateBodySchema,
   dreamListQuerySchema,
@@ -33,7 +32,6 @@ export function buildDreamRoutes(
   source: ApplicationPortSource<DreamsApplicationPort>,
 ): Hono {
   const app = new Hono();
-  app.use("*", requireBeta(DREAMING_BETA));
 
   app.post("/", async (c) => {
     let body: unknown;

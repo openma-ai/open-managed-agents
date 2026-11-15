@@ -10,7 +10,7 @@
 // Driver dep is a peer with peerDependenciesMeta.optional — caller installs:
 //   pnpm add @boxlite-ai/boxlite
 //
-// SDK shape (as of @boxlite-ai/boxlite ^0.8):
+// SDK shape (as of @boxlite-ai/boxlite 0.13.x):
 //   const box = new SimpleBox({ image, env, volumes, ... })
 //   await box.exec("sh", ["-c", command], env, { timeoutSecs })
 //   await box.copyIn(hostPath, containerPath)
@@ -30,7 +30,6 @@ import { tmpdir } from "node:os";
 import { createHash, randomBytes } from "node:crypto";
 import { Buffer } from "node:buffer";
 import { getLogger } from "@open-managed-agents/observability";
-import { rejectPreparedBase } from "@open-managed-agents/sandbox";
 
 const moduleLogger = getLogger("litebox-sandbox");
 
@@ -80,6 +79,7 @@ export class LiteBoxSandbox implements SandboxExecutor {
   private commandSecrets: Array<{ prefix: string; secrets: Record<string, string> }> = [];
   private volumes: Array<{ hostPath: string; guestPath: string; readOnly?: boolean }> = [];
   private boxPromise: Promise<LiteBoxInstance> | null = null;
+  private outputsMount: { tenantId: string; sessionId: string } | null = null;
   private logger: NonNullable<LiteBoxSandboxOptions["logger"]>;
   private tmpRoot: string;
 
@@ -176,6 +176,9 @@ export class LiteBoxSandbox implements SandboxExecutor {
     tenantId: string;
     sessionId: string;
   }): Promise<void> {
+    // The same outputs mounted again (the host mounts them at create, then
+    // the storage Port attaches them on open) is already in place.
+    if (this.outputsMount?.tenantId === opts.tenantId && this.outputsMount.sessionId === opts.sessionId) return;
     if (this.boxPromise) {
       throw new Error(
         "LiteBoxSandbox.mountSessionOutputs: box already created — mounts must " +
@@ -203,6 +206,7 @@ export class LiteBoxSandbox implements SandboxExecutor {
     const hostPath = join(outputsRoot, opts.tenantId, opts.sessionId);
     mkdirSync(hostPath, { recursive: true });
     this.volumes.push({ hostPath, guestPath: "/mnt/session/outputs", readOnly: false });
+    this.outputsMount = { tenantId: opts.tenantId, sessionId: opts.sessionId };
   }
 
   async readFile(path: string): Promise<string> {
@@ -356,7 +360,6 @@ async function removeBestEffort(path: string, recursive = false): Promise<void> 
 // ── Factory (DIP entry point) ───────────────────────────────────────
 
 export const sandboxFactory: SandboxFactory = Object.assign(async (ctx: Parameters<SandboxFactory>[0], env: Parameters<SandboxFactory>[1]) => {
-  rejectPreparedBase("litebox", ctx.preparedBase);
   return new LiteBoxSandbox({
     // An Environment-selected catalog image overrides the process default.
     image: ctx.image?.reference ?? env.SANDBOX_IMAGE,
@@ -368,4 +371,4 @@ export const sandboxFactory: SandboxFactory = Object.assign(async (ctx: Paramete
     outputsRoot: ctx.outputsRoot,
     scratchRoot: ctx.workdir,
   });
-}, { capabilities: { allocationIsolation: true } });
+}, { capabilities: { allocationIsolation: true, mountsFixedAtCreate: true } });

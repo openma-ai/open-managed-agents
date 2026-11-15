@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { ApiError, shouldSilenceApiErrorToast } from "../lib/api";
 
@@ -12,7 +12,7 @@ vi.mock("sonner", async (orig) => {
 const managedApi = vi.hoisted(() => ({
   sessions: {
     retrieve: vi.fn(),
-    events: { list: vi.fn(), stream: vi.fn() },
+    events: { list: vi.fn(), stream: vi.fn(), send: vi.fn() },
     threads: { list: vi.fn() },
   },
   agents: { retrieve: vi.fn(async () => ({ metadata: {} })) },
@@ -43,8 +43,11 @@ function mount(id: string) {
 }
 
 function never<T>() { return new Promise<T>(() => {}); }
+function openedStream() {
+  return { [Symbol.asyncIterator]: () => ({ next: () => never<IteratorResult<never>>() }) };
+}
 
-afterEach(() => { cleanup(); vi.clearAllMocks(); });
+afterEach(() => { cleanup(); vi.clearAllMocks(); vi.unstubAllGlobals(); });
 
 describe("SessionDetail gates history/stream/threads on the session lookup", () => {
   it("404: renders only the not-found view; no events/threads fetch, no toasts", async () => {
@@ -67,9 +70,14 @@ describe("SessionDetail gates history/stream/threads on the session lookup", () 
       created_at: "2026-10-31T00:00:00Z", metadata: {},
     });
     managedApi.sessions.events.list.mockResolvedValue({ data: [], next_page: null });
-    managedApi.sessions.events.stream.mockReturnValue(never());
+    managedApi.sessions.events.stream.mockResolvedValue(openedStream());
     managedApi.sessions.threads.list.mockResolvedValue({ data: [] });
+    let open!: (stream: ReturnType<typeof openedStream>) => void;
+    managedApi.sessions.events.stream.mockReturnValue(new Promise(resolve => { open = resolve; }));
     mount("session_ok");
+    await waitFor(() => expect(managedApi.sessions.events.stream).toHaveBeenCalledTimes(1));
+    expect(managedApi.sessions.events.list).not.toHaveBeenCalled();
+    open(openedStream());
     await waitFor(() => expect(managedApi.sessions.events.list).toHaveBeenCalledTimes(1));
     expect(managedApi.sessions.events.stream).toHaveBeenCalledTimes(1);
     expect(managedApi.sessions.threads.list).toHaveBeenCalledTimes(1);
@@ -79,13 +87,39 @@ describe("SessionDetail gates history/stream/threads on the session lookup", () 
   it.each([500, 403])("%i on lookup keeps existing behavior: still loads history/stream/threads", async (status) => {
     managedApi.sessions.retrieve.mockRejectedValue(new ApiError({ status, code: "api_error", message: "boom" }));
     managedApi.sessions.events.list.mockResolvedValue({ data: [], next_page: null });
-    managedApi.sessions.events.stream.mockReturnValue(never());
+    managedApi.sessions.events.stream.mockResolvedValue(openedStream());
     managedApi.sessions.threads.list.mockResolvedValue({ data: [] });
     mount("session_err");
     await waitFor(() => expect(managedApi.sessions.events.list).toHaveBeenCalled());
     expect(managedApi.sessions.events.stream).toHaveBeenCalled();
     expect(managedApi.sessions.threads.list).toHaveBeenCalled();
     expect(screen.queryByTestId("session-not-found")).toBeNull();
+  });
+
+  it("submits a canonical streamed custom call while the Session remains running", async () => {
+    managedApi.sessions.retrieve.mockResolvedValue({
+      id: "session_live", status: "running", agent: { id: "agent_1", metadata: {} },
+      created_at: "2026-11-12T00:00:00Z", metadata: {},
+    });
+    managedApi.sessions.events.list.mockResolvedValue({ data: [], next_page: null });
+    managedApi.sessions.threads.list.mockResolvedValue({ data: [] });
+    managedApi.sessions.events.stream.mockResolvedValue({ async *[Symbol.asyncIterator]() {
+      yield { type: "agent.custom_tool_use", id: "live-call", name: "approve", input: { ticket: 1 }, processed_at: "2026-11-12T00:00:01Z" };
+      await never();
+    } });
+    managedApi.sessions.events.send.mockResolvedValue({ data: [{
+      id: "receipt", type: "user.custom_tool_result", custom_tool_use_id: "live-call",
+      content: [{ type: "text", text: "approved" }], processed_at: "2026-11-12T00:00:02Z",
+    }] });
+    // jsdom does not implement the browser resize API used by the transcript.
+    vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+    mount("session_live");
+    fireEvent.change(await screen.findByLabelText("Result for approve"), { target: { value: "approved" } });
+    fireEvent.click(screen.getByText("Submit result"));
+    await waitFor(() => expect(managedApi.sessions.events.send).toHaveBeenCalledWith("session_live", {
+      events: [{ type: "user.custom_tool_result", custom_tool_use_id: "live-call", content: [{ type: "text", text: "approved" }] }],
+    }));
+    await waitFor(() => expect(screen.queryByText("Submit result")).toBeNull());
   });
 
   it("silences the toast only for a 404 on GET /v1/sessions/:id", () => {

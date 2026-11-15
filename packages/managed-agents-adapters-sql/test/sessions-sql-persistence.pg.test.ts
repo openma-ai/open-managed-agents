@@ -10,6 +10,7 @@ import type {
 } from "@open-managed-agents/managed-agents-application";
 import {
   SqlSessionEventPersistence,
+  SqlSessionRuntimeProjectionPersistence,
   SqlSessionPersistence,
   SqlSessionResourcePersistence,
   SqlSessionThreadEventPersistence,
@@ -17,7 +18,7 @@ import {
 } from "../src";
 import { getStorageIntegrationConfig } from "../../../test/storage-integration.js";
 import { sessionStorePortContract } from "./contracts/store-port-contracts";
-import { ensureSessionExecutionCoordinatorSchema } from "@open-managed-agents/session-runtime-sql/coordination";
+import { ensureSessionExecutionCoordinatorSchema, SqlSessionExecutionCoordinator } from "@open-managed-agents/session-runtime-sql/coordination";
 
 const PG_URL = getStorageIntegrationConfig().postgres.sessionsSql;
 const WORKSPACE_ID = "managed_sessions_adapter_pg_contract";
@@ -187,6 +188,39 @@ afterAll(async () => {
 });
 
 describe("Managed Sessions SQL adapters on PostgreSQL", () => {
+  it("rolls back an inserted stale event when a second connection admits work before Session UPDATE", async () => {
+    const sessions = new SqlSessionPersistence(client, { seal: async value => value });
+    await sessions.insert({ workspaceId: WORKSPACE_ID, session, initialEvents: [], resourceSecrets: [] });
+    const coordinator = new SqlSessionExecutionCoordinator(client);
+    const time = "2026-08-26T02:00:00.000Z";
+    await coordinator.admit({ execution: { id: "old", workspaceId: WORKSPACE_ID, sessionId: session.id, admittedAt: time, events: [{ id: "input_old", type: "user.message", content: [{ type: "text", text: "run" }], processedAt: time }] } });
+    const claim = await coordinator.claim({ ownerId: "dead", attemptId: "a", claimedAt: time, leaseTtlMs: 1000 });
+    if (claim.type !== "claimed") throw new Error("claim");
+    await coordinator.settle({ fence: claim.fence, outcome: "failed", failure: "dead", settledAt: time });
+    const other = postgres(PG_URL, { max: 1 });
+    let inserted = false;
+    const hooked = new PostgresSqlClient({
+      unsafe: (...args: any[]) => (connection.unsafe as any)(...args),
+      begin: (fn: any) => connection.begin(async tx => fn({ unsafe: async (text: string, params: any[]) => {
+        const rows = await tx.unsafe(text, params);
+        if (!inserted && text.includes("INSERT INTO managed_session_events")) {
+          inserted = true;
+          await other.unsafe("INSERT INTO managed_session_executions (workspace_id, session_id, lane_id, id, admitted_at_ms, events_json, events_fingerprint, state, deadline_at_ms) SELECT workspace_id, session_id, lane_id, 'new', admitted_at_ms + 1, events_json, events_fingerprint, 'queued', deadline_at_ms FROM managed_session_executions WHERE id = 'old'");
+        }
+        return rows;
+      } })),
+    } as never);
+    try {
+      const result = await new SqlSessionRuntimeProjectionPersistence(hooked).project({ workspaceId: WORKSPACE_ID, sessionId: session.id, expectedRevision: 1,
+        executionFence: { ...claim.fence, settlement: "failed" },
+        events: [{ id: "stale:old:1:session.status_idle", type: "session.status_idle", stopReason: { type: "end_turn" }, processedAt: time }],
+        next: { ...session, status: "idle" } });
+      expect(inserted).toBe(true);
+      expect(result).toEqual({ type: "execution_fence_lost" });
+      expect(await client.prepare("SELECT id FROM managed_session_events WHERE id = 'stale:old:1:session.status_idle'").first()).toBeNull();
+      expect(await sessions.findCurrent({ workspaceId: WORKSPACE_ID, sessionId: session.id })).toMatchObject({ revision: 1, session: { status: "running" } });
+    } finally { await other.end(); await cleanup(); }
+  });
   it("has one atomic winner when event acceptance transactions race", async () => {
     const sessions = new SqlSessionPersistence(client, {
       seal: async (value) => `sealed:${value}`,

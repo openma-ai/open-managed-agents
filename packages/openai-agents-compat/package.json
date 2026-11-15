@@ -12,7 +12,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@openma/common": "^0.9.1",
+    "@openma/common": "^0.14.0",
     "@open-managed-agents/openai-agents-api": "workspace:*",
     "@open-managed-agents/managed-agents-application": "workspace:*"
   },

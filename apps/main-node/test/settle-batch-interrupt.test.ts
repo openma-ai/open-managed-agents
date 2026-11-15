@@ -23,7 +23,7 @@ describe("Node settle-only gate: interrupt + message batch", () => {
   });
 });
 
-import { interruptRequiresActionClosure } from "../../../apps/agent/src/runtime/history.js";
+import { interruptRequiresActionClosure } from "@open-managed-agents/agent-harness";
 
 describe("Node/CF shared: interruptRequiresActionClosure", () => {
   it("does not clear requires_action (official CMA idle no-op)", () => {

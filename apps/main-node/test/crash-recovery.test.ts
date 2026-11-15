@@ -122,7 +122,7 @@ async function startMainNode(opts: { dataDir: string }): Promise<ProcessHandle> 
   // Timeout — print buffered logs to help debug.
   // eslint-disable-next-line no-console
   console.error("main-node never became ready. Logs:\n" + logBuf.join(""));
-  child.kill("SIGKILL");
+  await killProcessTree(child);
   throw new Error(`main-node didn't respond on /health within 60s`);
 }
 

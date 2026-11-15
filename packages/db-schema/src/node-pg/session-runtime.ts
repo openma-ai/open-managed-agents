@@ -24,6 +24,8 @@ export const managed_session_executions = pgTable(
     settled_at_ms: bigint("settled_at_ms", { mode: "number" }),
     failure: text("failure"),
     held_after_exhausted_ms: bigint("held_after_exhausted_ms", { mode: "number" }),
+    /** JSON array of the attempt's sandbox token SHA-256s (#561); reset with the attempt. */
+    sandbox_token_hashes: text("sandbox_token_hashes"),
     revision: bigint("revision", { mode: "number" }).notNull().default(1),
   },
   (table) => [

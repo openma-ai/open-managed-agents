@@ -25,7 +25,7 @@ import type {
   SandboxRuntimePort,
   SandboxRuntimeStatus,
 } from "@open-managed-agents/sandbox";
-import { rejectPreparedBase, rejectSandboxImageSelection } from "@open-managed-agents/sandbox";
+import { rejectSandboxImageSelection } from "@open-managed-agents/sandbox";
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import { Readable, Writable } from "node:stream";
@@ -752,7 +752,6 @@ export async function createSpritesSandbox(
 export const sandboxFactory: SandboxFactory = Object.assign(async (context: SandboxFactoryContext, environment: SandboxFactoryEnv) => {
   // Sprites boot a fixed preinstalled runtime; there is no per-session image.
   rejectSandboxImageSelection("sprites", context.image);
-  rejectPreparedBase("sprites", context.preparedBase);
   return createSpritesSandbox(context, environment);
 }, { capabilities: { allocationIsolation: true } });
 

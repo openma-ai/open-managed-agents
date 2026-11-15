@@ -5,11 +5,11 @@ export default defineConfig({
   test: {
     pool: "threads",
     environment: "node",
-    include: ["apps/agent/tests/acp-recovery.test.ts"],
+    include: ["packages/agent-harness/test/acp-recovery.test.ts"],
     testTimeout: 30_000,
     coverage: {
       provider: "v8",
-      include: ["apps/agent/src/harness/acp-recovery.ts"],
+      include: ["packages/agent-harness/src/acp-recovery.ts"],
       reporter: ["text", "json-summary"],
       reportsDirectory: "coverage/acp-recovery",
       thresholds: {

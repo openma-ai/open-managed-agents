@@ -1,3 +1,4 @@
+export { isMcpToolEnabled, type McpToolSelectionConfig } from "./tool-selection";
 export type {
   McpClientPort,
   McpContentBlock,

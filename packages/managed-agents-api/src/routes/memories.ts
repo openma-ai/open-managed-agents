@@ -3,7 +3,6 @@ import {
   resolveApplicationPort,
   type ApplicationPortSource,
 } from "../application-port-source";
-import { AGENT_MEMORY_BETA, requireBeta } from "../beta";
 import {
   deletedMemoryResponseSchema,
   memoryCreateBodySchema,
@@ -44,7 +43,6 @@ export function buildMemoryRoutes(
   source: ApplicationPortSource<MemoriesApplicationPort>,
 ): Hono {
   const app = new Hono();
-  app.use("*", requireBeta(AGENT_MEMORY_BETA));
 
   app.post("/:memoryStoreId/memories", async (c) => {
     const query = memoryProjectionQuerySchema.safeParse({

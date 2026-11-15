@@ -22,7 +22,7 @@ Below: each call site that depends on event ordering, with file:line, and the ki
 
 | Path | File:line | Dependency |
 |---|---|---|
-| LLM context build (primary) | `apps/agent/src/harness/default-loop.ts:303-304` → `apps/agent/src/runtime/history.ts:497` (`SqliteHistory.getMessages`) → `history.ts:45` (`eventsToMessages`) | Walks `history.getEvents()` *strictly in returned order*, builds ModelMessage[]. |
+| LLM context build (primary) | `packages/agent-harness/src/pi-loop.ts` → `apps/agent/src/runtime/history.ts` (`SqliteHistory.getMessages`) → `packages/agent-harness/src/history/events-to-messages.ts` | Walks `history.getEvents()` *strictly in returned order*, builds the Pi message context. |
 | `SqliteHistory.getEvents` | `apps/agent/src/runtime/history.ts:487` → `packages/event-log/src/cf-do/index.ts:214-246` | `SELECT … FROM events ORDER BY seq` — there is no other ordering option exposed. |
 | Compaction window build | `apps/agent/src/harness/compaction.ts:137,159,318,340` | All call `eventsToMessages(events)` — same projection as LLM context. |
 | Sub-agent in-memory replay | `apps/agent/src/runtime/session-do.ts:3556` `new InMemoryHistory()` then `subHistory.append(userMsg)` then `harness.run(subCtx)` ← derives via `subHistory.getMessages()` → `eventsToMessages(this.getEvents())` (`history.ts:518`). | InMemoryEventLog `getEvents()` returns `_rows` in push order (`packages/event-log/src/memory/index.ts:92`). |

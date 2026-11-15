@@ -1,0 +1,33 @@
+{
+  "reviewedCommit": "5e19ec97bfc82895495eaaba44e7a928782006f3",
+  "reviewEvidence": "node_modules/.review-attribution/e2b-locator-5e19ec97/ (unchanged)",
+  "fixes": [
+    "Restored handles send requireBound=true; launcher requires its stored target identity, and rejects any caller-supplied identity for an unbound legacy target. Legacy returned handles still use identity-free local status/kill.",
+    "Explicit destroy has separate permanent managedDestroyed state, checked before Files I/O for inspect/restore/start; tracks in-flight recovery requests, discards results after close, waits before provider kill. Unknown dispatch closes starts only and retains exact recovery."
+  ],
+  "validation": {
+    "red": [
+      "unbound forged locator actual Linux adapter restore resolved unexpectedly",
+      "post-destroy inspect performed unexpected Files I/O",
+      "in-flight restore returned handle after destroy"
+    ],
+    "green": [
+      "actual Linux adapter rejects forged unbound locator; original legacy handle still running and usable",
+      "actual Linux live worker survives failed destroy while new closed adapter inspect/restore perform zero Files I/O",
+      "in-flight inspect and restore rejected after close; provider kill waits",
+      "unknown dispatch still exact inspect/restore permitted; new start rejected",
+      "A-newadapter-restore-kill-B-staleA regression PASS",
+      "locator restart/mismatch/secret/private directory regression PASS",
+      "flock and six original Linux native regressions PASS"
+    ],
+    "package": "77 PASS / 5 SKIP",
+    "typecheck": "PASS",
+    "diffCheck": "PASS"
+  },
+  "scope": "E2B package only, no Node/shared edits",
+  "limits": [
+    "No independent review PASS claimed; awaiting rereview.",
+    "No new cloud build/deploy/push or stack.lock.",
+    "Exact restore does not provide atomic cloud claim authorization; caller fence remains required."
+  ]
+}

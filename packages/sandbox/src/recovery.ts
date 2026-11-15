@@ -163,6 +163,9 @@ export function withSandboxRecovery(options: SandboxRecoveryOptions): SandboxRec
 
   /** Turn an operation failure into a replacement when the sandbox is gone. */
   const recover = async (used: SandboxPort, error: unknown): Promise<never> => {
+    // External commit certainty belongs to the dispatched operation, not to
+    // sandbox liveness. Replacement must not erase the authorization boundary.
+    if (error !== null && typeof error === "object" && "outcome" in error && error.outcome === "dispatched_unknown") throw error;
     if (failure !== null) throw failure;
     let lost = used !== options.current();
     if (!lost) lost = (await probe(used)) === "lost";

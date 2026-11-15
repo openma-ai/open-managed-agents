@@ -331,15 +331,16 @@ spilled blobs from extinct sessions don't sit in storage forever.
 Sandbox containers default to `instance_type: standard-1` (1 vCPU, 4 GB
 RAM, 4 GB disk). Heavy `pip install` of ML libraries, large data files
 loaded into pandas, or anything that mmap's a multi-GB blob will OOM.
-The container exits, which triggers `onActivityExpired` →
-`snapshotWorkspaceNow` → `super.onActivityExpired` → graceful stop;
-the next session warmup picks up the most recent backup.
+The container exits without a snapshot, so `/workspace` changes since the
+latest backup are lost. The next warmup starts a new container and
+restores the latest backup, written when the previous container went idle
+or the session was destroyed.
 
 If your workload routinely OOMs, bump `instance_type` to `standard-2`
 (2 vCPU, 8 GB RAM) or `standard-4` (4 vCPU, 16 GB RAM) in
 `apps/agent/wrangler.template.jsonc`. Watch the `containers` dataset
 in observability for `Container exited (code: 137)` (SIGKILL, usually
-OOM) vs `Container exited (code: 0)` (graceful sleepAfter).
+OOM) vs `Container exited (code: 0)` (graceful idle stop).
 
 ### R2 bucket lifecycles
 

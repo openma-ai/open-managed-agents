@@ -1,6 +1,8 @@
 # ADR 0005: AMA-compatible workers with provider-neutral runtime resources
 
-**Status**: Accepted (2026-09-03)  
+**Status**: Accepted (2026-09-03); amended 2026-11-09 — the Environment Work
+claim is the self-hosted lane's only authority; `runtime_resource_fences` is
+removed  
 **Deciders**: Engineering  
 **Supersedes**: None  
 **Related**: [`v1-architecture.md`](../v1-architecture.md),
@@ -84,11 +86,34 @@ The Managed Agents API remains the canonical public protocol:
 The per-work Session bearer is an exact capability projection of the resolved
 Session snapshot. It may retrieve the claimed Session and its events, declared
 skills, attached files, attached Memory Stores with their declared access
-mode, the bound MCP gateway, and its own Work heartbeat/stop endpoints. It may
+mode, and its own Work heartbeat/stop endpoints. Model and MCP access use the
+existing attempt-scoped `oma_sbx` capability, never this Work bearer. It may
 not list/upload/delete files, cross to another Session or resource, or mutate a
 read-only Memory Store. Claim rotation fences the previous bearer against all
 of these routes. A sandbox egress adapter may narrow the reachable route
 families further, but the API-side live-claim check remains authoritative.
+
+### Unified execution lifecycle and placement
+
+MA and ACP placements use the Environment Worker claim/ACK, CAS heartbeat,
+lease loss, recovery, interrupt and settlement lifecycle. Placement changes
+only event-input/event-output adapters and the existing Session capability
+scope; it does not introduce an ACP-specific worker, lease or recovery ledger.
+Provider runtime Ports retain allocation, attach/resume, resource/storage,
+snapshot, idle management and process bootstrap/stop/status. They do not carry
+ACP session stdin/stdout/SSE across the provider boundary. A sandbox supervisor
+uses the existing Work HTTP control channel over outbound HTTP; ACP stdio stays
+local between that supervisor and its child. No public sandbox ingress is needed.
+
+Execution heartbeat is the existing Work claim CAS renewal, not a native
+process-alive check or provider keepalive. Lease loss cancels execution and old
+attempt writes remain fenced. Provider liveness and idle timers remain resource
+management only. The Work bearer cannot authorize model/MCP calls; those use
+the existing unique attempt holder, shared on the same physical sandbox and
+rotated without grace when the physical sandbox changes. Scope cannot be
+elevated and sharing that holder does not merge parent/child agent permissions.
+MA child threads reuse the parent execution context and their existing thread
+event history. This boundary does not relocate the external MA model loop.
 
 Memory Store ownership has exactly two lanes. An unmodified `ama_worker` owns
 download and read-write synchronization through Anthropic's SDK; OpenMA does
@@ -97,8 +122,8 @@ same responsibility to `SessionInputMaterializerPort`: `materialize` prepares
 the mount and baseline, while `synchronize` runs periodically and immediately
 before workspace publication. The Port sees Session-scoped operations, never
 the raw bearer. A writable attachment uses create/update/delete CAS, treats a
-rename as create-before-delete, and rechecks `RuntimeResourceFencePort` before
-each canonical mutation. A reclaimed process can reuse the baseline saved in
+rename as create-before-delete, and rechecks the Environment Work claim
+(`EnvironmentWorkClaimPort.isCurrent`) before each canonical mutation. A reclaimed process can reuse the baseline saved in
 the durable workspace; retries after partial success are idempotent because the
 next pass re-lists and rebases to the canonical winner.
 
@@ -107,8 +132,8 @@ If both a sandbox and its last unpublished workspace checkpoint disappear,
 edits made after the most recent periodic sync can still be lost; the default
 exposure window is 15 seconds plus provider termination/detection latency.
 Conversely, a stale sandbox may keep changing its private filesystem briefly,
-but Session-token rotation and per-mutation resource fencing prevent it from
-committing Memory or publishing workspace/output candidates after reclaim.
+but Session-token rotation and the per-mutation Work-claim check prevent it
+from committing Memory or publishing workspace/output candidates after reclaim.
 
 The Work lease is authoritative for the worker-facing control-plane
 operations. An unmodified AMA hands worker does not own the model loop: it
@@ -390,17 +415,17 @@ cannot snapshot memory remains fully conformant.
 The Runtime Host does not collapse unrelated failure domains into one
 heartbeat:
 
-1. AMA Work heartbeat keeps the official worker claim alive and gates accepted
-   tool-result events.
-2. Runtime resource fencing gates atomic publication of workspace and output
-   candidates.
-3. A supervised harness heartbeat reports the health of the process inside the
+1. AMA Work heartbeat keeps the official worker claim alive. That one claim
+   gates accepted tool-result events, Session writes, the sandbox token, and
+   the atomic publication of workspace and output candidates.
+2. A supervised harness heartbeat reports the health of the process inside the
    sandbox. Direct `ama_worker` drivers have only process/container liveness.
 
-Losing either authoritative lease aborts the harness driver. The Runtime Host
-continues resource-fence heartbeats through drain, checkpoint, output
-collection, and the atomic publication—not only while the harness command is
-running.
+Losing the Work claim (heartbeat `412`, a reclaim by another worker, force
+stop, or lease expiry) aborts the harness driver. The Runtime Host keeps
+checking the claim (`EnvironmentWorkClaimPort.isCurrent`) through drain,
+checkpoint, output collection, and the atomic publication—not only while the
+harness command is running. There is no second resource lease to renew.
 
 ### Session execution ownership across Cloudflare and Node
 
@@ -429,12 +454,14 @@ structural singleton, so an accepted actionable Event batch is atomically
 written to the event log and `managed_session_executions`; any replica may
 then claim it under a renewable lease.
 
-`managed_session_executions` is Node runtime infrastructure, not a Managed
-Agents resource. It is present only in the Node PostgreSQL and SQLite schema
-barrels and migrations. It does not add a field to `managed_sessions`, change
-an SDK response, or appear in the Cloudflare D1 schema. A Redis, queue, or
-external scheduler adapter may implement `SessionExecutionCoordinatorPort`
-without this table.
+`managed_session_executions` is runtime infrastructure, not a Managed Agents
+resource. It is present in the Node PostgreSQL and SQLite schemas and in the
+Cloudflare D1 schema (`apps/main/migrations/0020`): on Cloudflare the
+SessionDO's execution host records each attempt there, and that attempt is the
+Session execution lease that sandbox tokens and egress are bound to. It does
+not add a field to `managed_sessions` or change an SDK response. A Redis,
+queue, or external scheduler adapter may implement
+`SessionExecutionCoordinatorPort` without this table.
 
 The Node coordinator guarantees:
 
@@ -443,7 +470,8 @@ The Node coordinator guarantees:
 2. strict FIFO within a Session and parallel claims across Sessions;
 3. one winning claim generation, renewable only by its owner/attempt;
 4. expired attempts may be reclaimed only by a different live owner;
-5. interrupt intent is durable, cancels queued work, and is observed through
+5. interrupt intent is durable, cancels only the running attempt (queued work
+   survives and runs as the lane's next turns), and is observed through
    renewal by a running owner;
 6. every canonical runtime projection is committed with the execution fence,
    so an expired generation cannot append accepted output.
@@ -466,23 +494,32 @@ continue speculatively.
 Harness placement selects exactly one execution authority:
 
 ```text
-harness outside sandbox
-  SessionExecution claim
-    └─ harness executor
-         └─ optional sandbox/resource publication fence
+cloud Session
+  SessionExecution attempt (managed_session_executions)
+    └─ harness executor, sandbox token, egress, publication
 
 harness inside self-hosted sandbox
-  official Environment Work claim
+  official Environment Work claim (managed_environment_work)
     └─ one sandbox executor (supervisor + harness + tools)
-         └─ resource publication fence
+         └─ sandbox token, egress, publication
 ```
 
-The in-sandbox lane does not acquire a second `SessionExecution` claim. Its
-Environment Work lease is the sole scheduling authority for the combined
-sandbox and harness attempt. `RuntimeResourceFence` is subordinate publication
-authority for workspace/checkpoint/output candidates, not another scheduler
-or executor. The supervisor heartbeat is process-health evidence, not an
-ownership claim.
+Each lane has exactly one lease and nothing else fences it. The in-sandbox lane
+does not acquire a `SessionExecution` claim, and it has no separate resource
+fence: the Environment Work claim—`claim_generation`, the claim's Work token,
+and the `claim_at + heartbeat_ttl_seconds` lease the official heartbeat
+enforces with `412`—is the sole authority for the combined sandbox and
+harness attempt. `RuntimeResourceFence` remains only as the argument shape the
+host passes to resource Ports; on this lane it is derived from the open claim
+and has no storage of its own. The supervisor heartbeat is process-health
+evidence, not an ownership claim.
+
+The restore pointer (the active workspace/output candidates and runtime
+checkpoint) is stored on the Work row in `runtime_publication_json` and is
+advanced by a compare-and-set on that column, predicated on the current claim.
+It does not bump the Work `revision`, so it never contends with the control
+plane's optimistic Work writes. The `runtime_resource_fences` table and its
+SQL Port were removed; no replacement fence exists.
 
 Both scheduling planes use the same internal lease-controller semantics for
 serialized renewal, transient-failure deadlines, cancellation, graceful stop,
@@ -497,6 +534,15 @@ the previous executor immediately even if its sealed token has not reached its
 cryptographic expiry. The current token may still reach Work heartbeat/stop
 after TTL so the official endpoint can return `412` or complete cleanup; it
 cannot use that grace path to append Session Events.
+
+A sandbox token (`oma_sbx_`) issued for self-hosted Work follows the same
+claim. Its hashes live on the Work row (`sandbox_token_hashes`); a claim
+clears them in the same statement that bumps `claim_generation`. The token
+verifies only while that claim is current and the Work is `starting` or
+`active` within its heartbeat lease, so a heartbeat `412`, a reclaim, a
+stop, or the end of the Work makes it fail with `401`, and the next claim
+signs a new token. Cloud Sessions keep their sandbox token on the Session
+execution attempt instead.
 
 ## Capability negotiation
 
@@ -536,7 +582,7 @@ configuration. Preset factories may make the common cases concise:
 ```ts
 createCloudflareManagedRuntime({ ...bindings });
 createE2BManagedRuntime({ ...credentials });
-createNodeManagedRuntime({ sql, docker, workspaceRoot, outputRoot });
+createNodeManagedRuntime({ sql, claims, docker, workspaceRoot, outputRoot });
 ```
 
 The factories preinstall adapters and validate capabilities; the core Runtime
@@ -545,8 +591,11 @@ Host still depends only on Ports.
 The current package split is:
 
 - `runtime-resource-contract`: provider-free Ports and capability profiles;
-- `runtime-resource-fence-sql`: atomic generation fencing for SQLite,
-  PostgreSQL, and Cloudflare D1 through the common `SqlClient`;
+- `environment-work-store-sql`: the Work store and `SqlEnvironmentWorkClaimPort`,
+  the host's claim check and restore-pointer CAS on `managed_environment_work`
+  for SQLite, PostgreSQL, and Cloudflare D1 through the common `SqlClient`;
+- `sandbox-orphan-store-sql`: the durable orphan queue
+  (`runtime_resource_orphans`);
 - `managed-runtime-host`: planning and lifecycle orchestration;
 - `managed-runtime-sandbox`: adapter bridge for existing sandbox providers;
 - `managed-runtime-node`: Docker/filesystem reference composition;
@@ -588,12 +637,17 @@ runtime retention is not described as durable workspace persistence, and a
 plain session output mount is not described as fenced finalization unless its
 publication path is generation-scoped and atomically committed.
 
-The Cloudflare full preset preinstalls D1 fencing and the durable orphan queue,
+The Cloudflare full preset preinstalls the Work-claim Port over each
+workspace's tenant D1 and the durable orphan queue,
 Sandbox DO compute, R2 output candidates, and both the direct AMA and supervised
 harness drivers. The E2B resource preset preinstalls durable output collection
 only when a complete S3-compatible `FILES_S3_*` target (or an explicit
 `outputStore`) is configured. Node/Docker remains the executable reference
-composition and can initialize the SQL schema explicitly for local deployments.
+composition and can initialize the orphan schema explicitly for local
+deployments. Its default claim Port reads `managed_environment_work` through
+the supplied `sql`, so it requires the host to share the control plane
+database; a host that reaches the control plane only over the Work API must
+inject an `EnvironmentWorkClaimPort`.
 
 All final-collector implementations verify file bytes again after enumeration.
 An existing content-addressed blob is accepted as an idempotent retry only when
@@ -652,7 +706,7 @@ network timeout, cancellation deadline, and termination deadline.
 
 The orphan record contains the resource scope, generation, owner, serialized
 provider/runtime identity, reason, attempt count, and bounded last error. It
-never contains the resource fence token. A reaper can therefore reconnect and
+never contains the claim's Work token. A reaper can therefore reconnect and
 destroy provider compute after a host crash without gaining authority to
 publish workspace or output state.
 

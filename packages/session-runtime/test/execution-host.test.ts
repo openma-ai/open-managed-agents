@@ -69,7 +69,7 @@ function store(overrides: Partial<SessionExecutionStorePort> = {}) {
     })),
     requestInterrupt: vi.fn(),
     cancelQueued: vi.fn(),
-    steerQueued: vi.fn(),
+    steerPendingExecution: vi.fn(),
     listQueued: vi.fn(async () => []),
     cancelSession: vi.fn(),
     find: vi.fn(),
@@ -97,6 +97,36 @@ function manualTimers() {
 }
 
 describe("SessionExecutionHost", () => {
+  it("leaves a confirmed execution loss reclaimable instead of settling failed", async () => {
+    const { SessionExecutionLostError } = await import("@open-managed-agents/session-runtime-contract/coordination");
+    const persistence = store();
+    const host = new SessionExecutionHost({ store: persistence, scope: { workspaceId: "workspace_01", sessionId: "session_01" },
+      ownerId: "owner_01", clock: { now: () => new Date(now) }, ids: { nextAttemptId: () => "attempt_01" } });
+    const result = await host.runOne(async () => { throw new SessionExecutionLostError("sandbox_gone"); });
+    expect(result.type).toBe("lost");
+    expect(persistence.settle).not.toHaveBeenCalled();
+  });
+  it.each([false, true])("retries a renew outage until actual lease expiry (expired: %s)", async expired => {
+    const timers = manualTimers();
+    let outage = true;
+    let currentMs = Date.parse(now);
+    const proof = fence();
+    const persistence = store({ renew: async () => {
+      if (outage) throw new Error("storage offline");
+      return { type: "renewed", fence: proof, interruptRequestedAt: null };
+    } });
+    const host = new SessionExecutionHost({ store: persistence, scope: { workspaceId: "workspace_01", sessionId: "session_01" },
+      ownerId: "owner_01", clock: { now: () => new Date(currentMs) }, ids: { nextAttemptId: () => "attempt_01" }, timers: timers.timers });
+    const result = await host.runOne(async (_execution, _fence, signal) => {
+      currentMs = Date.parse(proof.expiresAt) - 1;
+      await timers.tick();
+      expect(signal.aborted).toBe(false);
+      if (expired) { currentMs += 1; await timers.tick(); expect(signal.aborted).toBe(true); }
+      outage = false;
+    });
+    expect(result.type).toBe(expired ? "lost" : "completed");
+    expect(persistence.settle).toHaveBeenCalledTimes(expired ? 0 : 1);
+  });
   it("claims only its configured lane, proves ownership before commit, and settles", async () => {
     const persistence = store();
     const host = new SessionExecutionHost({
@@ -307,4 +337,45 @@ describe("SessionExecutionHost", () => {
     }));
   });
 
+
+  it("drains a lane until empty, admitting unclaimed input once, and stops on failure", async () => {
+    const results = ["completed", "cancelled", "empty", "failed"];
+    const claims: boolean[] = [];
+    const host = new SessionExecutionHost({
+      store: store(), scope: { workspaceId: "workspace_01", sessionId: "session_01", laneId: "sthr_primary" },
+      ownerId: "owner_01", clock: { now: () => new Date(now) }, ids: { nextAttemptId: () => "attempt_01" },
+      timers: manualTimers().timers,
+    });
+    host.runOne = vi.fn(async (_run, options) => {
+      claims.push(options?.continuationsOnly === true);
+      const type = results.shift();
+      if (type === "empty") return { type: "empty" as const };
+      if (type === "failed") return { type: "failed" as const, execution: execution(), error: new Error("boom") };
+      return { type: type as "completed" | "cancelled", execution: execution() };
+    });
+    let admitted = 0;
+    const failures: string[] = [];
+    await host.drainLane({
+      run: async () => undefined,
+      beforeClaim: () => claims.length === 0,
+      admitUnclaimed: async () => ++admitted === 1,
+      failed: (error) => { failures.push(error.message); },
+      lost: () => { throw new Error("not lost"); },
+    });
+    expect(claims).toEqual([true, false, false, false]);
+    expect(admitted).toBe(1);
+    expect(failures).toEqual(["boom"]);
+  });
+
+  it("stops draining when the lane is empty and nothing is admitted", async () => {
+    const host = new SessionExecutionHost({
+      store: store({ claim: vi.fn(async () => ({ type: "empty" as const })) }),
+      scope: { workspaceId: "workspace_01", sessionId: "session_01", laneId: "sthr_primary" },
+      ownerId: "owner_01", clock: { now: () => new Date(now) }, ids: { nextAttemptId: () => "attempt_01" },
+      timers: manualTimers().timers,
+    });
+    const lost = vi.fn();
+    await host.drainLane({ run: async () => undefined, beforeClaim: () => false, admitUnclaimed: async () => false, failed: lost, lost });
+    expect(lost).not.toHaveBeenCalled();
+  });
 });

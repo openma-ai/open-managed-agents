@@ -51,6 +51,15 @@ boolean `supportsProxy` would overstate security:
 | Node/Docker | isolated Docker network with a dual-homed egress sidecar or host netns policy | ordinary proxy environment variables are advisory and bypassable |
 | Local subprocess | no isolation boundary | local trusted-debug only; never claim enforced Vault egress |
 
+## Managed guest sudo policy clarification (2026-11-13)
+
+The [managed guest privilege policy](../managed-guest-privileges.md) permits
+explicit guest sudo. Guest UID separation cannot satisfy the secret-hiding
+requirement above for credentials resident in that guest. Root-only files,
+management process environments and in-guest proxies remain inspectable by
+guest root. Required enforcement must be outside the guest; no host credentials,
+network authorization or privileged-container settings are broadened here.
+
 ## Decision
 
 ### Preserve the official protocol exactly
@@ -175,6 +184,53 @@ stolen from a compromised active sandbox. Its safety comes from narrow API
 scope and immediate claim fencing, not secrecy. It never authorizes Vault reads
 or becomes the upstream MCP header; the gateway replaces it. Deployments still
 need rate limits and should keep heartbeat TTLs short.
+
+### Managed sandbox token (#561)
+
+An OpenMA-managed execution attempt hands its sandbox exactly one opaque
+token, shared by the model gateway, MCP gateway, sandbox API and Vault egress:
+`oma_sbx_` + 43 base62 random characters + 6 base62 CRC32 characters. The
+token carries no Session data. A token with a bad shape or checksum is rejected
+without a database read. The Session id travels on its own channel: in the path
+for the model and MCP gateways, and as the Basic user name
+(`Basic base64(<sessionId>:<token>)`) for the sandbox API and egress.
+
+Only the SHA-256 of the random part is stored, as `{h, s}` entries in
+`managed_session_executions.sandbox_token_hashes` on the attempt row. Every
+request reads that row directly (no cache, no Session snapshot), and a single
+read checks Session, attempt, hash, lease and scope together. Claim, requeue,
+settle and interrupt-finalize clear the column, so the fence is unchanged:
+losing the attempt revokes every token issued for it. Each attempt receives
+a new token. Repeated delivery to the same physical sandbox reuses it. A new
+physical incarnation in the same attempt (or a lost in-memory holder after host
+restart) rotates it: a compare-and-set atomically replaces the entire column
+with one hash, so the old token immediately stops authorizing new requests.
+No plaintext token is persisted for recovery.
+
+`s` is the scope, chosen at issue from where the harness runs: `all` for a
+harness inside the sandbox (`acp-sandbox`), `egress` for a harness outside
+it. The model gateway, MCP gateway and sandbox API admit only `all`; egress
+admits `all` or `egress`. An entry whose scope is missing or unknown is
+rejected, with no permissive default. A re-issue keeps the attempt's scope.
+
+A store error is `503` (retryable); only a definite rejection is `401`. The
+egress forwarder holds the token in memory only and exits only on `401`.
+The bundled forwarder listens on the fixed loopback address `127.0.0.1:18080`
+(`SANDBOX_RELAY_PORT` in `sandbox-egress/src/relay-port.ts`). All proxy
+environment variables use that address, so background processes reconnect
+after a relay restart and use the current attempt binding. An occupied port
+fails installation with the port number; it never selects a random alternative.
+Local-subprocess sandboxes share the host network. At acquisition each
+allocates a loopback port and persists it in its sandbox state
+(`.oma-relay-port`). Relay restarts reuse that port. Occupancy is an error,
+not a reason to allocate another port. This per-sandbox exception was selected
+by the coordinating agent; it is not a user-selected global-port change.
+
+No compatibility path: the pre-#561 HMAC relay passes and sealed
+`sk-ant-req-v1.` execution `sessions_token`s are neither issued nor
+accepted. A sealed `sk-ant-req-v1.` bearer is accepted only as the official
+self-hosted Work `sessions_token` above, checked against the current Work
+claim.
 
 ## Provider mapping
 

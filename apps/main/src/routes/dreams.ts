@@ -14,17 +14,9 @@ import {
 } from "@open-managed-agents/dreams-store";
 import { pickCurator, runDream } from "@open-managed-agents/dreams-pipeline";
 import { cfLegacyDreamCredentialResolver } from "../lib/workspace-model-credentials";
-import {
-  DREAMING_BETA,
-  MANAGED_AGENTS_BETA,
-  requireBetas,
-} from "../lib/beta-header";
 
 // REST surface for Managed Agents Dreams.
 // Spec: https://platform.claude.com/docs/en/managed-agents/dreams
-//
-// All endpoints are gated by the `managed-agents-2026-04-01` + `dreaming-2026-04-21`
-// beta headers (per spec). The SDK sets these automatically.
 //
 // Lifecycle is driven entirely by DreamService + the runner — this file is
 // only a thin marshal layer. POST /v1/dreams kicks the runner via
@@ -34,8 +26,6 @@ const app = new Hono<{
   Bindings: Env;
   Variables: { tenant_id: string; services: Services };
 }>();
-
-app.use("*", requireBetas([MANAGED_AGENTS_BETA, DREAMING_BETA]));
 
 // ============================================================
 // POST /v1/dreams — create a dream + kick the pipeline

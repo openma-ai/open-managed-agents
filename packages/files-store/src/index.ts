@@ -36,3 +36,5 @@ export type {
   UnifiedPageError,
   UnifiedPageResult,
 } from "./unified-page";
+
+export { withPublishedSessionFiles } from "./published-files";

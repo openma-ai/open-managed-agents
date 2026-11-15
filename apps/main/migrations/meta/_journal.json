@@ -190,6 +190,48 @@
       "when": 1793521171327,
       "tag": "0026_closed_tempest",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "6",
+      "when": 1794168375061,
+      "tag": "0027_runtime_resource_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "6",
+      "when": 1794189207752,
+      "tag": "0028_sandbox_token_hashes",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "6",
+      "when": 1794206575048,
+      "tag": "0029_work_claim_publication",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "6",
+      "when": 1794224138567,
+      "tag": "0030_retire_resource_fences",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "6",
+      "when": 1794300000000,
+      "tag": "0031_work_inputs",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "6",
+      "when": 1794556800000,
+      "tag": "0032_custom_invocations",
+      "breakpoints": true
     }
   ]
 }

@@ -56,6 +56,8 @@ export interface KvListResult {
  */
 export interface KvStore {
   get(key: string): Promise<string | null>;
+  /** Strong stores only: atomically compare and replace a document. */
+  compareAndSwap?(key: string, expected: string | null, value: string | null): Promise<boolean>;
 
   put(key: string, value: string, opts?: KvPutOptions): Promise<void>;
 

@@ -29,6 +29,8 @@ export const managed_session_executions = sqliteTable(
     settled_at_ms: integer("settled_at_ms"),
     failure: text("failure"),
     held_after_exhausted_ms: integer("held_after_exhausted_ms"),
+    /** JSON array of the attempt's sandbox token SHA-256s (#561); reset with the attempt. */
+    sandbox_token_hashes: text("sandbox_token_hashes"),
     revision: integer("revision").notNull().default(1),
   },
   (table) => [

@@ -38,6 +38,21 @@ function box(name: string): BoxLiteBoxSdkPort {
 }
 
 export class JsBoxlite implements BoxLiteClientPort {
+  readonly checkpoints = {
+    create: async (source: string, name?: string | null) => ({
+      id: `checkpoint-${source}`,
+      name: name ?? "checkpoint",
+      sourceBoxId: source,
+      state: "ready" as const,
+    }),
+    get: async (id: string) => ({
+      id,
+      name: id,
+      sourceBoxId: "source",
+      state: "ready" as const,
+    }),
+  };
+
   constructor(options?: { homeDir?: string }) {
     fixtureCalls.push({ type: "constructor", input: options });
   }

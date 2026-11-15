@@ -1,7 +1,8 @@
 /**
  * Selection of managed (`/v1` Vault) credentials for a Session: MCP servers
- * by server URL, sandbox egress by hostname, and the CLI placeholder
- * environment. Pure functions over stored records.
+ * by server URL and sandbox egress by hostname. Pure functions over stored
+ * records. Sandbox placeholders: @open-managed-agents/sandbox-gateway
+ * compileVaultSubstitutions.
  */
 import type { CapSpec, HeaderInjectSpec, SpecRegistry } from "@open-managed-agents/cap";
 import type { StoredCredential } from "@open-managed-agents/credential-store";
@@ -155,30 +156,4 @@ export function selectOutboundTarget(
   if (best === null) return null;
   const refresh = mcpOAuthRefresh(best.credential);
   return { upstreamUrl: best.url, upstreamToken: best.token, ...(refresh && { refresh }) };
-}
-
-/**
- * Sandbox placeholder environment: each active `cap_cli` credential
- * contributes its CLI spec's `bootstrap.env` (e.g. `GITHUB_TOKEN=__cap_managed__`)
- * so CLIs that refuse to start without a token still dial out; the egress
- * proxy swaps in the real token. Tokens never appear here. The first
- * credential to set a name wins.
- */
-export function placeholderEnvironment(
-  records: readonly StoredCredential[],
-  registry: SpecRegistry,
-): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const { credential } of records) {
-    const auth = credential.auth;
-    if (credential.archivedAt !== null || auth.type !== "cap_cli") continue;
-    const spec = registry.byCliId(auth.cliId);
-    if (spec === null) {
-      throw new Error(`cap_cli credential ${credential.id} names unknown cli_id "${auth.cliId}"`);
-    }
-    for (const [name, value] of Object.entries(spec.bootstrap?.env ?? {})) {
-      if (!(name in env)) env[name] = value;
-    }
-  }
-  return env;
 }

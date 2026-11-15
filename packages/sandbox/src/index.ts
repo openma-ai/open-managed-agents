@@ -1,7 +1,11 @@
-export { supportsCredentialEgress, DEFAULT_WORKSPACE_ROOT, PLATFORM_ROOT, workspaceRootFromProbe, workspaceRootOf } from "./ports";
-export type { SandboxCredentialEgressBinding, SandboxCredentialEgressPort } from "./ports";
+// Sandbox-visible resource conventions are owned by the existing core contract.
+export { SESSION_SKILLS_ROOT, SESSION_OUTPUTS_PATH, sessionSkillVersionRoot, sessionOutputsReminder } from "@open-managed-agents/runtime-resource-contract";
+export { DEFAULT_WORKSPACE_ROOT, PLATFORM_ROOT, workspaceRootFromProbe, workspaceRootOf } from "./ports";
 export type {
   ProcessHandle,
+  SandboxManagedProcessSpec,
+  SandboxManagedProcessHandle,
+  SandboxManagedProcessPort,
   SandboxDuplexProcess,
   SandboxDuplexProcessPort,
   SandboxDuplexProcessSpec,
@@ -9,9 +13,7 @@ export type {
   SandboxCheckpointKind,
   SandboxCheckpointScope,
   SandboxPort,
-  SandboxPreparedBaseHandle,
   SandboxFactoryCapabilities,
-  SandboxPreparedBasePort,
   SandboxExecutor,
   SandboxFactory,
   SandboxFactoryContext,
@@ -28,9 +30,7 @@ export type {
 export {
   supportsDuplexProcess,
   supportsManagedWorkspaceLifecycle,
-  supportsPreparedBase,
   withSandboxFactoryCapabilities,
-  rejectPreparedBase,
   supportsSandboxRuntime,
   supportsSessionOutputMount,
   supportsWorkspaceBackup,
@@ -73,6 +73,24 @@ export {
 } from "./orchestrator";
 
 export { createNoEnvironmentSandbox, isNoEnvironmentSandbox } from "./no-environment";
+
+// Sandbox SDK v2 domain contract: the three Ports the core calls.
+export { RetryableSandboxError, SandboxGoneError, SANDBOX_LEASE_MARGIN_MS, assertLeaseCoversIdle } from "./sandbox-ports";
+export type {
+  Acquired,
+  EgressPolicy,
+  EnvironmentSnapshotRef,
+  HostPattern,
+  MemoryStoreBinding,
+  ResumeRef,
+  SandboxEgressPort,
+  SandboxHandle,
+  SandboxLifecyclePort,
+  SandboxPlan,
+  SandboxPorts,
+  SandboxStoragePort,
+  Substitution,
+} from "./sandbox-ports";
 export {
   createSandboxImageCatalog,
   EMPTY_SANDBOX_IMAGE_CATALOG,
@@ -92,6 +110,7 @@ export {
   buildAptScript,
   buildFullSetupScript,
   ENVIRONMENT_PACKAGE_PATHS,
+  environmentCommandPath,
   ensureEnvironmentPackages,
   hasEnvironmentPackages,
   parseExecResult,
@@ -104,3 +123,6 @@ export type {
   EnvironmentPackagesProgress,
   PackageSandbox,
 } from "./environment-packages";
+
+export { reconcileSandboxResourceEnvironment } from "./resource-environment";
+export type { SessionResourceFacts } from "@open-managed-agents/runtime-resource-contract";

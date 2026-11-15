@@ -16,7 +16,7 @@ export const geminiInferenceAdapter: InferenceConfigAdapter = {
       env: {
         GOOGLE_GEMINI_BASE_URL: baseUrl,
         GEMINI_API_KEY: "",
-        GEMINI_CLI_CUSTOM_HEADERS: `Authorization: Bearer {env:${proxy.proxyTokenEnvVar}}`,
+        GEMINI_CLI_CUSTOM_HEADERS: `Authorization: Bearer ${proxy.proxyToken}`,
       },
       unsetEnv: ["GOOGLE_API_KEY"],
       files: [{

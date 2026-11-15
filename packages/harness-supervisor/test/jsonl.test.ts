@@ -377,8 +377,8 @@ describe("harness supervisor JSONL protocol", () => {
     ],
     [
       "bad workspace",
-      JSON.stringify({ ...start, workspacePath: "/tmp" }),
-      /workspacePath must be \/workspace/,
+      JSON.stringify({ ...start, workspacePath: "relative/workspace" }),
+      /workspacePath must be an absolute path/,
     ],
     [
       "bad output",

@@ -17,7 +17,8 @@ vi.mock("../lib/auth", () => ({
 vi.mock("../lib/useApiQuery", () => ({
   useApiQuery: () => ({
     data: {
-      providers: [],
+      // This component contract exercises OTP as well as password auth.
+      providers: ["email", "email-otp"],
       turnstile_site_key: null,
     },
     error: null,

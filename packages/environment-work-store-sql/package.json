@@ -13,7 +13,9 @@
   "dependencies": {
     "@open-managed-agents/domain": "workspace:*",
     "@open-managed-agents/environment-work-store": "workspace:*",
-    "@open-managed-agents/sql-client": "workspace:*"
+    "@open-managed-agents/runtime-resource-contract": "workspace:*",
+    "@open-managed-agents/sql-client": "workspace:*",
+    "@open-managed-agents/shared": "workspace:*"
   },
   "devDependencies": {
     "vitest": "^5.0.5"

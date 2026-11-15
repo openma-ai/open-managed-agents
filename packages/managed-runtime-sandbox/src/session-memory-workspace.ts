@@ -182,12 +182,37 @@ export class SessionMemoryWorkspaceLifecycle {
     if (distrusted.length > 0) throw new SessionMemoryWorkspaceDistrustedError(distrusted);
   }
 
+  /**
+   * Interval / checkpoint barrier: write local creates, edits and deletes
+   * back with the same three-way CAS as {@link synchronize}, but never pull
+   * and never rewrite the directory, so a file the agent is editing is not
+   * replaced under it. Only paths whose local and canonical content now agree
+   * advance in the baseline; everything else keeps its previous ancestor for
+   * the next full {@link synchronize}. Read-only stores, and writable ones
+   * without a trusted marker and baseline, are left to that full sync.
+   */
+  async writeBack(input: SessionMemoryWorkspaceContext): Promise<void> {
+    if (input.resourceOwnership.memoryStore === "worker") return;
+    const attachments = memoryAttachments(input).filter((item) => item.access === "read_write");
+    if (attachments.length === 0) return;
+    const access = requireMemoryAccess(input);
+    for (const attachment of attachments) {
+      input.signal.throwIfAborted();
+      const manifest = await this.readManifest(input, attachment);
+      if (manifest === null) continue;
+      const local = await this.files.scan(attachment.mountPath, input.signal);
+      if (local === null || local.get(markerName) !== markerValue(attachment.memoryStoreId)) continue;
+      await this.reconcileOne(input, access, attachment, manifest, local, "write_back");
+    }
+  }
+
   private async reconcileOne(
     input: SessionMemoryWorkspaceContext,
     access: SessionMemoryAccessPort,
     attachment: MemoryAttachment,
     manifest: MemoryManifest,
     scanned: ReadonlyMap<string, string>,
+    mode: "rebase" | "write_back" = "rebase",
   ): Promise<void> {
     const baseline = new Map(manifest.baseline.map((item) => [item.path, item]));
     const local = new Map<string, { content: string; sha256: string }>();
@@ -274,10 +299,52 @@ export class SessionMemoryWorkspaceLifecycle {
       });
     }
 
+    if (mode === "write_back") {
+      await this.advanceWrittenBaseline(input, access, attachment, baseline, local);
+      return;
+    }
     // Re-list makes conflict/not-found responses idempotent: regardless of a
     // concurrent winner or a retry after partial success, disk and baseline
     // advance to exactly the current canonical state.
     await this.hydrate(input, access, attachment);
+  }
+
+  /** Write-back only: re-list once and advance the ancestor of each path
+   * whose local and canonical content agree (or that is gone on both sides);
+   * keep the previous ancestor for every other path. The directory is not
+   * touched, so the marker and the agent's in-progress files stay as they are. */
+  private async advanceWrittenBaseline(
+    input: SessionMemoryWorkspaceContext,
+    access: SessionMemoryAccessPort,
+    attachment: MemoryAttachment,
+    previous: ReadonlyMap<string, BaselineEntry>,
+    local: ReadonlyMap<string, { content: string; sha256: string }>,
+  ): Promise<void> {
+    const remote = byPath(await access.list({
+      memoryStoreId: attachment.memoryStoreId,
+      projection: "basic",
+      signal: input.signal,
+    }), false);
+    const baseline: BaselineEntry[] = [];
+    for (const path of new Set([...previous.keys(), ...local.keys()])) {
+      const current = remote.get(path);
+      const mine = local.get(path);
+      if (current !== undefined && mine !== undefined && current.contentSha256 === mine.sha256) {
+        baseline.push({ id: current.id, path, sha256: current.contentSha256 });
+        continue;
+      }
+      if (current === undefined && mine === undefined) continue;
+      const kept = previous.get(path);
+      if (kept !== undefined) baseline.push(kept);
+    }
+    baseline.sort((a, b) => a.path.localeCompare(b.path));
+    const manifest: MemoryManifest = {
+      version: manifestVersion,
+      memoryStoreId: attachment.memoryStoreId,
+      mountPath: attachment.mountPath,
+      baseline,
+    };
+    await this.files.write(manifestPath(input, attachment), JSON.stringify(manifest), input.signal);
   }
 
   private async hydrate(

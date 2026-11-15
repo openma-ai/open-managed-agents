@@ -1,0 +1,65 @@
+{
+  "$comment": "Tests that stay out of CI on purpose, each with its reason. scripts/check-test-wiring.mjs fails on an entry that matches nothing left out, so this list only shrinks; any new entry needs its reason in the PR description. BROKEN entries are tests found failing when the gate was added: fix them, then wire them and delete the entry.",
+  "entries": [
+    {
+      "pattern": "apps/main-node/scripts/acp-deepseek-native-cache.e2e.ts",
+      "reason": "live: DEEPSEEK_API_KEY and a local DSH ACP binary (main-node test:e2e:acp-deepseek-cache)"
+    },
+    {
+      "pattern": "apps/main-node/scripts/backchat-common-live.e2e.ts",
+      "reason": "live: running Backchat plus workspace and DeepSeek credentials (root test:live:backchat; its config resolver is unit-tested in CI by scripts/backchat-live-config.test.mjs)"
+    },
+    {
+      "pattern": "apps/main-node/scripts/harness-in-sandbox/live.e2e.ts",
+      "reason": "live: DEEPSEEK_API_KEY and a harness Docker image (main-node test:e2e:codex-acp-docker / test:e2e:mcode-acp-docker)"
+    },
+    {
+      "pattern": "apps/main-node/scripts/pi-acp-deepseek-docker.e2e.ts",
+      "reason": "live: DEEPSEEK_API_KEY and a Pi ACP Docker image (main-node test:e2e:pi-acp-docker)"
+    },
+    {
+      "pattern": "apps/main-node/scripts/pi-acp-deepseek-sprites.e2e.ts",
+      "reason": "live: DEEPSEEK_API_KEY and SPRITES_TOKEN (main-node test:e2e:pi-acp-sprites)"
+    },
+    {
+      "pattern": "apps/main-node/scripts/pi-deepseek-harness.e2e.ts",
+      "reason": "live: DEEPSEEK_API_KEY (main-node test:e2e:pi-deepseek)"
+    },
+    {
+      "pattern": "packages/managed-runtime-node/test/*.e2e.test.ts",
+      "reason": "real Docker containers; separate lane root test:integration:runtime (managed-runtime-node test:docker), not called by CI. Local run when this gate was added: docker-runtime and supervised-docker pass, official-worker-docker and supervised-acp-docker fail"
+    },
+    {
+      "pattern": "test/e2e/bridge-acp-flow.test.ts",
+      "reason": "live: production openma.dev, an authenticated oma CLI, an attached bridge daemon and locally installed ACP binaries (pnpm tsx, manual)"
+    },
+    {
+      "pattern": "test/e2e/bridge-setup-lifecycle.test.ts",
+      "reason": "live and destructive: staging credentials, installs and removes a real launchd/systemd service (OMA_E2E_BRIDGE=1, manual)"
+    },
+    {
+      "pattern": "apps/main-node/test/core-custom-mcp-kimi.native.test.ts",
+      "reason": "live: official Kimi executable (KIMI_OFFICIAL_EXECUTABLE) and an evidence directory (KIMI_BEHAVIOR_EVIDENCE, KIMI_BEHAVIOR_LABEL); the official-process Core custom-tool gate run by hand (apps/main-node/vitest.kimi-native.config.ts)"
+    },
+    {
+      "pattern": "apps/main-node/test/core-custom-mcp-work.native.test.ts",
+      "reason": "live: OMA_PI_ACP_ENTRY must point to the audited official @openma/pi-acp@0.1.8 distribution, which is not a workspace dependency (apps/main-node/vitest.mcp-native.config.ts, packages/managed-agents-adapters-sql/test/CUSTOM-AUTHORITY.md); optional CORE_MCP_DATABASE_URL for the dedicated-database variant"
+    },
+    {
+      "pattern": "packages/managed-agents-adapters-sql/test/pi-mcp-barrier.native.test.ts",
+      "reason": "live: OMA_PI_ACP_ENTRY must point to the audited official @openma/pi-acp@0.1.8 distribution, which is not a workspace dependency (packages/managed-agents-adapters-sql/vitest.native.config.ts)"
+    },
+    {
+      "pattern": "test/resource-convergence/environment-official-package.live-r2.node.ts",
+      "reason": "live: installs claude-acp@0.94.0 from registry.npmjs.org into an explicit task npm cache (RESOURCE_ACP_PACKAGE_CACHE); test/resource-convergence/vitest.live-r2.config.ts"
+    },
+    {
+      "pattern": "test/resource-convergence/memory-content-storage.live-r2.node.ts",
+      "reason": "credentials: real R2 FILES/MEMORY S3 endpoints from RESOURCE_R2_TASK_CREDENTIAL_FILE (test/resource-convergence/vitest.memory-r2.config.ts)"
+    },
+    {
+      "pattern": "test/resource-convergence/node-agent-resource-use.live-r2.node.ts",
+      "reason": "credentials: real R2 content backends from RESOURCE_R2_TASK_CREDENTIAL_FILE (test/resource-convergence/vitest.live-r2.config.ts); the local-blob variant node-agent-resource-use.node.ts runs in CI via test:resource-convergence:node"
+    }
+  ]
+}

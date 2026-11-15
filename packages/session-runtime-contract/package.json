@@ -11,7 +11,8 @@
     "./history": "./src/history.ts",
     "./lifecycle": "./src/lifecycle.ts",
     "./stream": "./src/stream.ts",
-    "./settle-events": "./src/settle-events.ts"
+    "./settle-events": "./src/settle-events.ts",
+    "./requires-action": "./src/requires-action.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

@@ -63,13 +63,17 @@ cat > "$BUILD_DIR/wrangler.jsonc" <<WRANGLER
   "name": "sandbox-${ENV_ID}",
   "main": "../index.ts",
   "compatibility_date": "2025-04-01",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": ["nodejs_compat", "enable_ctx_exports"],
   "containers": [
     {
       "class_name": "Sandbox",
-      "image": "./Dockerfile",
-      "instance_type": "lite",
-      "max_instances": 5
+      "name": "sandbox-local-build-do-v1",
+      "scheduling_policy": "durable_object",
+      "images": {
+        "sandbox": {
+          "dockerfile": "./Dockerfile"
+        }
+      }
     }
   ],
   "durable_objects": {

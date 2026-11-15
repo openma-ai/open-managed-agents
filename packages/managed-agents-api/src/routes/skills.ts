@@ -3,7 +3,6 @@ import {
   resolveApplicationPort,
   type ApplicationPortSource,
 } from "../application-port-source";
-import { requireBeta, SKILLS_API_BETA } from "../beta";
 import {
   deletedSkillResponseSchema,
   skillListQuerySchema,
@@ -33,7 +32,6 @@ export function buildSkillRoutes(
   source: ApplicationPortSource<SkillsApplicationPort>,
 ): Hono {
   const app = new Hono();
-  app.use("*", requireBeta(SKILLS_API_BETA));
 
   app.post("/", async (c) => {
     let form: FormData;

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Hono } from "hono";
@@ -19,6 +19,7 @@ const runtime = {
 /** A .tar.gz holding one task directory per name (image img/<name>:1). */
 async function taskArchive(names: string[], instruction = "Solve"): Promise<Uint8Array> {
   const root = await mkdtemp(join(tmpdir(), "evals-routes-"));
+  try {
   for (const name of names) {
     const dir = join(root, "set", name);
     await mkdir(join(dir, "tests"), { recursive: true });
@@ -27,8 +28,10 @@ async function taskArchive(names: string[], instruction = "Solve"): Promise<Uint
     await writeFile(join(dir, "tests", "test.sh"), "#!/bin/bash\n");
   }
   const archive = join(root, "set.tar.gz");
-  execFileSync("tar", ["-czf", archive, "-C", root, "set"]);
+  // macOS copyfile metadata must not become extra task files in the fixture.
+  execFileSync("tar", ["-czf", archive, "-C", root, "set"], { env: { ...process.env, COPYFILE_DISABLE: "1" } });
   return new Uint8Array(await readFile(archive));
+  } finally { await rm(root, { recursive: true, force: true }); }
 }
 
 let app: Hono;

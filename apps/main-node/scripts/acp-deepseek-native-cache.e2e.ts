@@ -2,12 +2,9 @@ import { cp, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { registerCoreHarnesses } from "@open-managed-agents/agent/harness/builtins";
-import type {
-  HarnessContext,
-  HarnessRuntime,
-} from "@open-managed-agents/agent/harness/interface";
-import { resolveHarness } from "@open-managed-agents/agent/harness/registry";
+import {
+  registerCoreHarnesses, type HarnessContext, type HarnessRuntime, resolveHarness,
+} from "@open-managed-agents/agent-harness";
 import { LocalSubprocessSandbox } from "@open-managed-agents/sandbox/adapters/local-subprocess";
 import type { SandboxPort } from "@open-managed-agents/sandbox";
 import type {

@@ -36,7 +36,7 @@ async function fixture(mode = "completed", environmentType = "openai_hosted", ro
 }
 
 describe("Node OpenAI immutable output publication", () => {
-  it("reports failed publication explicitly without rejecting an already committed execution", async () => {
+  it("invokes the supplementary error callback without rejecting a committed execution", async () => {
     const f = await fixture();
     const failure = new Error("Immutable output storage unavailable");
     f.sandbox.readFileBytes.mockRejectedValue(failure);

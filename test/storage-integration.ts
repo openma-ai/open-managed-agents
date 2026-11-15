@@ -3,13 +3,15 @@ import { inject } from "vitest";
 export interface StorageIntegrationConfig {
   postgres: {
     agentsSql: string;
+    workInputs: string;
+    customInvocations: string;
     sessionsSql: string;
     feishuSchema: string;
     betterAuth: string;
     eventFanout: string;
     queue: string;
     s3Memory: string;
-    runtimeFence: string;
+    runtimeOrphans: string;
   };
   s3: {
     endpoint: string;

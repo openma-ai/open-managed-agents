@@ -33,7 +33,6 @@ function askEvents(): WireSessionEvent[] {
       stop_reason: {
         type: "requires_action",
         event_ids: ["tool_ask"],
-        action_type: "tool_confirmation",
       },
     },
   ];

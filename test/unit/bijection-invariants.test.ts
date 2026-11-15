@@ -2,7 +2,7 @@
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 import { env } from "cloudflare:workers";
 import { describe, it, expect } from "vitest";
-import { eventsToMessages } from "../../apps/agent/src/runtime/history";
+import { eventsToMessages } from "../../packages/agent-harness/src/history/events-to-messages";
 import type {
   SessionEvent,
   AgentToolUseEvent,
@@ -13,7 +13,7 @@ import type {
 // Bijection / determinism — write/read invariants for prompt cache
 // ============================================================
 //
-// These guard the contract default-loop.ts onStepFinish + history.ts
+// These guard the host-loop step boundary + history.ts
 // eventsToMessages must satisfy: same input events → same output bytes,
 // every turn, forever. Anthropic's prompt cache breaks the moment any
 // prefix byte drifts — these tests catch the drift before deploy.
@@ -302,7 +302,7 @@ describe("eventsToMessages — context_boundary handling", () => {
 // would silently drop the entire pre-boundary history.
 //
 // Symptom in the wild: MiniMax sometimes returns finish_reason="tool-calls"
-// with empty text on summarize; SummarizeCompactionStrategy passes that
+// with empty text on summarize; a compaction policy can return that
 // through verbatim into the boundary event. This test pins down that
 // eventsToMessages no longer trusts such boundaries.
 

@@ -81,14 +81,14 @@ describe("Kimi KHA P0 compatibility through native OMA routes", () => {
     expect(f.calls.find((call) => call.path.endsWith("/events") && call.body)?.body).toEqual({ events: [{ type: "user.message", content: message.events[0].data.content }] });
   });
 
-  it("is opt-in and preserves native shapes, beta gating and bearer authorization", async () => {
+  it("is opt-in and preserves native shapes and bearer authorization", async () => {
     const disabled = createKhaFixture(false);
     mountKimiKhaCompat(disabled.app, false, (req) => disabled.app.fetch(req));
     expect((await disabled.app.request("/kha/v1/agents", { headers })).status).toBe(404);
     const f = createKhaFixture(false);
     mountKimiKhaCompat(f.app, true, (req) => f.app.fetch(req));
     expect((await f.app.request("/kha/v1/agents", { headers })).status).toBe(200);
-    expect((await f.app.request("/v1/agents", { headers })).status).toBe(400);
+    expect((await f.app.request("/v1/agents", { headers })).status).toBe(200);
     const native = await f.app.request("/v1/agents", { headers: { ...headers, "anthropic-beta": "managed-agents-2026-04-01" } });
     expect((await native.json()).data[0].version).toBe(1);
     for (const auth of ["", "Bearer invalid"]) {

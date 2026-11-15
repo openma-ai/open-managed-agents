@@ -264,6 +264,12 @@ function toRow(r: typeof environments.$inferSelect): EnvironmentRow {
   };
 }
 
-function msToIso(ms: number): string {
-  return new Date(ms).toISOString();
+function msToIso(ms: number | string): string {
+  // PostgreSQL returns BIGINT columns as strings by default. Passing that
+  // string directly to Date makes the parser treat it as a date literal
+  // (and throws `Invalid time value` for epoch-millisecond values), which
+  // breaks environment listing and every harness that discovers an env.
+  const value = Number(ms);
+  if (!Number.isFinite(value)) throw new Error(`Invalid environment timestamp: ${String(ms)}`);
+  return new Date(value).toISOString();
 }

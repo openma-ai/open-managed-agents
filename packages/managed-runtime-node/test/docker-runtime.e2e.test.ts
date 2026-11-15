@@ -5,12 +5,17 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
 import { createManagedRuntimeHost } from "@open-managed-agents/managed-runtime-host";
-import type { RuntimeResourceFencePort } from "@open-managed-agents/runtime-resource-contract";
+import { MemoryEnvironmentWorkClaimPort } from "@open-managed-agents/managed-runtime-host/testing";
+import type {
+  EnvironmentWorkClaim,
+  EnvironmentWorkClaimPort,
+} from "@open-managed-agents/runtime-resource-contract";
 import { createBetterSqlite3SqlClient } from "@open-managed-agents/sql-client";
 import {
   createNodeManagedRuntime,
   DockerCliPort,
 } from "../src/index";
+import { openClaim, runClaim } from "./work-claim";
 
 const scope = {
   workspaceId: "workspace_docker_e2e",
@@ -48,13 +53,13 @@ describe("Node/Docker managed runtime", () => {
   it("runs an unmodified direct worker command and restores its published workspace", async () => {
     const rootDir = await mkdtemp(join(tmpdir(), "oma-docker-runtime-e2e-"));
     roots.push(rootDir);
-    const sql = await createBetterSqlite3SqlClient(":memory:");
+    const claims = new MemoryEnvironmentWorkClaimPort();
     const runtime = await createNodeManagedRuntime({
       rootDir,
-      sql,
-      initializeFenceSchema: true,
+      sql: await createBetterSqlite3SqlClient(":memory:"),
+      initializeOrphanSchema: true,
+      claims,
       ownerId: "docker-e2e-worker",
-      leaseTtlMs: 90_000,
       heartbeatIntervalMs: 30_000,
       image: process.env.OMA_RUNTIME_DOCKER_TEST_IMAGE ?? "alpine:3.20",
       network: "none",
@@ -63,6 +68,7 @@ describe("Node/Docker managed runtime", () => {
     await expect(
       runtime.host.run({
         scope,
+        claim: runClaim(claims.claim(scope)),
         profile: {
           workspace: { requirement: "durable" },
           outputs: { requirement: "durable" },
@@ -82,12 +88,7 @@ describe("Node/Docker managed runtime", () => {
       }),
     ).resolves.toEqual({ type: "completed", revision: 1 });
 
-    const verifier = await runtime.fences.acquire({
-      scope,
-      ownerId: "restore-verifier",
-      ttlMs: 90_000,
-    });
-    if (verifier.type !== "acquired") throw new Error("expected verifier fence");
+    const verifier = await openClaim(claims, claims.claim(scope), "restore-verifier");
     expect(verifier.publication).not.toBeNull();
     const restored = await runtime.workspace.materialize({
       scope,
@@ -117,22 +118,19 @@ describe("Node/Docker managed runtime", () => {
   it("round-trips supervised Memory Store edits through a real Docker filesystem", async () => {
     const rootDir = await mkdtemp(join(tmpdir(), "oma-docker-memory-e2e-"));
     roots.push(rootDir);
+    const claims = new MemoryEnvironmentWorkClaimPort();
     const runtime = await createNodeManagedRuntime({
       rootDir,
       sql: await createBetterSqlite3SqlClient(":memory:"),
-      initializeFenceSchema: true,
+      initializeOrphanSchema: true,
+      claims,
       ownerId: "docker-memory-worker",
-      leaseTtlMs: 90_000,
       heartbeatIntervalMs: 30_000,
       image: process.env.OMA_RUNTIME_DOCKER_TEST_IMAGE ?? "alpine:3.20",
       network: "none",
     });
-    const acquired = await runtime.fences.acquire({
-      scope: { ...scope, sessionId: "session_docker_memory", workId: "work_docker_memory" },
-      ownerId: "docker-memory-worker",
-      ttlMs: 90_000,
-    });
-    if (acquired.type !== "acquired") throw new Error("expected Memory E2E fence");
+    const memoryClaim = claims.claim({ ...scope, sessionId: "session_docker_memory", workId: "work_docker_memory" });
+    const acquired = await openClaim(claims, memoryClaim, "docker-memory-worker");
     const memoryScope = acquired.fence;
     const workspace = await runtime.workspace.materialize({
       scope: memoryScope,
@@ -206,7 +204,7 @@ describe("Node/Docker managed runtime", () => {
       sandbox,
       resourceOwnership: { memoryStore: "materializer" as const },
       access: { downloadFile: async () => ({ content: new Uint8Array() }), memories },
-      authorize: () => runtime.fences.isCurrent(acquired.fence),
+      authorize: () => claims.isCurrent(memoryClaim),
       signal: new AbortController().signal,
     };
     try {
@@ -245,48 +243,24 @@ describe("Node/Docker managed runtime", () => {
         reason: "completed",
       });
       await runtime.workspace.release({ scope: memoryScope, fence: acquired.fence, binding: workspace });
-      await runtime.fences.release({ fence: acquired.fence, reason: "completed" });
     }
     await expect(dockerContainersForWork(memoryScope.workId)).resolves.toEqual([]);
   });
 
-  it("kills a real Docker hand on fence loss and excludes its workspace and outputs from recovery", async () => {
+  it("kills a real Docker hand when its Work is reclaimed and excludes its workspace and outputs from recovery", async () => {
     const rootDir = await mkdtemp(join(tmpdir(), "oma-docker-chaos-e2e-"));
     roots.push(rootDir);
     const sql = await createBetterSqlite3SqlClient(":memory:");
+    const claims = new MemoryEnvironmentWorkClaimPort();
     const first = await createNodeManagedRuntime({
       rootDir,
       sql,
-      initializeFenceSchema: true,
+      initializeOrphanSchema: true,
+      claims,
       ownerId: "docker-chaos-stale-owner",
-      leaseTtlMs: 2_000,
       heartbeatIntervalMs: 100,
       image: process.env.OMA_RUNTIME_DOCKER_TEST_IMAGE ?? "alpine:3.20",
       network: "none",
-    });
-    let renewals = 0;
-    const revokedFence: RuntimeResourceFencePort = {
-      acquire: (input) => first.fences.acquire(input),
-      isCurrent: (input) => first.fences.isCurrent(input),
-      renew: async (input) => {
-        renewals += 1;
-        return renewals === 1
-          ? { type: "lost" }
-          : first.fences.renew(input);
-      },
-      publish: (input) => first.fences.publish(input),
-      release: (input) => first.fences.release(input),
-    };
-    const staleHost = createManagedRuntimeHost({
-      ownerId: "docker-chaos-stale-owner",
-      leaseTtlMs: 2_000,
-      heartbeatIntervalMs: 100,
-      fences: revokedFence,
-      sandbox: first.sandbox,
-      workspace: first.workspace,
-      outputs: first.outputs,
-      harnessDriver: first.sandbox,
-      orphans: first.orphans,
     });
     const chaosScope = {
       workspaceId: "workspace_docker_chaos",
@@ -294,10 +268,31 @@ describe("Node/Docker managed runtime", () => {
       sessionId: "session_docker_chaos",
       workId: "work_docker_chaos",
     };
+    // Another worker claims the Work at the stale host's first claim check.
+    let replacementClaim: EnvironmentWorkClaim | null = null;
+    const reclaimedOnFirstCheck: EnvironmentWorkClaimPort = {
+      open: (claim) => claims.open(claim),
+      isCurrent: (claim) => {
+        replacementClaim ??= claims.claim(chaosScope);
+        return claims.isCurrent(claim);
+      },
+      publish: (input) => claims.publish(input),
+    };
+    const staleHost = createManagedRuntimeHost({
+      ownerId: "docker-chaos-stale-owner",
+      heartbeatIntervalMs: 100,
+      claims: reclaimedOnFirstCheck,
+      sandbox: first.sandbox,
+      workspace: first.workspace,
+      outputs: first.outputs,
+      harnessDriver: first.sandbox,
+      orphans: first.orphans,
+    });
 
     await expect(
       staleHost.run({
         scope: chaosScope,
+        claim: runClaim(claims.claim(chaosScope)),
         profile: {
           workspace: { requirement: "durable" },
           outputs: { requirement: "durable" },
@@ -318,23 +313,17 @@ describe("Node/Docker managed runtime", () => {
       }),
     ).resolves.toEqual({ type: "lease_lost" });
 
-    expect(renewals).toBe(1);
+    expect(replacementClaim).not.toBeNull();
     await expect(dockerContainersForWork(chaosScope.workId)).resolves.toEqual([]);
 
-    const afterLoss = await first.fences.acquire({
-      scope: chaosScope,
-      ownerId: "docker-chaos-verifier",
-      ttlMs: 2_000,
-    });
-    if (afterLoss.type !== "acquired") throw new Error("expected verifier fence");
+    const afterLoss = await openClaim(claims, replacementClaim!, "docker-chaos-verifier");
     expect(afterLoss.publication).toBeNull();
-    await first.fences.release({ fence: afterLoss.fence, reason: "completed" });
 
     const replacement = await createNodeManagedRuntime({
       rootDir,
       sql,
+      claims,
       ownerId: "docker-chaos-replacement-owner",
-      leaseTtlMs: 2_000,
       heartbeatIntervalMs: 500,
       image: process.env.OMA_RUNTIME_DOCKER_TEST_IMAGE ?? "alpine:3.20",
       network: "none",
@@ -342,6 +331,7 @@ describe("Node/Docker managed runtime", () => {
     await expect(
       replacement.host.run({
         scope: chaosScope,
+        claim: runClaim(replacementClaim!),
         profile: {
           workspace: { requirement: "durable" },
           outputs: { requirement: "durable" },
@@ -362,14 +352,9 @@ describe("Node/Docker managed runtime", () => {
       }),
     ).resolves.toEqual({ type: "completed", revision: 1 });
 
-    const afterReplacement = await replacement.fences.acquire({
-      scope: chaosScope,
-      ownerId: "docker-chaos-final-verifier",
-      ttlMs: 2_000,
-    });
-    if (afterReplacement.type !== "acquired") throw new Error("expected final verifier fence");
+    const afterReplacement = await openClaim(claims, claims.claim(chaosScope), "docker-chaos-final-verifier");
     expect(afterReplacement.publication).toEqual(
-      expect.objectContaining({ generation: 3, revision: 1 }),
+      expect.objectContaining({ generation: 2, revision: 1 }),
     );
     const restored = await replacement.workspace.materialize({
       scope: chaosScope,

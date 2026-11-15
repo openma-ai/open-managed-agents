@@ -423,3 +423,12 @@ describe("pinned claude-acp launcher smoke", () => {
     });
   });
 });
+
+it("preserves typed dispatched-unknown from the real ACP install caller without retry",async()=>{
+ const failure=Object.assign(new Error("response lost after dispatch"),{outcome:"dispatched_unknown"});let calls=0;
+ await expect(installAcpSandboxAgent({exec:async()=>{calls++;throw failure}},registryPreparation())).rejects.toBe(failure);
+ expect(calls).toBe(1);
+});
+it("ordinary ACP install errors retain install context and do not acquire unknown certainty",async()=>{
+ await expect(installAcpSandboxAgent({exec:async()=>{throw Error("rejected before dispatch")}},registryPreparation())).rejects.toMatchObject({message:expect.stringContaining("ACP agent install failed")});
+});

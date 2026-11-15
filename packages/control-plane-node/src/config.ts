@@ -73,7 +73,7 @@ export interface NodeConfig {
   realtime: RealtimeFanoutConfig;
   /** "model" curates with the Dream workspace's own model card; "dedup" is offline. */
   dreamCurator: "model" | "dedup";
-  execution: { ownerId: string; concurrency: number };
+  execution: { ownerId: string; concurrency: number; leaseTtlMs?: number };
   workspace: {
     strategy: "ephemeral" | "checkpoint_restore";
     /** Target between safe turn checkpoints; no fixed wall-clock RPO. */

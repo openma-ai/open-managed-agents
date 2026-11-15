@@ -551,3 +551,33 @@ describe("agent endpoint boundary", () => {
     });
   });
 });
+
+describe("ACP form permissions", () => {
+  it("retains enabled-only overrides when the global toolset is disabled", () => {
+    const base = { tools: [{ type: "agent_toolset_20260401", default_config: { enabled: false, permission_policy: { type: "auto" } }, configs: [{ name: "bash", enabled: true }] }] };
+    const form = configToForm(base);
+    expect(form.toolOverrides.bash).toBe("enabled");
+    expect(mergeFormIntoConfig(form, base, { forUpdate: true, acp: true }).tools).toEqual(base.tools);
+  });
+  it("preserves auto per-tool conflicts for explicit repair instead of hiding them", () => {
+    const base = { tools: [{ type: "agent_toolset_20260401", default_config: { permission_policy: { type: "always_allow" } }, configs: [{ name: "bash", enabled: true, permission_policy: { type: "auto" } }] }] };
+    const form = configToForm(base);
+    expect(form.toolOverrides.bash).toBe("auto");
+    expect(() => mergeFormIntoConfig(form, base, { forUpdate: true, acp: true })).toThrow("tools[0].configs[0].permission_policy");
+  });
+});
+it("ACP global changes normalize only inherited MCP permissions and preserve other tool fields", () => {
+  const base = { name: "ACP", model: "m", mcp_servers: [{ name: "docs", type: "url", url: "https://docs.example.test" }], tools: [
+    { type: "agent_toolset_20260401", default_config: { enabled: true, permission_policy: { type: "auto" } }, configs: [{ name: "web_fetch", enabled: false, permission_policy: { type: "auto" }, allowed_domains: ["example.com"] }] },
+    { type: "mcp_toolset", mcp_server_name: "docs", default_config: { enabled: false, permission_policy: { type: "always_allow" } }, configs: [{ name: "search", enabled: true, permission_policy: { type: "always_allow" } }] },
+    { type: "custom", name: "deploy", description: "Deploy", input_schema: { type: "object" } },
+  ] };
+  const snapshot = structuredClone(base);
+  const result = mergeFormIntoConfig({ ...configToForm(base), toolDefaultPermission: "always_ask" }, base, { forUpdate: true, acp: true });
+  expect(result.tools).toEqual([
+    { type: "agent_toolset_20260401", default_config: { enabled: true, permission_policy: { type: "always_ask" } }, configs: [{ name: "web_fetch", enabled: false, allowed_domains: ["example.com"] }] },
+    { type: "mcp_toolset", mcp_server_name: "docs", default_config: { enabled: false, permission_policy: { type: "always_ask" } }, configs: [{ name: "search", enabled: true }] },
+    base.tools[2],
+  ]);
+  expect(base).toEqual(snapshot);
+});

@@ -7,12 +7,20 @@
 import mainApp, { McpProxyRpc as MainMcpProxyRpc } from "../apps/main/src/index";
 
 // --- Agent worker DO + harness registration ---
-import { registerCoreHarnesses } from "../apps/agent/src/harness/builtins";
+import { registerCoreHarnesses } from "../packages/agent-harness/src/builtins";
 import { registerTestHarnesses } from "./harnesses";
 registerCoreHarnesses();
 registerTestHarnesses();
 
+// Reserved parity origin must never escape to real DNS, including DO realms.
+import { installParityModelTransport } from "./fixtures/cf-parity-outbound";
+installParityModelTransport();
+
 export { SessionDO } from "../apps/agent/src/runtime/session-do";
+// Resolve via vitest alias to test/sandbox-stub.ts (empty DO). Do NOT export
+// OmaSandbox here — it requires ctx.container, which miniflare does not provide,
+// and causes session warmup loops ("No container is configured") that leave
+// sessions stuck in running across the integration suite.
 export { Sandbox } from "@cloudflare/sandbox";
 export { RuntimeRoom } from "../apps/main/src/runtime-room";
 export { outbound, outboundByHost } from "../apps/agent/src/outbound";
@@ -92,6 +100,15 @@ import tenantInvitationsSchema from "../apps/main/migrations/0023_tenant_invitat
 import modelCardPricingSchema from "../apps/main/migrations/0025_model_card_pricing.sql?raw";
 // @ts-expect-error vitest resolves SQL via ?raw
 import heldAfterExhaustedSchema from "../apps/main/migrations/0026_closed_tempest.sql?raw";
+// @ts-expect-error vitest resolves SQL via ?raw
+import runtimeResourceTablesSchema from "../apps/main/migrations/0027_runtime_resource_tables.sql?raw";
+// @ts-expect-error vitest resolves SQL via ?raw
+import sandboxTokenHashesSchema from "../apps/main/migrations/0028_sandbox_token_hashes.sql?raw";
+// @ts-expect-error vitest resolves SQL via ?raw
+import workClaimPublicationSchema from "../apps/main/migrations/0029_work_claim_publication.sql?raw";
+
+// @ts-expect-error vitest resolves SQL via ?raw
+import customInvocationsSchema from "../apps/main/migrations/0032_custom_invocations.sql?raw";
 
 const MIGRATIONS_RAW: string[] = [
   authSchema as string,
@@ -125,6 +142,10 @@ const MIGRATIONS_RAW: string[] = [
   // vitest DBs match production migrations without requiring a full re-seed.
   modelCardPricingSchema as string,
   heldAfterExhaustedSchema as string,
+  runtimeResourceTablesSchema as string,
+  sandboxTokenHashesSchema as string,
+  workClaimPublicationSchema as string,
+  customInvocationsSchema as string,
 ];
 
 const INTEGRATIONS_MIGRATIONS_RAW: string[] = [integrationsSchema as string];

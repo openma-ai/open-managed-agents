@@ -1,6 +1,7 @@
 import type { RuntimeResourceFence } from "./fence";
 import type { ManagedSandboxLease } from "./sandbox";
 import type { RuntimeResourceScope } from "./scope";
+import type { AbsoluteWorkspacePath } from "./session-resource-facts";
 import type {
   HarnessDriverDeclaration,
   RuntimeProcessDeclaration,
@@ -16,7 +17,7 @@ export type HarnessSupervisorCommand =
       type: "start";
       scope: RuntimeResourceScope;
       harness: { id: string; version: string };
-      workspacePath: "/workspace";
+      workspacePath: AbsoluteWorkspacePath;
       outputPath: "/mnt/session/outputs" | null;
     }
   | { type: "drain" }
@@ -68,7 +69,7 @@ export interface SandboxHarnessDriverPort {
     scope: RuntimeResourceScope;
     fence: RuntimeResourceFence;
     sandbox: ManagedSandboxLease;
-    workspacePath: "/workspace";
+    workspacePath: AbsoluteWorkspacePath;
     outputPath: "/mnt/session/outputs" | null;
     driver: HarnessDriverDeclaration;
     /** Commit a live turn boundary under the current resource fence. */

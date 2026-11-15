@@ -1,0 +1,46 @@
+{
+  "event_types": [],
+  "events": {},
+  "session": {
+    "budget": null,
+    "outcome_evaluations": [],
+    "resources": [],
+    "stats": {},
+    "status": "running",
+    "usage": {}
+  },
+  "reads": {
+    "disabled_call": {
+      "body": {
+        "error": {
+          "code": -32601,
+          "message": "MCP tool is not enabled: hidden"
+        },
+        "id": 568,
+        "jsonrpc": "2.0"
+      },
+      "status": 200
+    },
+    "filtered_list": {
+      "body": {
+        "id": 567,
+        "jsonrpc": "2.0",
+        "result": {
+          "nextCursor": "page-2",
+          "tools": [
+            {
+              "name": "echo"
+            }
+          ]
+        }
+      },
+      "status": 200
+    },
+    "session_create_status": 201,
+    "upstream_methods": [
+      "tools/list"
+    ]
+  },
+  "models": {},
+  "timeouts": []
+}

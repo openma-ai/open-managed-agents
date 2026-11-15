@@ -8,7 +8,7 @@ describe("model-card capability probe URL", () => {
     ).toBe("https://provider.example/v1/messages");
     expect(
       modelCardProbeUrl("oai-compatible", "https://provider.example/v1/"),
-    ).toBe("https://provider.example/v1/chat/completions");
+    ).toBe("https://provider.example/v1/responses");
   });
 
   it("uses provider defaults when no base URL is supplied", () => {
@@ -16,7 +16,7 @@ describe("model-card capability probe URL", () => {
       "https://api.anthropic.com/v1/messages",
     );
     expect(modelCardProbeUrl("oai", null)).toBe(
-      "https://api.openai.com/v1/chat/completions",
+      "https://api.openai.com/v1/responses",
     );
   });
 });

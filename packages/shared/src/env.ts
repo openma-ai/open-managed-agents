@@ -1,4 +1,8 @@
+import type { SandboxTokenIssueRequest, SandboxTokenIssueResult } from "./sandbox-token-rpc";
+import type { ManagedAcpExecutionChannels, ManagedAcpExecutionChannelsRequest, ManagedAcpExecutionChannelsResult } from "./acp-execution-channels-rpc";
+
 export interface Env {
+  OMA_SESSION_EXECUTION_LEASE_TTL_MS?: string;
   CONFIG_KV: KVNamespace;
   /** @deprecated Pre-shard binding. Equivalent to AUTH_DB_00 (the original
    *  openma-auth database) for back-compat during the shard rollout. New
@@ -84,6 +88,9 @@ export interface Env {
    *  per-host scoping. */
   AUTH_COOKIE_DOMAIN?: string;
   AUTH_COOKIE_NAME?: string;
+  /** "1" requires email verification (needs SEND_EMAIL); "0" disables the
+   * gate. Unset preserves verification with SEND_EMAIL, otherwise disables it. */
+  AUTH_REQUIRE_EMAIL_VERIFY?: string;
   /** From header for auth emails (OTP / verification / reset) sent via
    *  SEND_EMAIL, e.g. "openma <noreply@openma.ai>". The domain must be
    *  onboarded to Cloudflare Email Sending. Defaults to
@@ -239,6 +246,24 @@ export interface Env {
       | { type: "not_found" }
       | { type: "fence_lost" }
     >;
+    /** A sandbox token (#561) for an execution attempt, appended to it;
+     * SessionDO shares one per attempt (attemptSandboxTokens).
+     * `harness` (the agent's harness name) fixes its scope. */
+    /** Typed transport on the SAME authority RPC. Callers request it explicitly
+     * during rollout; server returns failures as values, caller throws locally. */
+    issueSandboxToken?(opts: SandboxTokenIssueRequest & { resultFormat: "typed" }): Promise<SandboxTokenIssueResult>;
+    /** @deprecated Raw throwing RPC; migrate both server/caller to typed mode. */
+    issueSandboxToken?(opts: {
+      tenantId: string;
+      sessionId: string;
+      attempt: { workspaceId: string; sessionId: string; executionId: string; attemptId: string; ownerId: string; generation: number };
+      harness: string | null;
+    }): Promise<string>;
+    /** ACP model / MCP channels over the SAME attempt token. Expected server
+     * failures are values; the caller throws locally, without fallback. */
+    managedAcpExecutionChannels?(opts: ManagedAcpExecutionChannelsRequest & { resultFormat: "typed" }): Promise<ManagedAcpExecutionChannelsResult>;
+    /** @deprecated Raw throwing RPC; migrate both server/caller to typed mode. */
+    managedAcpExecutionChannels?(opts: ManagedAcpExecutionChannelsRequest): Promise<ManagedAcpExecutionChannels>;
     resolveManagedSkillVersion?(opts: {
       tenantId: string;
       skillId: string;
@@ -269,12 +294,14 @@ export interface Env {
       outputManifest: () => Promise<string>;
       readOutput: (path: string) => Promise<Uint8Array>;
     }): Promise<{ type: "published" } | { type: "not_found" }>;
+    managedSessionCanonicalEvents(opts: { workspaceId: string; sessionId: string }): Promise<import("./index").SessionEvent[]>;
     managedSessionEventProduced(opts: {
       workspaceId: string;
       sessionId: string;
       event: string;
       executionFence?: unknown;
     }): Promise<
+      | { type: "execution_fence_lost" }
       | { type: "recorded" }
       | { type: "ignored" }
       | { type: "not_found" }
@@ -301,7 +328,8 @@ export interface Env {
     }): Promise<{ status: number; headers: Record<string, string>; body: string }>;
     credentialEgress(scope: {
       tenantId: string; sessionId: string;
-      runtimeFence?: { environmentId: string; workId: string; ownerId: string; generation: number; token: string };
+      /** The outbound binding's sandbox token (#561), as its digest (sandboxTokenSha256). None: denied (401). */
+      tokenSha256?: string;
     }, action: "resolve" | "forward", request: Request): Promise<Response>;
     /**
      * Per-repo GitHub credential lookup for the network-layer proxy
@@ -315,13 +343,8 @@ export interface Env {
       sessionId: string;
       hostname: string;
       pathname: string;
-      runtimeFence?: {
-        environmentId: string;
-        workId: string;
-        ownerId: string;
-        generation: number;
-        token: string;
-      };
+      /** The outbound binding's sandbox token digest; none / not current: null. */
+      tokenSha256?: string;
     }): Promise<{ scheme: "Basic" | "Bearer"; token: string; slug: string } | null>;
     /**
      * Transparent HTTP proxy for the cloud agent's MCP traffic. Agent
@@ -402,6 +425,11 @@ export interface Env {
   MEMORY_BUCKET_NAME?: string;
   WORKSPACE_BUCKET_NAME?: string;
   /**
+   * Milliseconds without a Durable Object request before OmaSandbox
+   * snapshots a changed /workspace and stops its container. Default 300000.
+   */
+  SANDBOX_IDLE_TIMEOUT_MS?: string;
+  /**
    * BACKUP_BUCKET_NAME (also CLOUDFLARE_ACCOUNT_ID above) are required by
    * @cloudflare/sandbox createBackup() in production mode — the SDK
    * mints R2 presigned URLs to upload the squashfs and needs both to
@@ -409,6 +437,25 @@ export interface Env {
    * InvalidBackupConfigError. See sandbox.ts createWorkspaceBackup.
    */
   BACKUP_BUCKET_NAME?: string;
+  /** Sandbox provider for Sessions: "cloudflare" (default) or "e2b". */
+  SANDBOX_ADAPTER?: string;
+  /** E2B API key (secret) and template name/id, for SANDBOX_ADAPTER=e2b. */
+  E2B_API_KEY?: string;
+  E2B_TEMPLATE?: string;
+  /** Optional E2B-compatible domain. */
+  E2B_DOMAIN?: string;
+  /** E2B continuous-run cap of the account plan in ms (Hobby 3600000, Pro
+   *  86400000). Required when SANDBOX_ADAPTER=e2b; no default. */
+  E2B_MAX_LIFETIME_MS?: string;
+  /** Files bucket parent key and bucket name for SANDBOX_ADAPTER=e2b native
+   *  output mounts (set together with R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY,
+   *  or neither for the copy sync). */
+  R2_FILES_ACCESS_KEY_ID?: string;
+  R2_FILES_SECRET_ACCESS_KEY?: string;
+  FILES_BUCKET_NAME?: string;
+  /** Public HTTPS origin of the control plane; the E2B Vault relay calls
+   *  <PUBLIC_BASE_URL>/v1/oma/egress. */
+  PUBLIC_BASE_URL?: string;
 }
 
 /**

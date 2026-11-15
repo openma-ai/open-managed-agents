@@ -38,7 +38,7 @@ it("mounts the opt-in adapter on the assembled SQLite control plane", async () =
     });
     expect(await (await request("/kha/v1/agents?order=created_at&exclude_multiagent=true")).json()).toEqual({ items: [] });
     expect(await (await request("/kha/v1/sessions?statuses=idle,running")).json()).toEqual({ items: [] });
-    expect((await request("/v1/agents")).status).toBe(400); // Native beta contract unchanged.
+    expect((await request("/v1/agents")).status).toBe(200); // Native routes no longer require anthropic-beta.
     const missing = await request("/kha/v1/plugins");
     expect(missing.status).toBe(404);
     expect(missing.headers.get("content-type")).toContain("application/json");

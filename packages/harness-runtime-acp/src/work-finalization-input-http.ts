@@ -1,0 +1,141 @@
+/** In-process turn finalization only, NOT replacement admission/recovery. The
+ * admitted set is populated after this process receives a consume receipt.
+ * A consumed/no-terminal gap supplies a CAS revision, never model permission. */
+const record=(v:unknown):v is Record<string,unknown>=>v!==null&&typeof v==="object"&&!Array.isArray(v);
+const revision=(v:unknown):v is number=>typeof v==="number"&&Number.isSafeInteger(v)&&v>0;
+interface Receipt {eventId:string;turnId:string;workId:string;generation:number;revision:number;stopReason:{type:string;eventIds?:string[]}}
+class WorkFinalizationTransportError extends Error {
+ readonly outcome="unknown";
+ constructor(readonly action:string,cause:unknown){super(`Work ${action} response unknown; do not replay`,{cause});this.name="WorkFinalizationTransportError";}
+}
+function receipt(v:unknown,turnId:string):v is Receipt {
+ return record(v)&&v.turnId===turnId&&typeof v.eventId==="string"&&v.eventId.length>0&&typeof v.workId==="string"&&v.workId.length>0&&revision(v.generation)&&revision(v.revision)&&record(v.stopReason)&&
+  (v.stopReason.type==="end_turn"||v.stopReason.type==="budget_reached"||
+    v.stopReason.type==="requires_action"&&Array.isArray(v.stopReason.eventIds)&&v.stopReason.eventIds.length>0&&v.stopReason.eventIds.every(id=>typeof id==="string"&&id.length>0));
+}
+export function createWorkTurnFinalizer(options:{apiBaseUrl:string;sessionId:string;sessionsToken:string;signal:AbortSignal;fetch?:typeof globalThis.fetch;requestTimeoutMs?:number}) {
+ const admitted=new Set<string>();const prepared=new Map<string,number>();const terminals=new Map<string,{revision:number;terminal:Receipt}>();
+ const operationTails=new Map<string,Promise<unknown>>();
+ const requestTimeoutMs=options.requestTimeoutMs??30_000;
+ if(!Number.isSafeInteger(requestTimeoutMs)||requestTimeoutMs<=0)throw new TypeError("Work finalization request timeout must be a positive integer");
+ async function wait(ms:number){await new Promise<void>((resolve,reject)=>{let settled=false;const timer=setTimeout(()=>{settled=true;options.signal.removeEventListener("abort",abort);resolve();},ms);const abort=()=>{if(settled)return;settled=true;clearTimeout(timer);reject(options.signal.reason??new Error("Work finalization aborted"));};if(options.signal.aborted)abort();else options.signal.addEventListener("abort",abort,{once:true});});}
+ async function post(action:string,body:object,allowGap=false,allowStaleTerminalRevision=false,allowCheckpointRevisionRace=false):Promise<Record<string,unknown>> {
+  options.signal.throwIfAborted();
+  let response:Response;
+  const startedAt=Date.now();
+  const controller=new AbortController();
+  const abort=()=>controller.abort(options.signal.reason);
+  const timer=setTimeout(()=>controller.abort(new Error(`Work ${action} request timed out after ${requestTimeoutMs}ms`)),requestTimeoutMs);
+  if(options.signal.aborted)abort();else options.signal.addEventListener("abort",abort,{once:true});
+  try {
+   try {response=await (options.fetch??globalThis.fetch)(new URL(`/v1/oma/sessions/${encodeURIComponent(options.sessionId)}/${action}`,options.apiBaseUrl),{method:"POST",redirect:"error",signal:controller.signal,headers:{authorization:`Bearer ${options.sessionsToken}`,"content-type":"application/json"},body:JSON.stringify(body)});}
+   catch (error) {
+    console.warn(JSON.stringify({op:"work.finalization.input_http",action,session_id:options.sessionId,duration_ms:Date.now()-startedAt,error:error instanceof Error?{name:error.name,message:error.message}:String(error)}));
+    throw new WorkFinalizationTransportError(action,error);
+   }
+   let value:unknown;
+   try {value=await response.json();}catch(error){throw new WorkFinalizationTransportError(action,error);}
+   options.signal.throwIfAborted();
+   if(!record(value)||(!response.ok&&!(allowGap&&response.status===409&&value.type==="gap"&&value.reason==="consumed_turn_without_terminal")
+     &&!(allowStaleTerminalRevision&&response.status===409&&value.type==="rejected"&&(value.reason==="terminal_revision"||value.reason==="authority_changed"))
+     &&!(allowCheckpointRevisionRace&&response.status===409&&value.type==="rejected"&&(value.reason==="turn_revision"||value.reason==="authority_changed")))) {
+    const reason=record(value)&&typeof value.reason==="string"?`: ${value.reason}`:"";
+    throw new Error(`Work ${action} rejected (${response.status})${reason}`);
+   }
+   return value;
+  } finally {
+   clearTimeout(timer);options.signal.removeEventListener("abort",abort);
+  }
+ }
+ async function postCheckpoint(body:object){
+  for(let attempt=0;attempt<2;attempt++){
+   try{return await post("work-checkpoint",body,false,false,true);}
+   catch(error){
+    if(!(error instanceof WorkFinalizationTransportError)||attempt!==0||options.signal.aborted)throw error;
+    console.warn(JSON.stringify({op:"work.finalization.input_http",action:"work-checkpoint",session_id:options.sessionId,retry:1,reason:"response_unknown"}));
+    await wait(250);
+   }
+  }
+  throw new Error("Unreachable checkpoint retry state");
+ }
+ const sameTerminal=(a:Receipt,b:Receipt)=>a.eventId===b.eventId&&a.turnId===b.turnId&&a.workId===b.workId&&a.generation===b.generation&&a.revision===b.revision&&
+  a.stopReason.type===b.stopReason.type&&JSON.stringify(a.stopReason.eventIds)===JSON.stringify(b.stopReason.eventIds);
+ function enqueue<T>(turnId:string,operation:()=>Promise<T>):Promise<T>{
+  const previous=operationTails.get(turnId)??Promise.resolve();
+  const next=previous.catch(()=>undefined).then(operation);
+  operationTails.set(turnId,next);
+  void next.finally(()=>{if(operationTails.get(turnId)===next)operationTails.delete(turnId);}).catch(()=>undefined);
+  return next;
+ }
+ return {
+  admitted(turnId:string){admitted.add(turnId);},
+  checkpoint(turnId:string){return enqueue(turnId,async()=>{
+   if(!admitted.has(turnId))throw new Error("Cannot finalize a turn not admitted by this process");
+   // Checkpoint, terminal finalization, and publication share a per-turn
+   // queue. A periodic safe-point request can otherwise enter while terminal
+   // finalization is preparing the same Work row and lose the authority CAS.
+   if(terminals.has(turnId))return;
+   const current=await post("work-recovery",{turnId},true);
+   if(current.type!=="gap"||current.reason!=="consumed_turn_without_terminal"||!revision(current.revision))throw new Error("Active turn has no uncommitted canonical boundary");
+   const previous=prepared.get(turnId);
+   // A second request is a duplicate only when authority still names the
+   // exact prepared revision. If same-turn facts landed meanwhile, refresh
+   // the physical checkpoint before terminal finalization.
+   if(previous!==undefined&&current.revision===previous)return;
+   if(previous!==undefined&&current.revision<previous)throw new Error("Work checkpoint authority moved backwards");
+   let checkpointRevision=current.revision;
+   for(let attempt=0;attempt<2;attempt++){
+    const result=await postCheckpoint({turnId,revision:checkpointRevision});
+    if(result.type==="rejected"&&(result.reason==="turn_revision"||result.reason==="authority_changed")&&attempt===0){
+     const recovered=await post("work-recovery",{turnId},true);
+     if(recovered.type!=="gap"||recovered.reason!=="consumed_turn_without_terminal"||!revision(recovered.revision))throw new Error("Work checkpoint revision race did not recover an active gap");
+     checkpointRevision=recovered.revision;
+     console.warn(JSON.stringify({op:"work.finalization.input_http",action:"work-checkpoint",session_id:options.sessionId,turn_id:turnId,attempt:1,reason:result.reason,to_revision:checkpointRevision}));
+     continue;
+    }
+    if(result.type!=="prepared"||result.turnId!==turnId||!revision(result.revision)||result.revision<checkpointRevision)throw new Error("Invalid Work checkpoint receipt");
+    // Physical persistence may allow the same canonical turn to append its
+    // terminal facts while the snapshot is in flight. Continue with the
+    // prepared revision returned by the authority, never the stale recovery
+    // revision captured before that IO began.
+    prepared.set(turnId,result.revision);
+    return;
+   }
+   throw new Error("Work checkpoint revision retry exhausted");
+  })},
+  complete(turnId:string){return enqueue(turnId,async()=>{
+   const current=prepared.get(turnId);if(current===undefined)throw new Error("Work checkpoint must precede terminal");
+   // Invalidate before IO so callers cannot repeat an unknown terminal write.
+   prepared.delete(turnId);
+   const result=await post("work-finalize",{turnId,revision:current,stopReason:{type:"end_turn"}});
+   if(!["committed","parked"].includes(String(result.type))||!revision(result.revision)||!receipt(result.terminal,turnId)||result.terminal.revision>result.revision||
+     (result.type==="parked")!==(result.terminal.stopReason.type!=="end_turn"))throw new Error("Invalid Work terminal receipt");
+   terminals.set(turnId,{revision:result.revision,terminal:result.terminal});
+  })},
+  publish(turnId:string){return enqueue(turnId,async()=>{
+   const terminal=terminals.get(turnId);if(!terminal)throw new Error("Durable Work terminal ACK required");
+   // Publication is fenced on the Session revision captured at terminal ACK.
+   // An ordinary Session update (budget raise, metadata, a queued input) can
+   // advance that revision after the terminal committed; the committed
+   // terminal itself is immutable. Re-read it under this claim and publish the
+   // identical receipt at the current revision. The host repeats every claim,
+   // successor and terminal check. terminal_revision is the update landing
+   // before publish; authority_changed is it landing during the physical
+   // publish (or a lost claim/terminal, which the recovery read below refuses).
+   // Any other rejection still fails the turn.
+   let current=terminal.revision;
+   let result=await post("work-publish",{turnId,revision:current,terminalEventId:terminal.terminal.eventId},false,true);
+   for(let refreshes=0;result.type==="rejected";refreshes++){
+    const recovered=await post("work-recovery",{turnId});
+    if(refreshes>=3||!["committed","parked"].includes(String(recovered.type))||!revision(recovered.revision)||recovered.revision<=current||
+     !receipt(recovered.terminal,turnId)||!sameTerminal(recovered.terminal,terminal.terminal))throw new Error("Work work-publish rejected (409)");
+    current=recovered.revision;
+    result=await post("work-publish",{turnId,revision:current,terminalEventId:terminal.terminal.eventId},false,true);
+   }
+   // The receipt must name exactly the terminal this process ACKed (event,
+   // turn, Work, generation, original revision and stop reason).
+   if(result.type!=="published"||result.revision!==current||!receipt(result.terminal,turnId)||!sameTerminal(result.terminal,terminal.terminal))throw new Error("Invalid Work publication receipt");
+   terminals.delete(turnId);admitted.delete(turnId);
+  })},
+ };
+}

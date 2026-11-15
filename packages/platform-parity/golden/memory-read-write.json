@@ -1,0 +1,295 @@
+{
+  "event_types": [
+    "user.message",
+    "session.status_running",
+    "span.model_request_start",
+    "agent.tool_use",
+    "span.model_request_end",
+    "span.model_request_start",
+    "agent.tool_use",
+    "span.model_request_end",
+    "span.model_request_start",
+    "agent.message",
+    "span.model_request_end",
+    "session.status_idle"
+  ],
+  "events": {
+    "agent.message": [
+      {
+        "content": [
+          {
+            "text": "Memory updated.",
+            "type": "text"
+          }
+        ],
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "agent.message"
+      }
+    ],
+    "agent.tool_result": [
+      {
+        "content": [
+          {
+            "text": "seeded by the parity scenario",
+            "type": "text"
+          }
+        ],
+        "id": "<id>",
+        "processed_at": "<time>",
+        "tool_use_id": "parity_read_1",
+        "type": "agent.tool_result"
+      },
+      {
+        "content": [
+          {
+            "text": "<host-workdir>/sandboxes/<session>/.mnt/memory/<memory_store_name>/learned.md",
+            "type": "text"
+          }
+        ],
+        "id": "<id>",
+        "processed_at": "<time>",
+        "tool_use_id": "parity_write_1",
+        "type": "agent.tool_result"
+      }
+    ],
+    "agent.tool_use": [
+      {
+        "id": "parity_read_1",
+        "input": {
+          "filePath": "/mnt/memory/<memory_store_name>/seed.md"
+        },
+        "name": "read",
+        "processed_at": "<time>",
+        "type": "agent.tool_use"
+      },
+      {
+        "id": "parity_write_1",
+        "input": {
+          "content": "written by the agent",
+          "filePath": "/mnt/memory/<memory_store_name>/learned.md"
+        },
+        "name": "write",
+        "processed_at": "<time>",
+        "type": "agent.tool_use"
+      }
+    ],
+    "session.status_idle": [
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "stop_reason": {
+          "type": "end_turn"
+        },
+        "type": "session.status_idle"
+      }
+    ],
+    "session.status_running": [
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "session.status_running"
+      }
+    ],
+    "session.usage": [
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "session.usage",
+        "usage": {
+          "cache_creation": {
+            "ephemeral_5m_input_tokens": "<token_count>"
+          },
+          "input_tokens": "<token_count>",
+          "output_tokens": "<token_count>"
+        }
+      },
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "session.usage",
+        "usage": {
+          "cache_creation": {
+            "ephemeral_5m_input_tokens": "<token_count>"
+          },
+          "input_tokens": "<token_count>",
+          "output_tokens": "<token_count>"
+        }
+      },
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "session.usage",
+        "usage": {
+          "cache_creation": {
+            "ephemeral_5m_input_tokens": "<token_count>"
+          },
+          "cache_read_input_tokens": "<token_count>",
+          "input_tokens": "<token_count>",
+          "output_tokens": "<token_count>"
+        }
+      },
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "session.usage",
+        "usage": {
+          "cache_creation": {
+            "ephemeral_5m_input_tokens": "<token_count>"
+          },
+          "cache_read_input_tokens": "<token_count>",
+          "input_tokens": "<token_count>",
+          "output_tokens": "<token_count>"
+        }
+      },
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "session.usage",
+        "usage": {
+          "cache_creation": {
+            "ephemeral_5m_input_tokens": "<token_count>"
+          },
+          "cache_read_input_tokens": "<token_count>",
+          "input_tokens": "<token_count>",
+          "output_tokens": "<token_count>"
+        }
+      },
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "session.usage",
+        "usage": {
+          "cache_creation": {
+            "ephemeral_5m_input_tokens": "<token_count>"
+          },
+          "cache_read_input_tokens": "<token_count>",
+          "input_tokens": "<token_count>",
+          "output_tokens": "<token_count>"
+        }
+      }
+    ],
+    "span.model_request_end": [
+      {
+        "id": "<id>",
+        "is_error": false,
+        "model_request_start_id": "<id>",
+        "model_usage": {
+          "cache_creation_input_tokens": "<token_count>",
+          "cache_read_input_tokens": "<token_count>",
+          "input_tokens": "<token_count>",
+          "output_tokens": "<token_count>"
+        },
+        "processed_at": "<time>",
+        "type": "span.model_request_end"
+      },
+      {
+        "id": "<id>",
+        "is_error": false,
+        "model_request_start_id": "<id>",
+        "model_usage": {
+          "cache_creation_input_tokens": "<token_count>",
+          "cache_read_input_tokens": "<token_count>",
+          "input_tokens": "<token_count>",
+          "output_tokens": "<token_count>"
+        },
+        "processed_at": "<time>",
+        "type": "span.model_request_end"
+      },
+      {
+        "id": "<id>",
+        "is_error": false,
+        "model_request_start_id": "<id>",
+        "model_usage": {
+          "cache_creation_input_tokens": "<token_count>",
+          "cache_read_input_tokens": "<token_count>",
+          "input_tokens": "<token_count>",
+          "output_tokens": "<token_count>"
+        },
+        "processed_at": "<time>",
+        "type": "span.model_request_end"
+      }
+    ],
+    "span.model_request_start": [
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "span.model_request_start"
+      },
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "span.model_request_start"
+      },
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "span.model_request_start"
+      }
+    ],
+    "user.message": [
+      {
+        "content": [
+          {
+            "text": "Read the seed note and write what you learned.",
+            "type": "text"
+          }
+        ],
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "user.message"
+      }
+    ]
+  },
+  "session": {
+    "budget": null,
+    "outcome_evaluations": [],
+    "resources": [
+      {
+        "access": "read_write",
+        "description": "parity",
+        "memory_store_id": "<memory_store>",
+        "mount_path": "/mnt/memory/<memory_store_name>",
+        "name": "<memory_store_name>",
+        "type": "memory_store"
+      }
+    ],
+    "stats": {},
+    "status": "idle",
+    "usage": {
+      "cache_creation": {
+        "ephemeral_5m_input_tokens": "<token_count>"
+      },
+      "cache_read_input_tokens": "<token_count>",
+      "input_tokens": "<token_count>",
+      "output_tokens": "<token_count>"
+    }
+  },
+  "reads": {
+    "memories": [
+      {
+        "content": "written by the agent",
+        "path": "/learned.md",
+        "type": "memory"
+      },
+      {
+        "content": "seeded by the parity scenario",
+        "path": "/seed.md",
+        "type": "memory"
+      }
+    ],
+    "memory_seed_status": 201,
+    "memory_store_create_status": 201,
+    "message_status": 200,
+    "session_create_status": 201
+  },
+  "models": {
+    "parity-agent": {
+      "calls": 3,
+      "unconsumed_steps": 0,
+      "aborted": 0,
+      "timed_out": 0
+    }
+  },
+  "timeouts": []
+}

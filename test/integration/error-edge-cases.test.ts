@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { env, exports } from "cloudflare:workers";
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterEach } from "vitest";
+import { runInDurableObject } from "cloudflare:test";
 import { ensureModelCards } from "./_model-cards";
 import { registerTestHarnesses } from "../harnesses";
 
@@ -45,13 +46,34 @@ async function createEnv(overrides?: Record<string, unknown>) {
   return (await res.json()) as any;
 }
 
+const ownedSessions: string[] = [];
+afterEach(async () => {
+  for (const id of ownedSessions.splice(0)) {
+    await expect.poll(async () => {
+      const response = await get(`/v1/oma/sessions/${id}`);
+      expect(response.status).toBe(200);
+      return (await response.json()).status;
+    }, { timeout: 5000 }).toBe("idle");
+    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(id));
+    await runInDurableObject(stub, async (room, state) => {
+      await room._sandboxWarm;
+      await room._recoveryRun;
+      await room._finalizePromise;
+      await Promise.all(room._maintenanceRuns.values());
+      await state.storage.deleteAlarm();
+    });
+  }
+});
+
 async function createSession(agentId: string, envId: string, extra?: Record<string, unknown>) {
   const res = await post("/v1/oma/sessions", {
     agent: agentId,
     environment_id: envId,
     ...extra,
   });
-  return (await res.json()) as any;
+  const session = (await res.json()) as any;
+  if (res.status === 201) ownedSessions.push(session.id);
+  return session;
 }
 
 // ============================================================

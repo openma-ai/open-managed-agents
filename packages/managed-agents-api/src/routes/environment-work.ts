@@ -3,7 +3,6 @@ import {
   resolveApplicationPort,
   type ApplicationPortSource,
 } from "../application-port-source";
-import { MANAGED_AGENTS_BETA, requireBeta } from "../beta";
 import {
   environmentWorkHeartbeatQuerySchema,
   environmentWorkHeartbeatResponseSchema,
@@ -23,6 +22,7 @@ import {
   toHeartbeatEnvironmentWorkCommand,
   toListEnvironmentWorkQuery,
   toPollEnvironmentWorkQuery,
+  toPolledEnvironmentWorkResponse,
   toRetrieveEnvironmentWorkQuery,
   toStopEnvironmentWorkCommand,
   toUpdateEnvironmentWorkCommand,
@@ -33,7 +33,6 @@ export function buildEnvironmentWorkRoutes(
   source: ApplicationPortSource<EnvironmentWorkApplicationPort>,
 ): Hono {
   const app = new Hono();
-  app.use("*", requireBeta(MANAGED_AGENTS_BETA));
 
   app.get("/:environmentId/work", async (c) => {
     const query = environmentWorkListQuerySchema.safeParse({
@@ -103,8 +102,9 @@ export function buildEnvironmentWorkRoutes(
     }
     if (result.type === "empty") return c.json(null, 200);
 
+    // Poll is the only path that delivers the Work secret (to the claimer).
     const response = environmentWorkResponseSchema.safeParse(
-      toEnvironmentWorkResponse(result.work),
+      toPolledEnvironmentWorkResponse(result.work),
     );
     if (!response.success) {
       return c.json(apiError("Application returned invalid work"), 500);

@@ -232,6 +232,8 @@ function toRow(r: typeof eval_runs.$inferSelect): EvalRunRow {
   };
 }
 
-function msToIso(ms: number): string {
-  return new Date(ms).toISOString();
+function msToIso(ms: number | string): string {
+  // PostgreSQL bigint values can be returned as decimal strings. These are
+  // epoch milliseconds, not date strings for Date.parse.
+  return new Date(Number(ms)).toISOString();
 }

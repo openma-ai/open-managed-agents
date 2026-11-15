@@ -106,6 +106,45 @@ const userMessage = {
 };
 
 describe("Session events admission on existing Sessions", () => {
+  const requiresAction = [{
+    id: "event_idle", type: "session.status_idle",
+    processedAt: "2026-08-26T01:00:00.000Z",
+    stopReason: { type: "requires_action", eventIds: ["tool_01"] },
+  }];
+
+  it("preserves main idle requires_action interrupt receipt and scheduling observation", async () => {
+    const f = harness({ recent: requiresAction });
+    expect(await f.service.sendSessionEvents({ sessionId: session.id, events: [{ type: "user.interrupt" }] }))
+      .toMatchObject({ type: "accepted", events: [{ type: "user.interrupt", processedAt: null }] });
+    expect(f.appendCalls).toHaveLength(1);
+    expect(f.dispatched).toMatchObject([{ events: [{ type: "user.interrupt" }] }]);
+    expect(f.admit).not.toHaveBeenCalled();
+  });
+
+  it("rejects an idle requires_action interrupt/message batch atomically", async () => {
+    const f = harness({ recent: requiresAction });
+    expect(await f.service.sendSessionEvents({ sessionId: session.id, events: [{ type: "user.interrupt" }, userMessage] }))
+      .toMatchObject({ type: "invalid_request" });
+    expect(f.appendCalls).toEqual([]);
+    expect(f.dispatched).toEqual([]);
+    expect(f.admit).not.toHaveBeenCalled();
+  });
+
+  it("preserves both receipts when an idle interrupt accompanies settlement", async () => {
+    const f = harness({ recent: requiresAction });
+    const result = await f.service.sendSessionEvents({ sessionId: session.id, events: [
+      { type: "user.interrupt" }, { type: "user.custom_tool_result", customToolUseId: "tool_01" },
+    ] });
+    expect(result).toMatchObject({ type: "accepted", events: [{ type: "user.interrupt" }, { type: "user.custom_tool_result" }] });
+    expect(f.dispatched).toMatchObject([{ events: [{ type: "user.interrupt" }, { type: "user.custom_tool_result" }] }]);
+  });
+
+  it("does not ignore an interrupt of a running Session with stale requires_action history", async () => {
+    const f = harness({ session: { ...session, status: "running" }, recent: requiresAction });
+    expect(await f.service.sendSessionEvents({ sessionId: session.id, events: [{ type: "user.interrupt" }] }))
+      .toMatchObject({ type: "accepted", events: [{ type: "user.interrupt" }] });
+    expect(f.dispatched).toHaveLength(1);
+  });
   it("returns the hook denial for a new turn without appending or dispatching", async () => {
     const f = harness({
       decide: async () => ({ type: "denied", status: 429, body: { error: "host_denied" } }),

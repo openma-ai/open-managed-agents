@@ -2,6 +2,8 @@ import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import {
   buildFullSetupScript,
+  ENVIRONMENT_PACKAGE_PATHS,
+  environmentCommandPath,
   ensureEnvironmentPackages,
   hasEnvironmentPackages,
   parseExecResult,
@@ -31,6 +33,17 @@ function fakeSandbox(failSetup = false) {
 }
 
 describe("environment packages", () => {
+  it("keeps the warm marker on the root filesystem too, which a filesystem snapshot keeps but /tmp is not", async () => {
+    const { sandbox, commands, files } = fakeSandbox();
+    await ensureEnvironmentPackages(sandbox, { apt: ["jq"] });
+    expect(commands.some((c) => c.includes("> /var/lib/oma/setup-warm") && c.includes("$HOME/.cache/oma-setup-warm"))).toBe(true);
+    expect(commands.find((c) => c.startsWith("WARM="))).toContain("cat /var/lib/oma/setup-warm");
+    // /tmp lost, rootfs copy read back by the probe: warm, no apt reinstall.
+    const rest = files.get("rest");
+    expect((await ensureEnvironmentPackages(sandbox, { apt: ["jq"] })).path).toBe("warm");
+    expect(rest).toBeDefined();
+  });
+
   it("reads both exec result shapes", () => {
     expect(parseExecResult("exit=2\nout\nstderr: boom")).toEqual({ exitCode: 2, stdout: "out", stderr: "boom" });
     expect(parseExecResult("some output\n[exit 1]")).toEqual({ exitCode: 1, stdout: "some output", stderr: "" });
@@ -53,6 +66,29 @@ describe("environment packages", () => {
       exitCode: UNKNOWN_EXIT_CODE, stdout: "", stderr: "spawn /bin/sh ENOENT",
     });
     expect(parseExecResult("exit=0\nfine")).toEqual({ exitCode: 0, stdout: "fine", stderr: "" });
+  });
+
+  it("puts installed tools before the image PATH, which a login shell would drop", async () => {
+    const tools = ENVIRONMENT_PACKAGE_PATHS.join(":");
+    // PID 1's PATH (the image's) has /opt/venv/bin; the login shell's does not.
+    const probed = (stdout: string): PackageSandbox => ({ exec: async () => stdout });
+    expect(await environmentCommandPath(probed("/opt/venv/bin:/usr/bin\n/usr/local/bin:/usr/bin:/workspace/.venv/bin")))
+      .toBe(`${tools}:/opt/venv/bin:/usr/bin:/usr/local/bin`);
+    // No /proc (or no PID 1 PATH): the shell's PATH.
+    expect(await environmentCommandPath(probed("\n/usr/bin:/bin"))).toBe(`${tools}:/usr/bin:/bin`);
+    // Probe failed or printed nothing: a minimal default.
+    expect(await environmentCommandPath(probed("[exit 1]"))).toBe(`${tools}:/usr/local/bin:/usr/bin:/bin`);
+    expect(await environmentCommandPath(probed(""))).toBe(`${tools}:/usr/local/bin:/usr/bin:/bin`);
+  });
+
+  it("probes PATH with a command a real shell runs", async () => {
+    const shell: PackageSandbox = {
+      async exec(command) {
+        const run = spawnSync("/bin/bash", ["-c", command], { encoding: "utf8", env: { PATH: "/usr/bin:/bin" } });
+        return run.status === 0 ? run.stdout : `${run.stdout}\n[exit ${run.status}]`;
+      },
+    };
+    expect((await environmentCommandPath(shell)).split(":")).toEqual(expect.arrayContaining([...ENVIRONMENT_PACKAGE_PATHS, "/usr/bin", "/bin"]));
   });
 
   it("knows when there is nothing to install", () => {
@@ -185,6 +221,18 @@ describe("environment packages", () => {
     });
     const parsed = spawnSync("bash", ["-n"], { input: script, encoding: "utf8" });
     expect(parsed.status, parsed.stderr).toBe(0);
+  });
+
+  it.each([false, true])("reinstalls missing npm packages despite restored markers (warm=%s)", async (warm) => {
+    const box = fakeSandbox();
+    const packages = { npm: ["pi-acp@0.0.33"] };
+    await ensureEnvironmentPackages(box.sandbox, packages);
+    if (!warm) box.files.delete("warm");
+    const exec = box.sandbox.exec.bind(box.sandbox);
+    box.sandbox.exec = async (command, timeout) => command.startsWith("npm ls ") ? "missing pi-acp\n[exit 1]" : exec(command, timeout);
+    const restored = await ensureEnvironmentPackages(box.sandbox, packages);
+    expect(restored).toMatchObject({path: "fresh"});
+    expect(box.commands.filter(command => command.includes("npm install -g --silent 'pi-acp@0.0.33'"))).toHaveLength(2);
   });
 
   it("installs once, then finds the container warm", async () => {

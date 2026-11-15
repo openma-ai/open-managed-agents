@@ -15,7 +15,13 @@ import type {
 import { useManagedApi } from "../../lib/useManagedApi";
 import { useApi } from "../../lib/api";
 import { HarnessPicker } from "./HarnessPicker";
-import { harnessCatalogSchema, harnessValidationError, openMaFields, type HarnessCatalog } from "./harnessCatalog";
+import { harnessCatalogSchema, harnessValidationError, isAcpHarness, openMaFields, type HarnessCatalog } from "./harnessCatalog";
+import {
+  ACP_PERMISSION_MODES,
+  acpStoredToolPermissionError,
+  acpToolPermissionInputError,
+  type PermissionMode,
+} from "./acpPermissions";
 import { Button } from "@/components/ui/button";
 import { Select, SelectOption } from "../../components/Select";
 import { Combobox } from "../../components/Combobox";
@@ -32,6 +38,7 @@ import {
   materializeAgentUpdate,
   mergeFormIntoConfig,
   parseAgentConfigText,
+  parseToolPolicy,
   prepareCodePayload,
   type FormState,
   type McpEntry,
@@ -179,6 +186,15 @@ export function AgentFormDialog({
   const [harnessLoading, setHarnessLoading] = useState(true);
   const [harnessError, setHarnessError] = useState("");
   const [harnessRefresh, setHarnessRefresh] = useState(0);
+  // Explicit harness choice wins; an omitted update patch keeps the saved one.
+  const savedHarness = editingAgent
+    ? openMaFields(editingAgent as unknown as Record<string, unknown>).harness
+    : undefined;
+  const acpSelected = isAcpHarness(harness === undefined ? savedHarness : harness);
+  /** Global mode the loaded tools were resolved with (server-filled values). */
+  const acpBaseline: PermissionMode = Array.isArray(preservedConfig?.tools)
+    ? parseToolPolicy(preservedConfig.tools).toolDefaultPermission
+    : form.toolDefaultPermission;
 
   useEffect(() => {
     if (!open || createStep !== "form") return;
@@ -307,6 +323,14 @@ export function AgentFormDialog({
     const fields = effectiveHarnessFields(payload);
     const harnessProblem = harnessValidationError(harnessCatalog, fields.harness, fields);
     if (harnessProblem) throw new Error(harnessProblem);
+    if (isAcpHarness(fields.harness)) {
+      // Same rules as the server: submitted tools must not carry per-tool
+      // policies; an update that keeps the saved tools must not inherit any.
+      const acpProblem = payload.tools !== undefined
+        ? acpToolPermissionInputError(payload.tools)
+        : editingAgent ? acpStoredToolPermissionError(editingAgent.tools) : "";
+      if (acpProblem) throw new Error(acpProblem);
+    }
     if (isEdit && editingAgent) {
       const updated = await managedApi.agents.update(editingAgent.id, {
         ...payload,
@@ -428,7 +452,11 @@ export function AgentFormDialog({
       [multiagent.advisor, multiagent.workflows].some((v) => v && v.type !== "disabled"));
     // Unsupported configurations remain reachable in code mode for explicit migration.
     if (!forCode || !unsupported) validateMultiagent(multiagent);
-    const payload = mergeFormIntoConfig(form, preservedConfig, { forUpdate: isEdit });
+    const payload = mergeFormIntoConfig(form, preservedConfig, {
+      forUpdate: isEdit,
+      acp: acpSelected,
+      keepAcpViolations: forCode,
+    });
     const fields = openMaFields(payload);
     if (harness === undefined) delete fields.harness;
     else fields.harness = harness;
@@ -455,6 +483,12 @@ export function AgentFormDialog({
       // code → form: parse into preserved baseline, then extract form fields
       try {
         const parsed = parseAgentConfigText(codeValue, createMode);
+        // Text is explicit user input, not an API-resolved baseline. Validate
+        // before materializing it so mode switches cannot erase forbidden policies.
+        if (isAcpHarness(effectiveHarnessFields(parsed).harness) && parsed.tools !== undefined) {
+          const problem = acpToolPermissionInputError(parsed.tools);
+          if (problem) throw new Error(problem);
+        }
         const config = isEdit
           ? materializeAgentUpdate(preservedConfig ?? {}, parsed)
           : parsed;
@@ -556,6 +590,8 @@ export function AgentFormDialog({
     try {
       // Preview the same effective payload that persistAgent validates, not the saved baseline.
       harnessFields = effectiveHarnessFields(formToConfig(true));
+      // The code preview keeps per-tool policies visible; saving does not.
+      if (acpSelected) formToConfig();
     } catch (error) {
       // Partially edited metadata/MCP JSON must not throw during rendering.
       formConfigError = error instanceof Error ? error.message : "Invalid config";
@@ -772,7 +808,7 @@ export function AgentFormDialog({
                 {createMode !== "form" && (
                   <div className="space-y-3 h-full flex flex-col">
                     {createError && (
-                      <div className="text-sm text-danger bg-danger-subtle border border-danger/30 rounded-lg px-3 py-2">
+                      <div role="alert" className="text-sm text-danger bg-danger-subtle border border-danger/30 rounded-lg px-3 py-2">
                         {createError}
                       </div>
                     )}
@@ -800,7 +836,8 @@ export function AgentFormDialog({
                 )}
 
                 {createMode === "form" && tab === "tools" && (
-                  <ToolsTab form={form} setForm={setForm} createError={createError} />
+                  <ToolsTab form={form} setForm={setForm} createError={createError || formConfigError}
+                    acpBaseline={acpSelected ? acpBaseline : null} />
                 )}
 
                 {createMode === "form" && tab === "skills" && (
@@ -919,7 +956,7 @@ function BasicTab({
   return (
     <div className="space-y-3">
       {createError && (
-        <div className="text-sm text-danger bg-danger-subtle border border-danger/30 rounded-lg px-3 py-2">
+        <div role="alert" className="text-sm text-danger bg-danger-subtle border border-danger/30 rounded-lg px-3 py-2">
           {createError}
         </div>
       )}
@@ -1099,15 +1136,20 @@ function ToolsTab({
   form,
   setForm,
   createError,
+  acpBaseline,
 }: {
   form: FormState;
   setForm: FormSetter;
   createError: string;
+  /** Set when an ACP harness is selected: only one global permission mode applies. */
+  acpBaseline: PermissionMode | null;
 }) {
+  const acp = acpBaseline !== null;
+  const selectedMode = ACP_PERMISSION_MODES.find((mode) => mode.value === form.toolDefaultPermission);
   return (
     <div className="space-y-5">
       {createError && (
-        <div className="text-sm text-danger bg-danger-subtle border border-danger/30 rounded-lg px-3 py-2">
+        <div role="alert" className="text-sm text-danger bg-danger-subtle border border-danger/30 rounded-lg px-3 py-2">
           {createError}
         </div>
       )}
@@ -1120,10 +1162,16 @@ function ToolsTab({
       </p>
 
       <div className="rounded-md border border-border bg-bg-surface px-3 py-3">
-        <div className="text-sm font-medium text-fg mb-1">Default policy</div>
+        <div className="text-sm font-medium text-fg mb-1">{acp ? "Global permission mode" : "Default policy"}</div>
         <p className="text-xs text-fg-subtle mb-3">
-          Applies to every tool below that's set to{" "}
-          <span className="font-mono">default</span>.
+          {acp ? (
+            <>ACP harness 只支持一个全局权限档位，应用于所有内置工具和 MCP 工具；不支持逐工具权限。</>
+          ) : (
+            <>
+              Applies to every tool below that's set to{" "}
+              <span className="font-mono">default</span>.
+            </>
+          )}
         </p>
         <div className="flex flex-wrap items-center gap-4">
           <Label className="flex items-center gap-2 text-sm">
@@ -1138,38 +1186,63 @@ function ToolsTab({
           <div className="flex items-center gap-2 text-sm">
             <span className="text-fg-muted">Permission:</span>
             <Select
+              aria-label={acp ? "Global permission mode" : "Default permission"}
               value={form.toolDefaultPermission}
-              disabled={!form.toolDefaultEnabled}
+              disabled={!acp && !form.toolDefaultEnabled}
               onValueChange={(value) =>
-                setForm({
-                  ...form,
-                  toolDefaultPermission: value as "always_allow" | "always_ask",
-                })
+                setForm({ ...form, toolDefaultPermission: value as PermissionMode })
               }
               className="border border-border rounded-md px-2 py-1 text-sm bg-bg text-fg outline-none focus:border-brand disabled:opacity-40"
             >
-              <SelectOption value="always_allow">always_allow</SelectOption>
-              <SelectOption value="always_ask">always_ask</SelectOption>
+              {acp ? (
+                ACP_PERMISSION_MODES.map((mode) => (
+                  <SelectOption key={mode.value} value={mode.value}>{mode.label}</SelectOption>
+                ))
+              ) : (
+                <>
+                  <SelectOption value="always_allow">always_allow</SelectOption>
+                  <SelectOption value="always_ask">always_ask</SelectOption>
+                  {form.toolDefaultPermission === "auto" && <SelectOption value="auto">auto</SelectOption>}
+                </>
+              )}
             </Select>
           </div>
         </div>
+        {acp && selectedMode && (
+          <p className="mt-2 text-xs text-fg-subtle">{selectedMode.description}</p>
+        )}
       </div>
 
       <div>
-        <Label className="text-sm font-medium text-fg block mb-2">Per-tool overrides</Label>
+        <Label className="text-sm font-medium text-fg block mb-2">
+          {acp ? "Per-tool availability" : "Per-tool overrides"}
+        </Label>
         <p className="text-xs text-fg-subtle mb-3">
-          Each row's effective state is shown in the dropdown. Pick{" "}
-          <span className="font-mono">default</span> to inherit the policy above; pick a
-          specific value to override. <span className="font-mono">always_ask</span> emits a{" "}
-          <span className="font-mono">user.tool_confirmation</span> event the client must
-          approve before each call.
+          {acp ? (
+            <>
+              Turn individual tools on or off. Permission always follows the global mode above.
+            </>
+          ) : (
+            <>
+              Each row's effective state is shown in the dropdown. Pick{" "}
+              <span className="font-mono">default</span> to inherit the policy above; pick a
+              specific value to override. <span className="font-mono">always_ask</span> emits a{" "}
+              <span className="font-mono">user.tool_confirmation</span> event the client must
+              approve before each call.
+            </>
+          )}
         </p>
         <div className="border border-border rounded-md divide-y divide-border">
           {BUILTIN_TOOLS.map((bt) => {
-            const current = form.toolOverrides[bt.name] ?? "default";
+            const stored = form.toolOverrides[bt.name] ?? "default";
+            const permissionOverride = stored === "always_allow" || stored === "always_ask" || stored === "auto";
+            // ACP: a policy equal to the saved mode is a server fill, i.e. just "on".
+            const conflicting = acp && permissionOverride
+              && stored !== acpBaseline;
+            const current = acp && permissionOverride && !conflicting ? "enabled" : stored;
             const effectiveLabel = !form.toolDefaultEnabled
               ? "disabled"
-              : form.toolDefaultPermission;
+              : acp ? "enabled" : form.toolDefaultPermission;
             const isOff =
               current === "disabled" || (current === "default" && !form.toolDefaultEnabled);
             return (
@@ -1182,21 +1255,38 @@ function ToolsTab({
                 <div className="min-w-0">
                   <div className="text-sm font-mono text-fg">{bt.label}</div>
                   <div className="text-xs text-fg-subtle truncate">{bt.description}</div>
+                  {conflicting && (
+                    <div role="alert" className="text-xs text-danger">
+                      Per-tool permission ({stored}) is not supported for ACP harness agents. Choose default, enabled or disabled.
+                    </div>
+                  )}
                 </div>
                 <Select
+                  aria-label={`${bt.name} ${acp ? "availability" : "override"}`}
                   value={current}
                   onValueChange={(value) => {
                     const v = value as ToolOverride;
                     const next = { ...form.toolOverrides };
-                    if (v === "default") delete next[bt.name];
-                    else next[bt.name] = v;
-                    setForm({ ...form, toolOverrides: next });
+                    next[bt.name] = v;
+                    setForm({ ...form, toolOverrides: next,
+                      editedToolOverrides: [...new Set([...(form.editedToolOverrides ?? []), bt.name])],
+                    });
                   }}
                   className="border border-border rounded-md px-2 py-1 min-h-11 sm:min-h-0 text-xs bg-bg text-fg outline-none focus:border-brand shrink-0"
                 >
                   <SelectOption value="default">default ({effectiveLabel})</SelectOption>
-                  <SelectOption value="always_allow">always_allow</SelectOption>
-                  <SelectOption value="always_ask">always_ask</SelectOption>
+                  {acp ? (
+                    <>
+                      {conflicting && <SelectOption value={stored} disabled>{stored} (not supported)</SelectOption>}
+                      <SelectOption value="enabled">enabled</SelectOption>
+                    </>
+                  ) : (
+                    <>
+                      <SelectOption value="always_allow">always_allow</SelectOption>
+                      <SelectOption value="always_ask">always_ask</SelectOption>
+                      {current === "enabled" && <SelectOption value="enabled">enabled</SelectOption>}
+                    </>
+                  )}
                   <SelectOption value="disabled">disabled</SelectOption>
                 </Select>
               </div>
@@ -1448,7 +1538,7 @@ function McpTab({
                 value={mcp.url}
                 onChange={(e) => updateMcp(i, "url", e.target.value)}
                 className={inputCls}
-                placeholder="https://mcp.github.com/sse"
+                placeholder="https://mcp.github.com/mcp"
               />
             </div>
           ) : (

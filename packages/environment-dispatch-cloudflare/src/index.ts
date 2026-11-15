@@ -2,19 +2,15 @@ import type {
   ManagedEnvironmentWorkDispatchPort,
 } from "@open-managed-agents/managed-runtime-host";
 
+import type { EnvironmentWorkRuntimeDelivery } from "@open-managed-agents/runtime-resource-contract";
+
 export type CloudflareManagedRuntimeBackend = "microvm" | "isolate";
 
 /** A session-keyed Cloudflare runtime (Sandbox DO or Isolate runner DO).
  * The runtime owns the first heartbeat/ACK, lease, tool dispatch, restore
  * barrier, and egress policy. Calls must be idempotent for the same Work. */
 export interface CloudflareManagedSessionRuntimePort {
-  dispatch(input: {
-    apiBaseUrl: string;
-    environmentId: string;
-    sessionId: string;
-    workId: string;
-    signal: AbortSignal;
-  }): Promise<{ created: boolean }>;
+  dispatch(input: EnvironmentWorkRuntimeDelivery & { signal: AbortSignal }): Promise<{ created: boolean }>;
 }
 
 export interface CloudflareManagedEnvironmentDispatchOptions {
@@ -63,7 +59,11 @@ export function createManagedEnvironmentWorkDispatchPort(
         throw new Error("Cloudflare dispatcher only accepts Session Work");
       }
       input.signal.throwIfAborted();
+      if (typeof input.workspaceId !== "string" || input.workspaceId.trim().length === 0) {
+        throw new TypeError("Session Work requires a non-empty workspace scope");
+      }
       const sessionId = input.work.data.id;
+      if (!input.work.secret) throw new Error("Session Work requires its current claim secret");
       const backend = await options.resolveBackend({
         environmentId: input.work.environment_id,
         sessionId,
@@ -84,6 +84,8 @@ export function createManagedEnvironmentWorkDispatchPort(
         environmentId: input.work.environment_id,
         sessionId,
         workId: input.work.id,
+        workspaceId: input.workspaceId,
+        workSecret: input.work.secret,
         signal: input.signal,
       });
       input.signal.throwIfAborted();

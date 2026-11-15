@@ -169,8 +169,8 @@ describe('official Sessions contract: supported', () => {
     const before = await (await f.request('/s')).json<any>();
     expect((await f.request('/s/events', 'POST', { events: [message()], }, { 'Idempotency-Key': 'C16-unique' })).status).toBe(202);
     expect((await (await f.request('/s')).json<any>()).required_actions).toEqual(before.required_actions);
-    expect(f.sent).toHaveLength(0);
-    // Drain the process-local staged message to avoid state shared with other tests.
+    expect(f.sent).toEqual([expect.objectContaining({ deferUntilToolResults: true, expectedRevision: 1 })]);
+    // Cancel is admitted canonically; no process-local state shared with other tests.
     await f.request('/s/events', 'POST', { events: [cancel] });
   });
   // C17-valid: E header bounds inclusive 1..256; same key retries preserve native identity.

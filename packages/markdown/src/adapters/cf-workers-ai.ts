@@ -9,7 +9,7 @@ import type { ToMarkdownInput, ToMarkdownProvider, ToMarkdownResult } from "../p
 /**
  * Wrap a Cloudflare Workers AI binding as a ToMarkdownProvider. Returns
  * undefined when the binding itself is missing (matches the existing
- * "AI optional" semantics in apps/agent/src/harness/tools.ts buildTools).
+ * "AI optional" semantics in packages/agent-harness/src/tools.ts buildTools).
  */
 export function cfWorkersAiToMarkdown(ai: Ai | undefined): ToMarkdownProvider | undefined {
   if (!ai) return undefined;

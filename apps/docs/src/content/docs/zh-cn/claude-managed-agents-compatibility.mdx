@@ -20,8 +20,8 @@ OpenMA 实现了与 **Claude Managed Agents（CMA）兼容的控制面 API**，�
   并同时挂在 Cloudflare Worker（`apps/main`）与 Node 服务（`apps/main-node`）
   的 `/v1` 上。OpenMA 自有扩展放在 `/v1/oma/*`，以保持兼容面干净。
 
-Anthropic SDK 会自动带上所需的 `anthropic-beta` 标志。手工调用时请发送矩阵中
-列出的标志（例如 `anthropic-beta: managed-agents-2026-04-01`），否则路由会拒绝。
+Anthropic SDK 会自动带上矩阵中列出的 `anthropic-beta` 标志。OpenMA 带不带都接受，
+手工调用 HTTP 时不需要这个头。
 
 ## API 面矩阵
 
@@ -44,7 +44,7 @@ Anthropic SDK 会自动带上所需的 `anthropic-beta` 标志。手工调用时
 | Dreams | **已实现**——`anthropic-beta: dreaming-2026-04-21` | `routes/dreams.ts` → `/v1/dreams` |
 | MCP tunnels | **已实现**——tunnel CRUD、证书、`reveal_token`、`rotate_token` | `routes/tunnels.ts`、`tunnel-certificates.ts` → `/v1/tunnels`（`anthropic-beta: mcp-tunnels-2026-06-22`） |
 | User profiles | **已实现**——`anthropic-beta: user-profiles-2026-08-18` | `routes/user-profiles.ts` → `/v1/user_profiles` |
-| MCP servers | **已实现**——作为 Agent 配置上的 `mcp_servers` 字段（URL/HTTP/SSE/stdio）；SDK 面没有独立 MCP-server 资源 | `routes/agents.ts`、`contracts/agent-input-components.ts` |
+| MCP servers | **已实现**——作为 Agent 配置上的 `mcp_servers` 字段（URL (Streamable HTTP)/stdio; legacy SSE is explicitly rejected）；SDK 面没有独立 MCP-server 资源 | `routes/agents.ts`、`contracts/agent-input-components.ts` |
 | Callable agents | **已实现**——Agent 配置上的 `callable_agents` 派生 `call_agent_*` 工具 | `routes/agents.ts`、`contracts/agents.ts`；OMA 集成（GitHub/Slack/Linear/飞书）在 `/v1/oma/integrations/*` |
 | `/openai/v1` 适配器 | **已实现**——在同一套原生 Session 上投影 OpenAI Agents API | `packages/openai-agents-api`、`openai-agents-compat`；挂在 `apps/main/src/index.ts` 的 `/openai` |
 
@@ -173,8 +173,8 @@ managed-runtime 符合性表。每驱动生命周期/工作区能力写在同一
 
 ## 相对托管 CMA 的已知差异
 
-- **按资源族强制 beta 标志。** 缺少文档中的 `anthropic-beta` 值会得到 400
-  （`packages/managed-agents-api/src/beta.ts` 中的 `requireBeta`）。
+- **不要求 beta 标志。** 托管 CMA 会拒绝缺少文档中 `anthropic-beta` 值的请求；
+  OpenMA 带不带都接受。
 - **Session 列表过滤。** `metadata_key` / `metadata_value` 查询参数以 400 拒绝——
   列表过滤覆盖 `agent_id`、`agent_version`、`created_at` 边界、`deployment_id`、
   `memory_store_id`、`statuses[]`、`order`、`include_archived`。

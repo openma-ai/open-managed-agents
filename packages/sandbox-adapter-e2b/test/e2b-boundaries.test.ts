@@ -21,6 +21,7 @@ type CommandResult = { stdout: string; stderr: string; exitCode: number };
 type CommandHandle = {
   pid: number;
   kill(): Promise<boolean | void>;
+  disconnect?(): Promise<void>;
   wait?(): Promise<CommandResult>;
   sendStdin?(data: string | Uint8Array): Promise<void>;
   closeStdin?(): Promise<void>;
@@ -34,6 +35,7 @@ type CommandOptions = {
   onStderr?(data: string): void | Promise<void>;
   stdin?: boolean;
 };
+type CommandConnectOptions = Pick<CommandOptions, "timeoutMs" | "onStdout" | "onStderr">;
 type CommandRun = (command: string, options?: CommandOptions) => Promise<CommandResult | CommandHandle>;
 
 function deferred<T>() {
@@ -83,6 +85,19 @@ async function readAll(stream: ReadableStream<Uint8Array>): Promise<string> {
 }
 
 describe("E2BSandboxExecutor boundaries", () => {
+  it.each(["AuthenticationError","InvalidArgumentError"])("keeps typed start rejection %s as not dispatched",async name=>{
+    const rejected=Object.assign(new Error("rejected before process start"),{name});
+    const executor=new E2BSandboxExecutor(remote({commands:{run:async()=>{throw rejected;}}}) as never,{});
+    await expect(executor.exec("effect")).rejects.toBe(rejected);
+    await expect(executor.run("effect")).rejects.toBe(rejected);
+  });
+  it("marks loss of a dispatched command without a terminal result as unknown", async () => {
+    let effects=0;
+    const sdkBox=remote({commands:{run:async()=>{effects++;throw new Error("transport lost after commit");}}});
+    const executor=new E2BSandboxExecutor(sdkBox as never,{});
+    await expect(executor.exec("effect")).rejects.toMatchObject({outcome:"dispatched_unknown"});
+    expect(effects).toBe(1);
+  });
   it("provides isolated cold allocations without reconnecting or killing the next SDK instance", async () => {
     const old = remote({ sandboxId: "sandbox-a" }); const fresh = remote({ sandboxId: "sandbox-b" });
     sdk.create.mockResolvedValueOnce(old).mockResolvedValueOnce(fresh);
@@ -128,7 +143,9 @@ describe("E2BSandboxExecutor boundaries", () => {
     ]) await expect(runtime.resume(checkpoint as never)).rejects.toThrow("own runtime-scoped");
     await expect(new E2BSandboxExecutor({ ...sb, connect: undefined } as never, {}).resume(own)).rejects.toThrow("sandbox.connect");
 
-    await expect(runtime.checkpoint({ kind: "filesystem" })).rejects.toThrow("memory state only");
+    // A filesystem checkpoint is an E2B filesystem snapshot (createSnapshot mode "filesystem").
+    await expect(runtime.checkpoint({ kind: "filesystem" })).resolves.toMatchObject({ kind: "filesystem", scope: "portable" });
+    expect(sb.createSnapshot).toHaveBeenLastCalledWith({ mode: "filesystem" });
     await expect(new E2BSandboxExecutor({ ...sb, createSnapshot: undefined } as never, {}).checkpoint({ kind: "memory" })).rejects.toThrow("createSnapshot");
     await expect(runtime.checkpoint({ kind: "memory" })).resolves.toMatchObject({ checkpointId: "snapshot-1", scope: "portable" });
     expect(sb.createSnapshot).toHaveBeenLastCalledWith(undefined);
@@ -154,8 +171,8 @@ describe("E2BSandboxExecutor boundaries", () => {
     expect(sb.commands.run.mock.calls[0]?.[0]).toContain("export BASE='a'\\''b';");
     expect(sb.commands.run.mock.calls[0]?.[0]).toContain("export TOKEN='secret';");
     expect(sb.commands.run.mock.calls[1]?.[0]).not.toContain("TOKEN");
-    expect(sb.commands.run.mock.calls[0]?.[1]).toEqual({ timeoutMs: 2 });
-    expect(sb.commands.run.mock.calls[1]?.[1]).toEqual({ timeoutMs: 50 });
+    expect(sb.commands.run.mock.calls[0]?.[1]).toEqual({ cwd: "/workspace", timeoutMs: 2, background: true });
+    expect(sb.commands.run.mock.calls[1]?.[1]).toEqual({ cwd: "/workspace", timeoutMs: 50, background: true });
   });
 
   it("maps background ProcessHandle lifecycle, including missing pids and kill errors", async () => {
@@ -272,6 +289,59 @@ describe("E2BSandboxExecutor boundaries", () => {
     expect(kill).toHaveBeenCalledOnce();
     // An acknowledged kill cannot retroactively make the failed exit barrier safe.
     await expect(child.exited).rejects.toThrow("connection reset");
+  });
+
+  it("reattaches a live command after a snapshot interrupts its stream", async () => {
+    const firstWait = deferred<CommandResult>();
+    const resumedWait = deferred<CommandResult>();
+    const first = { pid: 9, kill: vi.fn(async () => true), wait: () => firstWait.promise, sendStdin: vi.fn(async () => {}), closeStdin: vi.fn(async () => {}) };
+    const resumed = { pid: 9, kill: vi.fn(async () => true), wait: vi.fn(() => resumedWait.promise), sendStdin: vi.fn(async () => {}), closeStdin: vi.fn(async () => {}) };
+    const connect = vi.fn(async (_pid: number, _options?: CommandConnectOptions) => resumed);
+    const sb = remote({ commands: {
+      run: vi.fn<CommandRun>(async (_command: string) => first),
+      connect,
+    } });
+    const runtime = new E2BSandboxExecutor(sb as never, {});
+    const child = await runtime.spawnDuplexProcess({ command: "agent" });
+    firstWait.reject(new Error("sandbox stream interrupted by snapshot"));
+    await vi.waitFor(() => expect(connect).toHaveBeenCalledWith(9, expect.objectContaining({ timeoutMs: 0 })));
+    resumedWait.resolve({ stdout: "", stderr: "", exitCode: 0 });
+    await expect(child.exited).resolves.toEqual({ code: 0, signal: null });
+    expect(resumed.wait).toHaveBeenCalled();
+  });
+
+  it("detaches active duplex commands around a full snapshot and reattaches them", async () => {
+    const firstWait = deferred<CommandResult>();
+    const resumedWait = deferred<CommandResult>();
+    const order: string[] = [];
+    const first = {
+      pid: 12,
+      kill: vi.fn(async () => true),
+      disconnect: vi.fn(async () => { order.push("disconnect"); firstWait.reject(new Error("detached")); }),
+      wait: () => firstWait.promise,
+      sendStdin: vi.fn(async () => {}),
+      closeStdin: vi.fn(async () => {}),
+    };
+    const resumed = {
+      pid: 12,
+      kill: vi.fn(async () => true),
+      wait: vi.fn(() => resumedWait.promise),
+      sendStdin: vi.fn(async () => {}),
+      closeStdin: vi.fn(async () => {}),
+    };
+    const sb = remote({
+      commands: {
+        run: vi.fn<CommandRun>(async () => first),
+        connect: vi.fn(async () => { order.push("connect"); return resumed; }),
+      },
+      createSnapshot: vi.fn(async () => { order.push("snapshot"); return { snapshotId: "snap-handoff", names: [] }; }),
+    });
+    const runtime = new E2BSandboxExecutor(sb as never, {});
+    const child = await runtime.spawnDuplexProcess({ command: "agent" });
+    await expect(runtime.checkpoint({ kind: "memory" })).resolves.toMatchObject({ checkpointId: "snap-handoff" });
+    expect(order).toEqual(["disconnect", "snapshot", "connect"]);
+    resumedWait.resolve({ stdout: "", stderr: "", exitCode: 0 });
+    await expect(child.exited).resolves.toEqual({ code: 0, signal: null });
   });
 
   it("maps duplex kill/abort and all wait rejection shapes", async () => {
@@ -413,10 +483,6 @@ describe("E2BSandboxExecutor boundaries", () => {
     expect(sdk.create).toHaveBeenLastCalledWith("template", expect.objectContaining({ apiUrl: "api", sandboxUrl: "sandbox", domain: "domain" }));
   });
 
-  it("declares no prepared-base capability; compositions opt in explicitly", () => {
-    expect(sandboxFactory.capabilities?.preparedBase).toBeUndefined();
-  });
-
   it("uses an Environment-selected catalog image as the template instead of SANDBOX_IMAGE", async () => {
     sdk.create.mockResolvedValue(remote({ sandboxId: "selected" }));
     await sandboxFactory(
@@ -448,7 +514,7 @@ describe("E2B sandbox readiness after create", () => {
     sdk.create.mockResolvedValueOnce(sandbox);
     const executor = await createE2BSandbox({ apiKey: "k", readiness: { attempts: 5, delayMs: 0 } });
     expect(executor).toBeDefined();
-    expect(sandbox.commands.run).toHaveBeenCalledTimes(3);
+    expect(sandbox.commands.run).toHaveBeenCalledTimes(4);
     expect(sandbox.kill).not.toHaveBeenCalled();
   });
 

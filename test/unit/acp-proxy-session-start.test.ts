@@ -1,11 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { AcpProxyHarness } from "../../apps/agent/src/harness/acp-proxy-loop";
-import type { HarnessContext } from "../../apps/agent/src/harness/interface";
-import {
-  augmentAcpUserPrompt,
-  parseSessionReadyFrame,
-  resolveRepositoryLocalPath,
-} from "../../apps/agent/src/harness/acp-proxy-delivery";
+import { AcpProxyHarness } from "../../packages/agent-harness/src/acp-proxy-loop";
+import type { HarnessContext } from "../../packages/agent-harness/src/interface";
+import { createRuntimeRoomRelay } from "../../apps/agent/src/runtime/runtime-room-relay";
+import { augmentAcpUserPrompt, parseSessionReadyFrame, resolveRepositoryLocalPath } from "../../packages/agent-harness/src/acp-proxy-delivery";
 
 class Socket {
   listeners = new Map<string, Array<(event: unknown) => void>>();
@@ -131,8 +128,7 @@ function harnessContext(overrides: {
     acpSessionStartCwd: "/data/myproject",
     systemPrompt: "System from OMA.",
     userMessage: { type: "user.message", content: [{ type: "text", text: userText }] },
-    env: {
-      RUNTIME_ROOM: {
+    runnerRelay: createRuntimeRoomRelay({
         idFromName: (id: string) => id,
         get: () => ({
           fetch: async () => {
@@ -162,8 +158,7 @@ function harnessContext(overrides: {
             return { status: 101, webSocket: ws };
           },
         }),
-      },
-    },
+      } as never),
     runtime: {
       history: { getEvents: () => events },
       broadcast: (event: Record<string, unknown>) => events.push(event),

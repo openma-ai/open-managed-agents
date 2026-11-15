@@ -36,7 +36,7 @@ export interface EvalSessionRuntime {
   environmentForImage(alias: string): Promise<string>;
   createSession(input: { agentId: string; environmentId: string; title: string; metadata: Record<string, string> }): Promise<string>;
   /** Returns the accepted user.message event id. */
-  sendUserMessage(sessionId: string, text: string): Promise<string>;
+  sendUserMessage(sessionId: string, text: string, idempotencyKey?: string): Promise<string>;
   interrupt(sessionId: string): Promise<void>;
   /** Did the turn started by `messageEventId` end (idle that is not a
    *  requires_action pause counts; so does termination)? */
@@ -194,11 +194,25 @@ export function createManagedEvalRuntime(deps: ManagedEvalRuntimeDependencies): 
       // Quota / rate limits clear on their own; retry on a later tick.
       throw new EvalRuntimeError(`Creating the Session failed (${created.type}): ${created.message}`, created.type === "rate_limited");
     },
-    async sendUserMessage(sessionId, text) {
-      const sent = await deps.sessionEvents.sendSessionEvents({
+    async sendUserMessage(sessionId, text, idempotencyKey) {
+      // An application response can be lost after canonical append + dispatch.
+      // Re-read its id via the SAME key; never retry an unkeyed admission or a
+      // deterministic application rejection. Bound transport recovery so a
+      // permanently unavailable service cannot leave a trial hanging forever.
+      const send = () => deps.sessionEvents.sendSessionEvents({
         sessionId,
         events: [{ type: "user.message", content: [{ type: "text", text }] } as never],
+        ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
       });
+      const admit = async () => {
+        for (let attempt = 0; ; attempt++) {
+          try { return await send(); }
+          catch (error) {
+            if (!idempotencyKey || attempt >= 2) throw error;
+          }
+        }
+      };
+      const sent = await admit();
       if (sent.type !== "accepted") {
         throw new EvalRuntimeError(`Sending the task message failed (${sent.type})${"message" in sent ? `: ${sent.message}` : ""}`);
       }

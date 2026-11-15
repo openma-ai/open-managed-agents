@@ -19,7 +19,7 @@ export interface RuntimeAdapterOptions {
   eventLog: EventLogRepo;
   streams: StreamRepo;
   /** Optional — only SessionStateMachine.runHarnessTurn uses this.
-   *  turn-runtime.ts callers (CF SessionDO today) leave it unset. */
+   *  turn-lifetime.ts callers (CF SessionDO today) leave it unset. */
   sandbox?: SandboxExecutor;
   /** Per-platform shell hook. CF: setAlarm(now+30s) AND register turnId
    *  into the local active-turn set so _checkOrphanTurns can filter

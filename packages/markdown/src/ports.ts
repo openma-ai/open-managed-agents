@@ -1,6 +1,6 @@
 // Runtime-agnostic markdown converter port.
 //
-// `web_fetch` (apps/agent/src/harness/tools.ts) takes an arbitrary URL,
+// `web_fetch` (packages/agent-harness/src/tools.ts) takes an arbitrary URL,
 // fetches the bytes, and asks "convert this to markdown". On Cloudflare
 // Workers AI does it via env.AI.toMarkdown(); on Node we'll plug in
 // turndown / pdf-parse / mammoth (separate adapter, not in this package

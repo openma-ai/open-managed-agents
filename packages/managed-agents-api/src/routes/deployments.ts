@@ -3,7 +3,6 @@ import {
   resolveApplicationPort,
   type ApplicationPortSource,
 } from "../application-port-source";
-import { MANAGED_AGENTS_BETA, requireBeta } from "../beta";
 import {
   deploymentCreateBodySchema,
   deploymentListQuerySchema,
@@ -45,7 +44,6 @@ export function buildDeploymentRoutes(
   source: ApplicationPortSource<DeploymentsApplicationPort>,
 ): Hono {
   const app = new Hono();
-  app.use("*", requireBeta(MANAGED_AGENTS_BETA));
 
   app.post("/", async (c) => {
     const body = await parseJson(c);

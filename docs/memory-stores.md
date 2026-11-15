@@ -123,6 +123,57 @@ belongs in the image (for example, `mkdir -p /mnt/memory && chown <user>
 /mnt/memory` at build time). The control plane does not use `sudo` and does
 not move the store to a different path.
 
+The official E2B `managedTemplate` prepares `/mnt/memory` at image build time
+with owner `oma-worker:oma-worker` and mode `0755`. Its root management launcher
+is deliberately separate: the managed E2B executor runs tools and host-owned
+Memory materialization as `oma-worker`, even when the SDK default user is root.
+Checking writability as root therefore does not validate this precondition.
+Existing templates must be rebuilt and independently verified; do not repair a
+running Session with privileged `chmod`, switch its tool user to root, or move
+Memory to temporary storage. Custom images using another configured tool user
+must provide the same writable-root contract for that user. Worker-owned native
+Memory mounts remain the responsibility of the storage attachment path; the
+empty image directory is not a mount or evidence of durable publication.
+
+Explicit [guest sudo](managed-guest-privileges.md) can override guest filesystem
+permissions. The ownership/readonly checks below describe default execution,
+not a security boundary against guest root. Host-side readonly publication and
+fencing rules remain in force.
+
+## Managed E2B allocation and storage modes
+
+The shared E2B adapter prepares `/workspace`, `/mnt/session`,
+`/mnt/session/outputs`, and `/mnt/memory` on **new allocations and filesystem
+restores**. It obtains the ordinary executor's UID and primary GID, rejects
+symlink roots, and assigns only those directory entries (non-recursively).
+Node and Cloudflare use this same managed preparation. It does not change
+ownership when attaching/resuming a live handle, recursively rewrite attachments,
+or grant access to root-only launcher or rclone control directories. Read-only
+attachments retain their own permissions. Native FUSE mounts must also select
+this execution UID/GID; a writable empty directory is not a durable mount.
+
+Storage selection is composition-specific:
+
+| Composition | Memory bytes / synchronization | Outputs and workspace |
+| --- | --- | --- |
+| Default Node managed Session | `SqlMemoryDocumentStore` is canonical; `file_sync` materializes and fenced-CAS synchronizes attached stores. `MEMORY_S3_*` alone does not switch this to native FUSE. | Remote E2B requires durable Outputs. Configured `FILES_S3_ENDPOINT`, `FILES_S3_BUCKET`, `FILES_S3_ACCESS_KEY`, `FILES_S3_SECRET_KEY` select shared object-backed Outputs. Workspace defaults to ephemeral; `checkpoint_restore` requires durable Files storage. |
+| Node factory declaring `nativeMemoryStoreMount` | Native generation-scoped Memory workspaces are materialized from canonical Memory and reconciled back; S3 snapshot namespaces are not the legacy `storeId/path` namespace. Node Work rclone uses `MEMORY_S3_*`. | Native Work Outputs (when shared Outputs are absent) use `session-outputs/<workspace>/<session>` in that configured bucket. Fenced drain must acknowledge upload before publication. |
+| Cloudflare E2B with no parent S3 key | Required `MEMORY_BUCKET` and `FILES_BUCKET` Worker bindings provide copy-sync persistence. | Output publication uses the Files binding; it needs no S3 key. |
+| Cloudflare E2B native | Complete `CLOUDFLARE_ACCOUNT_ID`, `R2_ENDPOINT`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `MEMORY_BUCKET_NAME`, `FILES_BUCKET_NAME`; optional complete `R2_FILES_*` pair for separate Files credentials. Prefix-scoped temporary credentials back verified rclone mounts. | Native mounts, not local fallback; partial configuration, mount failure and failed upload acknowledgement are errors. |
+
+`memory_blobs: s3` in health reports describes a configured blob service, not
+which managed Memory composition is selected. A managed Memory API/SQL read
+therefore does not certify R2, and a miss at a legacy S3 key does not by itself
+prove data loss. Validate the selected mode and its exact namespace separately.
+The legacy standalone executor's s3fs methods are not the managed Node Work
+native adapter and do not establish that adapter's persistence guarantees.
+
+rclone's root-only Unix RC server is launched once in the background, with a
+bounded readiness check and private log. `rclone --daemon --rc` is not used:
+the official 1.74.1 distribution starts RC in both parent and child and collides
+on the same Unix socket. A process exit or missing mount fails attachment;
+mount readiness alone still does not acknowledge pending upload completion.
+
 ## Failure behavior
 
 Every failure is an error that fails the turn. Nothing is silently skipped.
@@ -179,3 +230,15 @@ declares the capability.
    `packages/managed-runtime-sandbox/test/session-memory-local-sandbox.test.ts`
    for the pattern: write in one sandbox, synchronize, then read the result
    in a fresh one.
+
+For the official E2B image, the explicit provider bootstrap gate is
+`apps/main-node/node_modules/.bin/tsx packages/sandbox-adapter-e2b/test/template-memory-bootstrap.mts`
+from the repository root. Supply `E2B_API_KEY` through the approved secured
+process environment, `OMA_E2B_TEMPLATE` naming the old task template being
+checked, and `OMA_E2B_MEMORY_RECEIPT` for the result file. This opt-in gate
+creates one new isolated sandbox, proves the old image rejects worker writes,
+executes the exact official image bootstrap command in that test allocation,
+and checks worker materialization/read-only isolation before pausing it.
+It never modifies an existing Session or publishes a template. A passing
+bootstrap-command gate does **not** certify a rebuilt image or remote Memory
+upload: those require a separately reviewed template build and provider run.

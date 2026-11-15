@@ -76,7 +76,6 @@ function makeFakeHarness(opts: {
     judgeModelId: "fake-model",
     getEvents: () => h.events,
     appendAndBroadcast: (e) => h.events.push(e),
-    broadcastOnly: (e) => h.events.push(e),
     persistState: (delta) => {
       if ("outcome" in delta) h.state.outcome = delta.outcome ?? null;
       if (typeof delta.outcome_iteration === "number")
@@ -145,9 +144,7 @@ describe("runOutcomeSupervisor", () => {
     expect(h.state.outcome).toBeNull(); // active outcome cleared
     expect(h.state.outcome_evaluations).toHaveLength(1);
 
-    // span events emitted: ongoing + end (start is broadcast-only and
-    // also lands in events here because broadcastOnly pushes to the
-    // shared events array in this fake)
+    // span events appended to history: start + ongoing + end
     const spanTypes = h.events
       .map((e) => e.type)
       .filter((t) => t.startsWith("span.outcome_evaluation"));
@@ -340,6 +337,7 @@ describe("runOutcomeSupervisor", () => {
         rubric: { type: "text", content: "rubric" },
         max_iterations: 3,
       },
+      initialEvents: [agentMessage("first outcome deliverable", "first-deliverable")],
       judge: async () => ({
         text: JSON.stringify({ result: "satisfied", explanation: "ok" }),
       }),
@@ -359,6 +357,7 @@ describe("runOutcomeSupervisor", () => {
       rubric: { type: "text", content: "second rubric" },
       max_iterations: 3,
     };
+    h.events.push(agentMessage("second outcome deliverable", "second-deliverable"));
     h.state.outcome = secondOutcome;
     h.state.outcome_iteration = 0;
     h.deps.outcome = secondOutcome;
@@ -390,6 +389,7 @@ describe("runOutcomeSupervisor", () => {
         rubric: { type: "file", file_id: "file-abc" },
         max_iterations: 2,
       },
+      initialEvents: [agentMessage("deliverable for the file rubric", "file-deliverable")],
       filesBucketGet: async (key) => {
         getCalls.push(key);
         return { text: async () => "rubric loaded from R2" };

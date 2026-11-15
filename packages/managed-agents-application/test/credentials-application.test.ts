@@ -493,4 +493,52 @@ describe("CredentialsApplicationService", () => {
       expect(validations()).toBe(0);
     });
   });
+describe("environment_variable injection_location (CMA create / update rules)", () => {
+    const service = (persistence: InMemoryCredentialPersistence) => new CredentialsApplicationService({
+      workspaceId: "workspace_01",
+      store: persistence,
+      vaults,
+      validation: { validate: async () => ({ hasRefreshToken: false, mcpProbe: null, refresh: null, status: "indeterminate" as const }) },
+      cliCatalog: { has: () => false },
+      clock: { now: () => new Date("2026-08-26T19:00:00.000Z") },
+      ids: { nextCredentialId: () => "vcrd_env" },
+    });
+    const create = (svc: CredentialsApplicationService, injectionLocation?: { header?: boolean; body?: boolean }) => svc.createCredential({
+      vaultId: "vlt_01",
+      auth: {
+        type: "environment_variable", secretName: "API_KEY", secretValue: "env-secret",
+        networking: { type: "limited", allowedHosts: ["api.example.com"] },
+        ...(injectionLocation !== undefined && { injectionLocation }),
+      },
+    });
+
+    it("enables both locations when the object is omitted (else the placeholder reaches the upstream)", async () => {
+      const persistence = new InMemoryCredentialPersistence();
+      const created = await create(service(persistence));
+      expect(created).toMatchObject({ type: "created", credential: { auth: { injectionLocation: { header: true, body: true } } } });
+      expect(persistence.records.get("workspace_01:vlt_01:vcrd_env")?.credential.auth)
+        .toMatchObject({ injectionLocation: { header: true, body: true } });
+    });
+
+    it("defaults omitted fields to false inside a given object", async () => {
+      const persistence = new InMemoryCredentialPersistence();
+      expect(await create(service(persistence), { header: true }))
+        .toMatchObject({ credential: { auth: { injectionLocation: { header: true, body: false } } } });
+    });
+
+    it("refuses a create or update that disables both locations", async () => {
+      const persistence = new InMemoryCredentialPersistence();
+      const svc = service(persistence);
+      expect(await create(svc, { header: false })).toMatchObject({ type: "invalid_request" });
+      expect(persistence.records.size).toBe(0);
+      await create(svc, { header: true });
+      expect(await svc.updateCredential({
+        vaultId: "vlt_01", credentialId: "vcrd_env",
+        auth: { type: "environment_variable", injectionLocation: { header: false } },
+      })).toMatchObject({ type: "invalid_request" });
+      expect(persistence.records.get("workspace_01:vlt_01:vcrd_env")?.credential.auth)
+        .toMatchObject({ injectionLocation: { header: true, body: false } });
+    });
+  });
 });
+

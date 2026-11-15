@@ -41,14 +41,14 @@ try {
   await stage("renew Sprite keepalive", sandbox.renewLease({ ttlMs: 5 * 60_000 }));
   await stage("install Pi ACP", execOk(
     sandbox,
-    "npm install --global @earendil-works/pi-coding-agent@0.84.4 pi-acp@0.0.33 >/tmp/openma-npm-install.log 2>&1",
+    "npm install --global @openma/pi-acp@0.1.8 >/tmp/openma-npm-install.log 2>&1",
     5 * 60_000,
   ), 6 * 60_000);
   const npmPrefix = (await stage(
     "read npm prefix",
     sandbox.exec("npm prefix --global"),
   )).trim();
-  piAcpCommand = `${npmPrefix}/bin/pi-acp`;
+  piAcpCommand = `${npmPrefix}/bin/openma-pi-acp`;
   if (!/^\/[A-Za-z0-9_./-]+$/u.test(piAcpCommand)) {
     throw new Error("Pi ACP installation did not expose a safe executable path");
   }
@@ -74,7 +74,7 @@ try {
     perTurnTimeoutMs: 90_000,
   }));
   await firstSession.setConfigOption("model", "deepseek/deepseek-v4-flash");
-  await firstSession.setConfigOption("thought_level", "off");
+  await firstSession.setConfigOption("thinking", "off");
 
   const nonce = `PI_SPRITES_NATIVE_${Date.now().toString(36)}`;
   const firstEvents = await stage("first DeepSeek turn", collect(
@@ -110,7 +110,7 @@ try {
     perTurnTimeoutMs: 90_000,
   }));
   await restoredSession.setConfigOption("model", "deepseek/deepseek-v4-flash");
-  await restoredSession.setConfigOption("thought_level", "off");
+  await restoredSession.setConfigOption("thinking", "off");
   const restoredEvents = await stage("restored DeepSeek turn", collect(
     restoredSession.prompt("What exact token did I ask you to remember? Reply with that token only."),
   ), 120_000);

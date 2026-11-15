@@ -2,7 +2,8 @@
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 import { env } from "cloudflare:workers";
 import { describe, it, expect } from "vitest";
-import { eventsToMessages, InMemoryHistory } from "../../apps/agent/src/runtime/history";
+import { eventsToMessages } from "../../packages/agent-harness/src/history/events-to-messages";
+import { InMemoryHistory } from "../../packages/agent-harness/src/history/in-memory-history";
 import type {
   SessionEvent,
   UserMessageEvent,
@@ -264,8 +265,8 @@ describe("eventsToMessages — ignored event types", () => {
     expect(messages[0].role).toBe("user");
   });
 
-  // user.interrupt flushes queued user.* by setting cancelled_at_ms on
-  // the row. Adapter (CfDoEventLog/InMemoryEventLog) attaches that to
+  // DELETE /pending/:event_id cancels a queued user.* by setting
+  // cancelled_at_ms on the row. Adapter (CfDoEventLog/InMemoryEventLog) attaches that to
   // the parsed event. eventsToMessages must skip those so the LLM
   // never sees inputs the user explicitly cancelled.
   it("cancelled user.message excluded from context", () => {
@@ -422,7 +423,7 @@ describe("InMemoryHistory", () => {
     // closes before the tool message lands. Pattern [tc1, tr1, tc2, tr2, msg]
     // → [user, assistant(tc1), tool(tr1), assistant(tc2), tool(tr2), assistant(msg)] = 6.
     //
-    // Note: in real captures from default-loop's onStepFinish, all tool_use
+    // Note: in real captures from the host loop's step boundary, all tool_use
     // events for one step are emitted before any tool_result events for that
     // step (AI SDK groups them), producing the more compact 4-message form.
     // This test constructs an interleaved sequence (use, result, use, result)

@@ -33,6 +33,10 @@ import {
   resolveAgentTools,
 } from "./definition-resolution";
 import { mergeMultiagent } from "./multiagent-merge";
+import {
+  validateAcpStoredToolPermissions,
+  validateAcpToolPermissionInput,
+} from "./acp-tool-permissions";
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
@@ -480,6 +484,13 @@ export class AgentsApplicationService implements AgentsApplicationPort {
     if (invalidMcpConfiguration !== null) {
       return { type: "invalid_request", message: invalidMcpConfiguration };
     }
+    const invalidAcpPermissions = validateAcpToolPermissionInput(
+      command.openma?.harness,
+      command.tools ?? [],
+    );
+    if (invalidAcpPermissions !== null) {
+      return { type: "invalid_request", message: invalidAcpPermissions };
+    }
     let normalizedModel = normalizeModel(command.model);
     normalizedModel = applyOpenAiModelMaxTokens(normalizedModel, command.openma);
     const invalidModel = validateAgentModelCapacity(normalizedModel);
@@ -583,6 +594,17 @@ export class AgentsApplicationService implements AgentsApplicationPort {
       ? null : validateMcpConfiguration(mcpServers, tools);
     if (invalidMcpConfiguration !== null) {
       return { type: "invalid_request", message: invalidMcpConfiguration };
+    }
+    // Stored ACP agents with per-tool policies stay readable, but any update
+    // must leave a definition with only the global permission mode.
+    const nextHarness = command.openma?.harness === undefined
+      ? current.openma?.harness
+      : command.openma.harness;
+    const invalidAcpPermissions = command.tools === undefined
+      ? validateAcpStoredToolPermissions(nextHarness, current.tools)
+      : validateAcpToolPermissionInput(nextHarness, command.tools ?? []);
+    if (invalidAcpPermissions !== null) {
+      return { type: "invalid_request", message: invalidAcpPermissions };
     }
     const resolvedMultiagent =
       command.multiagent === undefined

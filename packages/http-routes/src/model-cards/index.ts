@@ -75,8 +75,8 @@ async function probeModelCard(opts: {
     headers["authorization"] = `Bearer ${opts.apiKey}`;
     body = JSON.stringify({
       model: opts.model,
-      max_completion_tokens: 1,
-      messages: [{ role: "user", content: "hi" }],
+      max_output_tokens: 1,
+      input: "hi",
     });
   }
 

@@ -6,10 +6,15 @@ import { describe, expect, it } from "vitest";
 
 import { loadNodeConfig, redactNodeConfig, type NodeConfig } from "../src/config";
 
-const minimal = { NODE_ENV: "test" };
+const minimal = { NODE_ENV: "test", MEMORY_BLOB_DIR: "./data/memory-blobs" };
 
 describe("loadNodeConfig", () => {
-  it("applies the self-host defaults when nothing is set", () => {
+  it("configures the shared execution lease TTL with a 90 second default", () => {
+    expect(loadNodeConfig(minimal).execution.leaseTtlMs).toBe(90_000);
+    expect(loadNodeConfig({ ...minimal, OMA_SESSION_EXECUTION_LEASE_TTL_MS: "12000" }).execution.leaseTtlMs).toBe(12000);
+    expect(() => loadNodeConfig({ ...minimal, OMA_SESSION_EXECUTION_LEASE_TTL_MS: "0" })).toThrow();
+  });
+  it("applies self-host defaults with explicit Memory storage", () => {
     const config = loadNodeConfig(minimal);
 
     expect(config.processMode).toBe("standalone");
@@ -58,8 +63,9 @@ describe("loadNodeConfig", () => {
   });
 
   it("reads S3 blob backends only when all four required values are present", () => {
-    const partial = loadNodeConfig({ ...minimal, MEMORY_S3_ENDPOINT: "http://s3", MEMORY_S3_BUCKET: "b" });
-    expect(partial.blobs.memory.kind).toBe("localfs");
+    expect(() => loadNodeConfig({ NODE_ENV: "test" })).toThrow(/Memory storage requires/);
+    expect(() => loadNodeConfig({ ...minimal, MEMORY_S3_REGION: "auto" })).toThrow(/Incomplete MEMORY_S3/);
+    expect(() => loadNodeConfig({ ...minimal, MEMORY_S3_ENDPOINT: "http://s3", MEMORY_S3_BUCKET: "b" })).toThrow(/Incomplete MEMORY_S3/);
 
     const full = loadNodeConfig({
       ...minimal,
@@ -127,7 +133,7 @@ describe("loadNodeConfig", () => {
     expect(config.feishuWsRunner).toBe(true);
     expect(config.memoryQueue).toBe("disabled");
     expect(config.dreamCurator).toBe("dedup");
-    expect(config.execution).toEqual({ concurrency: 3, ownerId: "replica-a" });
+    expect(config.execution).toEqual({ concurrency: 3, ownerId: "replica-a", leaseTtlMs: 90_000 });
     expect(config.email).toEqual({ host: "smtp", port: 465, secure: true, user: "u", pass: "p", fromAddress: "noreply@x" });
     expect(config.http.gatewayOrigin).toBe("https://gw");
     expect(config.http.publicBaseUrl).toBe("https://pub");

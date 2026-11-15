@@ -14,6 +14,9 @@
  * renewals fail transiently. Invariants are checked after every turn.
  */
 import { afterEach, describe, expect, it } from "vitest";
+import { createModels, fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
+import { PiHarness, type HarnessContext } from "@open-managed-agents/agent-harness";
+import { z } from "zod";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -181,6 +184,9 @@ interface ChaosRates {
 
 interface TurnRecord {
   ok: boolean;
+  idleReasons: string[];
+  persistenceWarnings: number;
+  failureReason?: string;
   replacedErrors: string[];
   idleEvents: number;
   errorEvents: number;
@@ -327,24 +333,29 @@ async function runChaos(seed: number, turns: number, rates: ChaosRates) {
       phase = "start";
       await start();
     } catch {
-      return { ok: false, replacedErrors: [], idleEvents: 0, errorEvents: 0, lastEventType: undefined };
+      return { ok: false, idleReasons: [], persistenceWarnings: 0, replacedErrors: [], idleEvents: 0, errorEvents: 0, lastEventType: undefined };
     }
     const event = { id: `event_${index}`, type: "user.message", content: [{ type: "text", text: `turn ${index}` }] } as never;
     let ok = true;
+    let failureReason: string | undefined;
     try {
       await runner.accept({
         ...base,
         events: [event], historyEvents: [event],
         output: async (frame: any) => { events.push(frame?.event ?? frame); },
       } as never);
-    } catch {
+    } catch (error) {
       ok = false;
+      failureReason = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
     }
     const current = runner.connectedSandbox(scope) as unknown as ChaosSandbox | null;
     if (ok && current !== null) committed = await current.files();
     const types = events.map((e: any) => e?.type).filter(Boolean) as string[];
     return {
       ok,
+      failureReason,
+      idleReasons: events.filter((e:any)=>e.type === "session.status_idle").map((e:any)=>e.stop_reason?.type ?? e.stopReason?.type),
+      persistenceWarnings: events.filter((e:any)=>e.type === "session.warning" && e.source === "sandbox.persistence").length,
       replacedErrors: turn.replacedErrors,
       idleEvents: types.filter((type) => type === "session.status_idle").length,
       errorEvents: types.filter((type) => type === "session.error").length,
@@ -420,6 +431,9 @@ describe("sandbox loss chaos (ADR 0005)", () => {
       acquireFails: 0, renewBlip: 0, diesAtRenew: 0,
     });
     checkInvariants(result, 2);
+    // This synthetic harness deliberately rethrows recovery exhaustion; it
+    // tests restoration/leak invariants, not the model-facing tool contract.
+    // provider-failure-continuation.test.ts owns the real Pi continuation gate.
     expect(result.records.flatMap((record) => record.replacedErrors).length).toBeGreaterThan(0);
   });
 
@@ -429,6 +443,17 @@ describe("sandbox loss chaos (ADR 0005)", () => {
       acquireFails: 0, renewBlip: 0.3, diesAtRenew: 0.05,
     });
     checkInvariants(result, 3);
+    expect(result.records.every(record => record.ok),JSON.stringify(result.records)).toBe(true);
+    expect(result.records.every(record => JSON.stringify(record.idleReasons) === '["end_turn"]')).toBe(true);
+  });
+
+  it("turn-end provider loss reports persistence failure without changing the completed turn", async () => {
+    const result = await runChaos(5, 1, {
+      betweenTurns: 0, duringTool: 0, duringPrepare: 0, duringBarrier: 1,
+      acquireFails: 0, renewBlip: 0, diesAtRenew: 0,
+    });
+    expect(result.records[0]).toMatchObject({ok:true,idleEvents:1,errorEvents:0,idleReasons:["end_turn"],persistenceWarnings:1});
+    expect(result.final.ok).toBe(true);
   });
 
   it("fails a turn whose replacement cannot be acquired, then recovers on the next turn", async () => {
@@ -448,3 +473,67 @@ describe("sandbox loss chaos (ADR 0005)", () => {
     checkInvariants(result, seed);
   }, 30_000);
 });
+
+
+it("Pi continues after provider heartbeat loss and exhausted replacement without Session abort", async () => {
+  const { checkpoints, fence } = await fencedCheckpoints();
+  const sandbox = await ChaosSandbox.create("lease-exhausted");
+  let reading = false, renewFailed = false, acquisitions = 0;
+  sandbox.onCall = (_sandbox, method) => {
+    if (method === "renewLease" && reading) { sandbox.dead = true; renewFailed = true; }
+  };
+  const faux = fauxProvider({ tokensPerSecond: 100_000 });
+  let seen: unknown[] = [];
+  faux.setResponses([
+    fauxAssistantMessage([fauxToolCall("read", {}, { id: "lost-call" })], { stopReason: "toolUse" }),
+    context => { seen = structuredClone(context.messages); return fauxAssistantMessage([fauxToolCall("mcp__peer__effect", {}, { id: "next-call" })], { stopReason: "toolUse" }); },
+    fauxAssistantMessage("continued normally"),
+  ]);
+  const models = createModels(); models.setProvider(faux.provider);
+  const effects = await mkdtemp(join(tmpdir(), "oma-lease-effect-")); roots.push(effects);
+  const frames: any[] = [];
+  const runner = new DefaultNodeManagedSessionRunner({
+    workspaceCheckpoints: checkpoints, sandboxLease: { ttlMs: 60_000, intervalMs: 5 },
+    probeSandbox: async () => sandbox.dead ? "lost" : "alive",
+    buildSandbox: async () => {
+      if (++acquisitions > 1) throw new Error("provider replacement refused after lease loss");
+      return sandbox as unknown as SandboxExecutor;
+    },
+    outcomes: { evaluate: async () => { throw new Error("unexpected evaluation"); } },
+    confirmedTools: { execute: async () => { throw new Error("unexpected confirmation"); } },
+    buildModel: async () => ({} as never),
+    buildTools: async ({ sandbox: guarded }) => ({
+      read: { description: "pending provider read", inputSchema: z.object({}), execute: async () => {
+        reading = true;
+        await expect.poll(() => renewFailed, { timeout: 3000 }).toBe(true);
+        return guarded.readFile("/workspace/probe");
+      } },
+      mcp__peer__effect: { description: "independent durable side effect", inputSchema: z.object({}), execute: async () => {
+        await writeFile(join(effects, "completed"), "once"); return "done";
+      } },
+    }),
+    buildHarness: () => new PiHarness(),
+    buildHarnessContext: async input => ({ ...input,
+      agent: { id: "lease-agent", model: faux.getModel().id }, session_id: scope.sessionId,
+      userMessage: input.acceptedEvents[0], systemPrompt: "continue after tool error", env: {},
+      pi: { models, model: faux.getModel(), thinkingLevel: "off", speed: "standard" },
+    } as unknown as HarnessContext),
+    clock: { now: () => new Date() }, ids: { nextEventId: () => crypto.randomUUID() },
+  });
+  const base = { workspaceId: scope.workspaceId, sessionId: scope.sessionId,
+    session: { id: scope.sessionId, resources: [], agent: { skills: [] } } as never,
+    environment: { id: scope.environmentId, config: {} } as never, initialEvents: [], executionFence: fence };
+  await runner.start(base);
+  const message = { id: "lease-input", type: "user.message", content: [{ type: "text", text: "go" }] };
+  try {
+    await runner.accept({ ...base, events: [message], historyEvents: [message], output: async (frame: any) => { frames.push(frame.event ?? frame); } } as never);
+    console.log(JSON.stringify({ op: "lease.exhaustion.pi", renewFailed, acquisitions, frames, seen }));
+    expect(renewFailed).toBe(true); expect(acquisitions).toBe(2);
+    expect(await readFile(join(effects, "completed"), "utf8")).toBe("once");
+    expect(faux.state.callCount).toBe(3);
+    expect(seen.filter((message: any) => message.role === "toolResult" && message.toolCallId === "lost-call")).toEqual([expect.objectContaining({ isError: true })]);
+    expect(frames.filter(event => event.type === "agent.tool_result" && event.tool_use_id === "lost-call")).toHaveLength(1);
+    expect(frames.filter(event => event.type === "session.error")).toEqual([]);
+    expect(frames.filter(event => event.type === "session.status_idle").map(event => event.stopReason?.type ?? event.stop_reason?.type)).toEqual(["end_turn"]);
+  } finally { await runner.stop(base); }
+}, 15_000);

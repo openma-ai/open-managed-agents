@@ -1,4 +1,7 @@
+import { sessionExecutionEvents } from "@open-managed-agents/session-runtime-contract/coordination";
+import { sessionExecutionPlacement } from "@open-managed-agents/domain/environment-work";
 import type {
+  Session,
   Environment,
   EnvironmentSessionWorkEnqueuerPort,
   EnvironmentWorkEnvironmentSourcePort,
@@ -46,10 +49,9 @@ export type EnvironmentExecutionAuthority =
  */
 export function environmentExecutionAuthority(
   environment: Pick<Environment, "config">,
+  session?: Pick<Session, "agent">,
 ): EnvironmentExecutionAuthority {
-  return environment.config.type === "self_hosted"
-    ? "environment_work"
-    : "session_execution";
+  return sessionExecutionPlacement(environment, session).authority;
 }
 
 export class EnvironmentAwareSessionLifecycleRouter
@@ -60,7 +62,7 @@ export class EnvironmentAwareSessionLifecycleRouter
   ) {}
 
   async sessionStarted(input: StartSessionExecution): Promise<void> {
-    if (environmentExecutionAuthority(input.environment) === "session_execution") {
+    if (environmentExecutionAuthority(input.environment, input.session) === "session_execution") {
       await this.dependencies.runtime.sessionStarted(input);
       return;
     }
@@ -82,7 +84,7 @@ export class EnvironmentAwareSessionLifecycleRouter
         `Environment ${input.session.environmentId} was not found while stopping Session ${input.sessionId}`,
       );
     }
-    if (environmentExecutionAuthority(environment) === "session_execution") {
+    if (environmentExecutionAuthority(environment, input.session) === "session_execution") {
       await this.dependencies.runtime.sessionStopped(input);
     } else {
       const result = await this.dependencies.selfHostedWork.stop({
@@ -116,6 +118,8 @@ export class EnvironmentAwareSessionLifecycleRouter
 
 export interface EnvironmentAwareSessionEventDispatchRouterDependencies {
   runtime: SessionEventDispatchPort;
+  selfHostedWork: Pick<EnvironmentSessionWorkEnqueuerPort, "stop" | "interruptTarget">
+    & Partial<Pick<EnvironmentSessionWorkEnqueuerPort, "enqueue">>;
 }
 
 /**
@@ -123,7 +127,8 @@ export interface EnvironmentAwareSessionEventDispatchRouterDependencies {
  * committed these events to the canonical log before this hook runs. A
  * self-hosted Environment Work keeps its sandbox-side control channel open
  * and consumes that log, so dispatching here as well would execute the same
- * turn a second time outside the sandbox.
+ * turn a second time outside the sandbox. Interrupt is a control-plane stop
+ * request, not a second execution: revoke the existing Work through its CAS.
  */
 export class EnvironmentAwareSessionEventDispatchRouter
   implements SessionEventDispatchPort
@@ -132,9 +137,78 @@ export class EnvironmentAwareSessionEventDispatchRouter
     private readonly dependencies: EnvironmentAwareSessionEventDispatchRouterDependencies,
   ) {}
 
+  static forWorkspace(runtime: SessionEventDispatchPort, workFor: (workspaceId: string) => EnvironmentAwareSessionEventDispatchRouterDependencies["selfHostedWork"]): EnvironmentAwareSessionEventDispatchRouter {
+    return new EnvironmentAwareSessionEventDispatchRouter({runtime,selfHostedWork:{
+      enqueue: input => {
+        const work = workFor(input.workspaceId);
+        if (!work.enqueue) throw new Error("Atomic Session Work enqueue is not configured");
+        return work.enqueue(input);
+      },
+      stop: input => workFor(input.workspaceId).stop(input),
+      interruptTarget: input => {
+        const work=workFor(input.workspaceId);
+        if (!work.interruptTarget) throw new Error("Environment Work interrupt target binding is not configured");
+        return work.interruptTarget(input);
+      },
+    }});
+  }
+
   async sessionEventsAccepted(input: AcceptedSessionEvents): Promise<void> {
-    if (environmentExecutionAuthority(input.environment) === "session_execution") {
+    if (environmentExecutionAuthority(input.environment, input.session) === "session_execution") {
       await this.dependencies.runtime.sessionEventsAccepted(input);
+      return;
+    }
+    await this.stopAcceptedInterrupts(input);
+    // Ensure a Session-level consumer, never dispatch these inputs to a second
+    // brain. Pure interrupts and deferred/cancelled inputs cannot start Work.
+    if (sessionExecutionEvents(input.events.filter(event => event.cancelled_at_ms == null
+      && !("deferredUntilToolResults" in event && event.deferredUntilToolResults?.length))).length > 0) {
+      if (!this.dependencies.selfHostedWork.enqueue) throw new Error("Atomic Session Work enqueue is not configured");
+      const result = await this.dependencies.selfHostedWork.enqueue({
+        workspaceId: input.workspaceId, environment: input.environment, session: input.session,
+      });
+      if (result.type === "rejected") throw new Error(result.message);
+    }
+  }
+
+  async recoverSessionScheduling(input: AcceptedSessionEvents & { expectedSessionRevision: number }): Promise<void> {
+    if (environmentExecutionAuthority(input.environment, input.session) !== "environment_work") return;
+    if (sessionExecutionEvents(input.events).length === 0) return;
+    if (!this.dependencies.selfHostedWork.enqueue) throw new Error("Atomic Session Work enqueue is not configured");
+    const result = await this.dependencies.selfHostedWork.enqueue({
+      workspaceId: input.workspaceId, environment: input.environment, session: input.session,
+      expectedSessionRevision: input.expectedSessionRevision,
+      recoveryEventIds: input.events.map(event => event.id),
+    });
+    if (result.type === "rejected") throw new Error(result.message);
+  }
+
+  async bindInterruptTarget(input: Omit<AcceptedSessionEvents, "events">): Promise<string | null> {
+    if (environmentExecutionAuthority(input.environment, input.session) !== "environment_work") return null;
+    if (!this.dependencies.selfHostedWork.interruptTarget) throw new Error("Environment Work interrupt target binding is not configured");
+    return this.dependencies.selfHostedWork.interruptTarget(input);
+  }
+
+  async reconcileAcceptedInterrupts(input: AcceptedSessionEvents): Promise<void> {
+    if (environmentExecutionAuthority(input.environment, input.session) === "environment_work") await this.stopAcceptedInterrupts(input);
+  }
+
+  private async stopAcceptedInterrupts(input: AcceptedSessionEvents): Promise<void> {
+    // Missing legacy metadata is not the explicit null (no Work) intent.
+    // Without a durable target identity, neither time nor the latest Work can
+    // safely reconstruct cancellation; preserve the input and fail visibly.
+    if (input.events.some(event => event.type === "user.interrupt" && event.environmentWorkId === undefined)) {
+      throw new Error("Cannot safely recover interrupt: missing its accepted Environment Work target");
+    }
+    const targets = new Set(input.events.flatMap(event => event.type === "user.interrupt" && event.environmentWorkId != null ? [event.environmentWorkId] : []));
+    for (const workId of targets) {
+      const result = await this.dependencies.selfHostedWork.stop({
+        workspaceId: input.workspaceId,
+        session: input.session,
+        reason: "interrupted",
+        workId,
+      });
+      if (result.type === "conflict") throw new Error(result.message);
     }
   }
 }
@@ -182,7 +256,7 @@ export class EnvironmentAwareSessionEventStreamRouter
         `Environment ${input.session.environmentId} was not found while streaming Session ${input.sessionId}`,
       );
     }
-    const stream = environmentExecutionAuthority(environment) === "session_execution"
+    const stream = environmentExecutionAuthority(environment, input.session) === "session_execution"
       ? this.dependencies.runtime
       : this.dependencies.selfHosted;
     if ("threadId" in input) {

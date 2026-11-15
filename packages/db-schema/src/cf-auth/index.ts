@@ -23,3 +23,4 @@ export * from "./evals";
 export * from "./usage";
 export * from "./kv";
 export * from "./session-runtime";
+export * from "./runtime-resources";

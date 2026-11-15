@@ -85,6 +85,10 @@ export class MemorySessionEventStore
       if (replaced.type !== "replaced") return replaced;
 
       const records = this.events(input.workspaceId, input.sessionId, true);
+      for (const event of input.replaceEvents ?? []) {
+        const previous = records.get(event.id);
+        if (previous) previous.event = clone(event);
+      }
       for (const event of input.events) {
         if (!records.has(event.id)) {
           records.set(event.id, {

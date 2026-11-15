@@ -1,0 +1,38 @@
+{
+  "$comment": "Baseline for scripts/check-session-ratchets.mjs (design §0.7 测试门禁 1). Numbers only go down: `node scripts/check-session-ratchets.mjs --update` lowers them to the current values and never raises them. unclassifiedPackages are Session packages that predate the gate; a new one must be classified in scripts/check-core-boundaries.mjs.",
+  "maxLines": {
+    "apps/agent/src/runtime/session-do.ts": 7747,
+    "packages/control-plane-node/src/modules/node-managed.ts": 1310
+  },
+  "agentImports": {
+    "package": "packages/control-plane-node",
+    "specifier": "@open-managed-agents/agent",
+    "maxPerFile": {}
+  },
+  "unclassifiedPackages": [
+    "packages/sandbox-egress",
+    "packages/sandbox-gateway-sql",
+    "packages/sandbox-port-kit",
+    "packages/session-event-store",
+    "packages/session-event-store-memory",
+    "packages/session-event-store-sql",
+    "packages/session-realtime",
+    "packages/session-realtime-memory",
+    "packages/session-resource-store",
+    "packages/session-resource-store-memory",
+    "packages/session-resource-store-sql",
+    "packages/session-runtime",
+    "packages/session-runtime-contract",
+    "packages/session-runtime-sql",
+    "packages/session-secrets-store",
+    "packages/session-store",
+    "packages/session-store-memory",
+    "packages/session-store-sql",
+    "packages/session-thread-store",
+    "packages/session-thread-store-memory",
+    "packages/session-thread-store-sql",
+    "packages/session-wakeup",
+    "packages/session-wakeup-cloudflare",
+    "packages/session-wakeup-memory"
+  ]
+}

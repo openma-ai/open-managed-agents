@@ -2,9 +2,10 @@
 import { env } from "cloudflare:workers";
 import { describe, it, expect, vi } from "vitest";
 import { MockLanguageModelV3 } from "ai/test";
-import { buildTools, ToolFailureError } from "../../apps/agent/src/harness/tools";
+import { buildTools, ToolFailureError } from "../../packages/agent-harness/src/tools";
 import { TestSandbox } from "../../apps/agent/src/runtime/sandbox";
-import { InMemoryHistory, eventsToMessages } from "../../apps/agent/src/runtime/history";
+import { InMemoryHistory } from "../../packages/agent-harness/src/history/in-memory-history";
+import { eventsToMessages } from "../../packages/agent-harness/src/history/events-to-messages";
 import type { AgentConfig } from "@open-managed-agents/shared";
 
 // ============================================================
@@ -900,7 +901,7 @@ describe("Custom tools", () => {
 // 4. MCP tools — REMOVED. The legacy `mcp_<srv>_list_tools` / `mcp_<srv>_call`
 // generic-RPC entries no longer exist. Each remote MCP tool is now expanded
 // inline at buildTools time as `mcp__<server>__<tool>` with the upstream
-// schema (see apps/agent/src/harness/tools.ts:1150). Coverage of the new
+// schema (see packages/agent-harness/src/tools.ts:1150). Coverage of the new
 // shape is in MCP integration tests under test/integration/.
 // ============================================================
 

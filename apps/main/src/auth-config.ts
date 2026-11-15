@@ -29,8 +29,7 @@ function sendEmail(
   text: string,
 ) {
   if (!env.SEND_EMAIL) {
-    console.log(`[auth] email not sent to ${to} (SEND_EMAIL binding not configured): ${subject}`);
-    return;
+    throw new Error("Auth email delivery requires SEND_EMAIL");
   }
   return env.SEND_EMAIL.send({
     from: resolveEmailFrom(env),
@@ -51,7 +50,23 @@ function otpEmailHtml(code: string, label: string): string {
   ].join("");
 }
 
+/** Preserve hosted verification by default, but permit mail-free self-hosting.
+ * Invalid explicit flags fail closed without logging their contents. */
+export function resolveAuthEmailPolicy(env: Pick<Env, "SEND_EMAIL" | "AUTH_REQUIRE_EMAIL_VERIFY">) {
+  const flag = env.AUTH_REQUIRE_EMAIL_VERIFY;
+  if (flag !== undefined && flag !== "0" && flag !== "1") {
+    throw new Error("AUTH_REQUIRE_EMAIL_VERIFY must be 0 or 1");
+  }
+  const emailAvailable = !!env.SEND_EMAIL;
+  const requireEmailVerification = flag === undefined ? emailAvailable : flag === "1";
+  if (requireEmailVerification && !emailAvailable) {
+    throw new Error("AUTH_REQUIRE_EMAIL_VERIFY=1 requires SEND_EMAIL");
+  }
+  return { emailAvailable, requireEmailVerification };
+}
+
 export function createAuth(env: Env) {
+  const { emailAvailable, requireEmailVerification } = resolveAuthEmailPolicy(env);
   const db = drizzle(env.MAIN_DB, { schema });
 
   const socialProviders = buildSocialProviders({
@@ -66,8 +81,8 @@ export function createAuth(env: Env) {
     secret: env.BETTER_AUTH_SECRET,
     emailAndPassword: {
       enabled: true,
-      requireEmailVerification: true,
-      sendResetPassword: async ({ user, url }) => {
+      requireEmailVerification,
+      ...(emailAvailable ? { sendResetPassword: async ({ user, url }) => {
         await sendEmail(
           env,
           user.email,
@@ -75,9 +90,9 @@ export function createAuth(env: Env) {
           `<div style="font-family:sans-serif;max-width:400px;margin:0 auto;padding:32px"><h2>Reset your password</h2><p>Click the button below to reset your password.</p><a href="${url}" style="display:inline-block;padding:12px 24px;background:#111;color:#fff;text-decoration:none;border-radius:6px;margin:16px 0">Reset password</a><p style="color:#666;font-size:14px">If you did not request this, ignore this email.</p></div>`,
           `Reset your password: ${url}`,
         );
-      },
+      } } : {}),
     },
-    emailVerification: {
+    ...(emailAvailable ? { emailVerification: {
       sendVerificationEmail: async ({ user, url }) => {
         await sendEmail(
           env,
@@ -87,14 +102,14 @@ export function createAuth(env: Env) {
           `Verify your email: ${url}`,
         );
       },
-      sendOnSignUp: true,
+      sendOnSignUp: requireEmailVerification,
       autoSignInAfterVerification: true,
-    },
-    plugins: [
+    } } : {}),
+    plugins: emailAvailable ? [
       emailOTP({
         otpLength: 6,
         expiresIn: 300,
-        sendVerificationOnSignUp: true,
+        sendVerificationOnSignUp: requireEmailVerification,
         async sendVerificationOTP({ email, otp, type }) {
           const labels: Record<string, string> = {
             "sign-in": "Your sign-in code",
@@ -111,7 +126,7 @@ export function createAuth(env: Env) {
           );
         },
       }),
-    ],
+    ] : [],
     socialProviders,
     database: drizzleAdapter(db, { provider: "sqlite", schema }),
     trustedOrigins: ["*"],

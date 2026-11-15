@@ -44,7 +44,7 @@ describe("Harbor-compatible ACP native session profiles", () => {
   it("publishes only the per-agent native session artifacts", () => {
     const pi = bindAcpAgentState({
       sessionId: "session_pi",
-      agent: { id: "pi-acp", command: "pi-acp" },
+      agent: { command: "openma-pi-acp" },
     });
     expect(pi).not.toHaveProperty("captureRoot");
     expect(pi).not.toHaveProperty("captureExcludeGlobs");
@@ -54,12 +54,6 @@ describe("Harbor-compatible ACP native session profiles", () => {
         path: "/workspace/.openma/harness-state/acp/session_pi/pi/v1/native/home/.pi/agent/sessions",
         runtimePath: "/tmp/openma-harness-state/acp/session_pi/pi/v1/native/home/.pi/agent/sessions",
         kind: "directory",
-        requiredForResume: true,
-      },
-      {
-        path: "/workspace/.openma/harness-state/acp/session_pi/pi/v1/native/home/.pi/pi-acp/session-map.json",
-        runtimePath: "/tmp/openma-harness-state/acp/session_pi/pi/v1/native/home/.pi/pi-acp/session-map.json",
-        kind: "file",
         requiredForResume: true,
       },
     ]);
@@ -80,6 +74,26 @@ describe("Harbor-compatible ACP native session profiles", () => {
         kind: "sqlite",
         requiredForResume: true,
       }),
+    ]);
+  });
+
+  it("recognizes the pinned OpenMA Pi launcher instead of requiring the legacy id map", () => {
+    const pi = bindAcpAgentState({
+      sessionId: "session_installed_pi",
+      agent: {
+        id: "pi-acp",
+        command: "/home/oma-worker/.oma/installed-agent/pi-acp/0.1.8/acp-launch.sh",
+      },
+    });
+    expect(pi.adapterId).toBe("pi");
+    expect(pi.sessionArtifacts).toEqual([
+      expect.objectContaining({
+        kind: "directory",
+        path: expect.stringMatching(/\/home\/\.pi\/agent\/sessions$/),
+      }),
+    ]);
+    expect(pi.sessionArtifacts).not.toEqual([
+      expect.objectContaining({ path: expect.stringContaining("session-map.json") }),
     ]);
   });
 

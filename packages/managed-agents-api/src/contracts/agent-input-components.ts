@@ -132,8 +132,7 @@ export const agentToolInputSchema = z.discriminatedUnion("type", [
   customToolSchema,
 ]) satisfies z.ZodType<AgentToolInput>;
 
-export const agentMcpServerInputSchema = z
-  .discriminatedUnion("type", [
+export const agentMcpServerInputSchema = z.discriminatedUnion("type", [
     z
       .object({
         name: z.string().min(1),
@@ -150,7 +149,7 @@ export const agentMcpServerInputSchema = z
         env: z.record(z.string(), z.string()).optional(),
       })
       .strict(),
-  ]);
+]);
 
 export const agentSkillInputSchema = z.discriminatedUnion("type", [
   z

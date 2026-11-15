@@ -1,0 +1,3 @@
+#!/bin/sh
+# Absolute Node path survives the claim-scoped replacement environment.
+exec /usr/local/bin/node /opt/openma/runner.mjs

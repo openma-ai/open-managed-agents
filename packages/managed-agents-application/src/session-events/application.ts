@@ -1,3 +1,4 @@
+import { settleAcceptedWorkOutcomeInterrupts, type WorkOutcomeInterruptPort } from "./work-outcome-interrupt";
 import { sessionPausedAtBudget } from "../sessions/budget";
 import type { SessionEventView } from "@open-managed-agents/domain/sessions";
 import type {
@@ -38,8 +39,9 @@ import { sessionInputIdentityPrefix } from "@openma/common/protocol/managed";
 export { sessionInputIdentityPrefix };
 
 function inputPayload(event: SentSessionEvent): string {
-  const { id: _id, processedAt: _time, ...body } = event;
+  const { id: _id, processedAt: _time, deferredUntilToolResults: _deferred, continuationToolUseIds: _continuation, cancelled_at_ms: _cancelled, ...body } = event;
   if ("outcomeId" in body) delete (body as {outcomeId?: string}).outcomeId;
+  if ("environmentWorkId" in body) delete body.environmentWorkId;
   const normalize = (value: unknown): unknown => Array.isArray(value) ? value.map(normalize)
     : value !== null && typeof value === "object" ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, child]) => [key, normalize(child)])) : value;
   return JSON.stringify(normalize(body));
@@ -109,6 +111,8 @@ export interface SessionEventsApplicationServiceDependencies {
   execution: SessionExecutionContextSourcePort;
   stream: SessionEventStreamPort;
   dispatch: SessionEventDispatchPort;
+  workOutcomeInterrupt?: WorkOutcomeInterruptPort;
+  schedulingRecovery?: { recoverSessionScheduling(input: { sessionId: string }): Promise<unknown> };
   /**
    * Generic host hook for work on an existing Session (new turns). Optional;
    * defaults to admit-all. Deny status/body come from the host.
@@ -255,7 +259,22 @@ export class SessionEventsApplicationService
           if (previous.length !== events.length || events.some(event => !byId.has(event.id) || inputPayload(byId.get(event.id)! as SentSessionEvent) !== inputPayload(event))) {
             return { type: "idempotency_conflict", message: "Idempotency key was already used with different input" };
           }
-          return { type: "accepted", events: events.map(event => byId.get(event.id)! as SentSessionEvent) };
+          // The append is already durable. Recover only cancellation control
+          // effects; never redispatch messages/tools or append duplicate input.
+          const accepted = events.map(event => byId.get(event.id)! as SentSessionEvent);
+          await settleAcceptedWorkOutcomeInterrupts(this.dependencies.workOutcomeInterrupt, {workspaceId:this.dependencies.workspaceId,sessionId:command.sessionId,events:accepted});
+          const interrupts = accepted.filter(event => event.type === "user.interrupt");
+          if (interrupts.length > 0 && this.dependencies.dispatch.reconcileAcceptedInterrupts) {
+            await this.dependencies.dispatch.reconcileAcceptedInterrupts({
+              workspaceId: this.dependencies.workspaceId, sessionId: command.sessionId,
+              session: execution.session, environment: execution.environment,
+              events: interrupts,
+            });
+          }
+          if (startsRuntimeWork(accepted)) {
+            await this.dependencies.schedulingRecovery?.recoverSessionScheduling({ sessionId: command.sessionId });
+          }
+          return { type: "accepted", events: accepted };
         }
       }
       if (command.requireRunningInterrupt && command.events.some(event => event.type === "user.interrupt")
@@ -272,6 +291,9 @@ export class SessionEventsApplicationService
       // settle helpers + #401 budget pause (cap vs consumed lifts the pause;
       // an interrupt at the budget cap is accepted, ignored, not persisted).
       let acceptedEvents = events;
+      let idleRequiresActionInterrupt = false;
+      let replaceEvents: SentSessionEvent[] = [];
+      let executionEvents: SentSessionEvent[] | undefined;
       {
         const recent = await this.dependencies.store.list({
           workspaceId: this.dependencies.workspaceId,
@@ -289,9 +311,13 @@ export class SessionEventsApplicationService
         ) {
           reason = null;
         }
+        idleRequiresActionInterrupt = reason === "requires_action" && execution.session.status === "idle";
         if (reason !== null) {
           const bad = nonSettleEventTypes(command.events);
-          if (bad.length > 0) {
+          const completeOaiSettlement = command.allowMessagesAfterToolResults && command.expectedRevision !== undefined && reason === "requires_action"
+            && command.events.every(event => event.type === "user.message" || event.type === "user.custom_tool_result")
+            && settleOnlyReason([...chronological, ...events] as Array<{ type?: string; [key: string]: unknown }>) === null;
+          if (bad.length > 0 && !completeOaiSettlement && !(command.deferUntilToolResults && reason === "requires_action" && events.every(event => event.type === "user.message"))) {
             return {
               type: "invalid_request",
               message: settleOnlyRejectMessage(reason, bad),
@@ -301,6 +327,34 @@ export class SessionEventsApplicationService
             acceptedEvents = events.filter((event) => event.type !== "user.interrupt");
             if (acceptedEvents.length === 0) return { type: "accepted", events: [] };
           }
+        }
+      }
+      if (command.deferUntilToolResults || command.events.some(event => event.type === "user.custom_tool_result" || event.type === "user.tool_result" || event.type === "user.tool_confirmation" || event.type === "user.interrupt")) {
+        const history: SessionEventView[] = [];
+        let position: { processedAt: string; eventId: string } | undefined;
+        for (;;) {
+          const rows = await this.dependencies.store.list({ workspaceId: this.dependencies.workspaceId, sessionId: command.sessionId, limit: 100, order: "asc", ...(position ? { position } : {}) });
+          history.push(...rows);
+          if (rows.length < 100) break;
+          const last = rows.at(-1)!; const stamp = sessionEventSortTime(last);
+          if (!stamp) throw new Error("Canonical deferred admission requires ordered history");
+          position = { processedAt: stamp, eventId: last.id };
+        }
+        const interrupts = idleRequiresActionInterrupt ? [] : acceptedEvents.filter(event => event.type === "user.interrupt");
+        const cancelled = (event: SentSessionEvent) => interrupts.some(interrupt => interrupt.sessionThreadId == null || interrupt.sessionThreadId === (("sessionThreadId" in event ? event.sessionThreadId : undefined) ?? "sthr_primary"));
+        const answered = new Set(history.concat(acceptedEvents).flatMap(event => event.type === "user.custom_tool_result" ? [event.customToolUseId] : event.type === "user.tool_result" || event.type === "user.tool_confirmation" ? [event.toolUseId] : []));
+        if (command.deferUntilToolResults) {
+          if (command.expectedRevision === undefined || !events.every(event => event.type === "user.message")) return { type: "invalid_request", message: "Deferred messages require a revision-bound message batch" };
+          const idle = [...history].reverse().find(event => event.type.startsWith("session.status_"));
+          const stop = idle && "stopReason" in idle ? idle.stopReason : undefined;
+          const ids = stop?.type === "requires_action" && "eventIds" in stop ? stop.eventIds.filter((id: string) => !answered.has(id)) : [];
+          if (!ids.length) return { type: "version_conflict", message: "The deferred input Turn is no longer waiting" };
+          acceptedEvents = events.map(event => ({ ...event, deferredUntilToolResults: ids }));
+          executionEvents = [];
+        } else {
+          replaceEvents = history.filter((event): event is SentSessionEvent => "deferredUntilToolResults" in event && Array.isArray(event.deferredUntilToolResults) && event.deferredUntilToolResults.length > 0 && (cancelled(event as SentSessionEvent) || event.deferredUntilToolResults.every(id => answered.has(id))))
+            .map(event => { const { deferredUntilToolResults: _binding, ...released } = event; return cancelled(event) ? { ...released, cancelled_at_ms: Date.parse(acceptedAt) } as SentSessionEvent : { ...released, continuationToolUseIds: _binding } as SentSessionEvent; });
+          if (replaceEvents.length) executionEvents = [...acceptedEvents, ...replaceEvents.filter(event => event.cancelled_at_ms == null)];
         }
       }
       // Host admission hook for existing-Session work. Runs after the
@@ -340,21 +394,33 @@ export class SessionEventsApplicationService
           ? { ...event, processedAt: acceptedAt } as SentSessionEvent
           : event)
         : acceptedEvents;
+      // Persist the exact cancellation target with the accepted input.
+      const target = idleRequiresActionInterrupt ? null : accepted.some(event => event.type === "user.interrupt") && this.dependencies.dispatch.bindInterruptTarget
+        ? await this.dependencies.dispatch.bindInterruptTarget({ workspaceId: this.dependencies.workspaceId, sessionId: command.sessionId, session: execution.session, environment: execution.environment })
+        : undefined;
+      const bind = (event: SentSessionEvent): SentSessionEvent => event.type === "user.interrupt" && target !== undefined ? { ...event, environmentWorkId: target } : event;
+      const bound = accepted.map(bind);
       const appended = await this.dependencies.store.append({
         workspaceId: this.dependencies.workspaceId,
         sessionId: command.sessionId,
         expectedRevision: execution.revision,
-        events: accepted,
-        nextSession: applyAcceptedEvents(execution.session, accepted, acceptedAt),
+        events: bound,
+        nextSession: applyAcceptedEvents(execution.session, bound, acceptedAt),
+        ...(replaceEvents.length ? { replaceEvents } : {}),
+        ...(executionEvents === undefined ? {} : { executionEvents: executionEvents.map(bind) }),
       });
       if (appended.type === "not_found") return { type: "not_found" };
       if (appended.type === "revision_conflict") continue;
+      // Server closes matched evaluations and revokes their Work atomically,
+      // before teardown can clear the claim. Generic stop remains lifecycle-owned.
+      await settleAcceptedWorkOutcomeInterrupts(this.dependencies.workOutcomeInterrupt, {workspaceId:this.dependencies.workspaceId,sessionId:command.sessionId,events:appended.events});
+      if (executionEvents?.length === 0) return { type: "accepted", events: appended.events };
       await this.dependencies.dispatch.sessionEventsAccepted({
         workspaceId: this.dependencies.workspaceId,
         sessionId: command.sessionId,
         session: appended.session,
         environment: execution.environment,
-        events: appended.events,
+        events: executionEvents?.map(bind) ?? appended.events,
       });
       return { type: "accepted", events: appended.events };
     }

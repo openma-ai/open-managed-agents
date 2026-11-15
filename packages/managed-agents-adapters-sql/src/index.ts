@@ -29,6 +29,8 @@ export {
   createSqlSessionRuntimeReaders,
   type SqlSessionRuntimeReaders,
 } from "@open-managed-agents/session-runtime-sql";
+export { SqlWorkModelEgress } from "./work-model-egress";
+export { SqlWorkInputs, ensureMysqlWorkInputsSchema, type SqlWorkInputsDialect } from "./work-inputs";
 export { SqlSessionRuntimeProjectionPersistence } from "./session-runtime-projection-sql-persistence";
 export { SqlPersistedSessionEventStream } from "./session-event-polling-stream";
 export { SqlReplicatedSessionEventStream } from "./session-event-replicated-stream";
@@ -51,3 +53,8 @@ export { SqlSkillPersistence } from "./skills-sql-persistence";
 export { SqlTunnelPersistence } from "./tunnels-sql-persistence";
 export { SqlUserProfilePersistence } from "./user-profiles-sql-persistence";
 export { SqlVaultPersistence } from "./vaults-sql-persistence";
+export { SqlWorkFinalization } from "./work-finalization";
+
+export * from "./work-bootstrap";
+export { SqlCustomToolInvocations, customInvocationSchema, customInvocationMysqlSchema, ensureMysqlCustomInvocationSchema } from './custom-tool-invocations';
+export { resolveSqlCoreCustomTools } from './core-custom-tools';

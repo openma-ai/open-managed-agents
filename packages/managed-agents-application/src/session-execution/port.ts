@@ -19,6 +19,8 @@ export interface SessionExecutionFence {
   ownerId: string;
   generation: number;
   expiresAt: string;
+  /** Recover only this failed attempt; persistence must reject newer work atomically. */
+  settlement?: "failed" | "failed_unclaimed";
 }
 
 /**
@@ -40,7 +42,21 @@ export type RuntimeProducedSessionEvent = Exclude<
   SentSessionEvent
 >;
 
+/** Client supplies exact consumed root bytes, never a trusted execution id.
+ * Persistence proves current claim/holder, root and open-turn state under CAS. */
+export interface WorkRuntimeRootProof {
+  inputId: string;
+  turnId: string;
+  expectedDocument: string;
+}
+
+/** Opaque Core receipt paired with its observed native call ID. Never an RPC ID. */
+export interface WorkCustomInvocationBinding { receipt: string; nativeCallId: string }
+
 export interface RecordSessionRuntimeEventsCommand {
+  customInvocations?: WorkCustomInvocationBinding[];
+  workRoot?: WorkRuntimeRootProof;
+  workRootDialect?: "sqlite" | "postgres" | "mysql";
   sessionId: string;
   events: RuntimeProducedSessionEvent[];
   executionFence?: SessionExecutionFence;

@@ -10,6 +10,9 @@
   ],
 
   "d1_databases": [
+    { "binding": "WORK_UPGRADE_SOURCE", "database_name": "work-upgrade-source", "database_id": "work-upgrade-source" },
+    { "binding": "WORK_UPGRADE_A", "database_name": "work-upgrade-a", "database_id": "work-upgrade-a" },
+    { "binding": "WORK_UPGRADE_B", "database_name": "work-upgrade-b", "database_id": "work-upgrade-b" },
     { "binding": "MAIN_DB", "database_name": "test-auth-db", "database_id": "test-auth-db-id", "migrations_dir": "apps/main/migrations" },
     { "binding": "AUTH_DB", "database_name": "test-auth-db", "database_id": "test-auth-db-id", "migrations_dir": "apps/main/migrations" },
     { "binding": "INTEGRATIONS_DB", "database_name": "test-integrations-db", "database_id": "test-integrations-db-id", "migrations_dir": "apps/main/migrations-integrations" }

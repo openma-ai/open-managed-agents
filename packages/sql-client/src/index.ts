@@ -1,5 +1,8 @@
 export type {
   SqlClient,
+  SqlTransaction,
+  SqlRowLockCapability,
+  SqlRowLockTransactions,
   SqlStatement,
   SqlExecMeta,
   SqlSelectResult,

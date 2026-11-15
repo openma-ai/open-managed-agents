@@ -163,7 +163,12 @@ export class ExecutionLeaseController<Fence extends object> {
           }),
         ]);
       } catch (error) {
-        renewal = { type: "lost", reason: error };
+        // A transport timeout is not an authoritative rejection. Session
+        // executors can retry while their last confirmed lease is live;
+        // callers without an expiry reader retain fail-closed behavior.
+        renewal = this.options.leaseExpiresAt === undefined
+          ? { type: "lost", reason: error }
+          : { type: "retry", error };
       } finally {
         if (timeout !== undefined) clearTimeout(timeout);
         this.signal.removeEventListener("abort", abortRenewal);

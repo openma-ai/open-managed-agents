@@ -12,6 +12,7 @@
   "dependencies": {
     "@open-managed-agents/cap": "workspace:*",
     "@open-managed-agents/credential-store": "workspace:*",
-    "@open-managed-agents/domain": "workspace:*"
+    "@open-managed-agents/domain": "workspace:*",
+    "@open-managed-agents/sandbox-gateway": "workspace:*"
   }
 }

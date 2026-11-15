@@ -3,7 +3,6 @@ import {
   resolveApplicationPort,
   type ApplicationPortSource,
 } from "../application-port-source";
-import { MANAGED_AGENTS_BETA, requireBeta } from "../beta";
 import {
   deploymentRunListQuerySchema,
   deploymentRunPageResponseSchema,
@@ -27,7 +26,6 @@ export function buildDeploymentRunRoutes(
   source: ApplicationPortSource<DeploymentRunsApplicationPort>,
 ): Hono {
   const app = new Hono();
-  app.use("*", requireBeta(MANAGED_AGENTS_BETA));
 
   app.get("/", async (c) => {
     const query = deploymentRunListQuerySchema.safeParse({

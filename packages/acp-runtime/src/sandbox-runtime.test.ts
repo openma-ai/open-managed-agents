@@ -20,6 +20,20 @@ afterEach(async () => {
 });
 
 describe("sandbox ACP runtime", () => {
+  it.each([
+    ["http", undefined], ["http", false],
+  ] as const)("refuses %s MCP without declared support (%s)", async (transport, supported) => {
+    const workdir = await mkdtemp(join(tmpdir(), "oma-acp-http-capability-"));
+    temporaryDirectories.push(workdir);
+    const runtime = createAcpRuntime({ type: "local", spawner: new NodeSpawner() });
+    const source = fakeAcpAgentSource.replace('agentCapabilities: {}', 'agentCapabilities: ' + JSON.stringify(supported === undefined ? {} : { mcpCapabilities: { [transport]: supported } }));
+    const started: Array<Awaited<ReturnType<typeof runtime.start>>> = [];
+    try {
+      await expect(runtime.start({ agent: { command: process.execPath, args: ["-e", source], cwd: workdir },
+        mcpServers: [{ type: transport, name: "public", url: "https://proxy.example/mcp", headers: [] }],
+      }).then(value => { started.push(value); return value; })).rejects.toThrow(`mcpCapabilities.${transport}`);
+    } finally { await Promise.all(started.map(session => session.dispose())); }
+  });
   it("runs the shared ACP session loop over a sandbox duplex process", async () => {
     const workdir = await mkdtemp(join(tmpdir(), "oma-acp-sandbox-"));
     temporaryDirectories.push(workdir);
@@ -75,6 +89,19 @@ describe("sandbox ACP runtime", () => {
     expect(sandboxResult).toEqual(localResult);
   });
 
+  it.each(["http"] as const)("runs %s MCP only when initialize declares support", async transport => {
+    const workdir = await mkdtemp(join(tmpdir(), "oma-acp-http-supported-"));
+    temporaryDirectories.push(workdir);
+    const runtime = createAcpRuntime({ type: "sandbox", sandbox: new LocalSubprocessSandbox({ workdir }) });
+    const source = fakeAcpAgentSource.replace('agentCapabilities: {}', 'agentCapabilities: ' + JSON.stringify({mcpCapabilities:{[transport]:true}}));
+    const mcpServers = [{ type: transport, name: "public", url: "https://proxy.example/mcp", headers: [] }];
+    const session = await runtime.start({ agent: { command: process.execPath, args: ["-e", source], cwd: "/workspace" }, mcpServers });
+    try {
+      const updates = [];
+      for await (const update of session.prompt("report mcp")) updates.push(update);
+      expect(updates).toContainEqual({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: JSON.stringify(mcpServers) } });
+    } finally { await session.dispose(); }
+  });
   it("sends the standard MCP stdio transport unchanged in session/new", async () => {
     const workdir = await mkdtemp(join(tmpdir(), "oma-acp-mcp-stdio-"));
     temporaryDirectories.push(workdir);
@@ -126,6 +153,27 @@ describe("sandbox ACP runtime", () => {
       // Drain the final prompt result before observing process liveness.
     }
     await expect.poll(() => session.isAlive()).toBe(false);
+  });
+
+  it.each(["local", "sandbox"] as const)("rejects a cooperative %s prompt on deadline instead of silently ending", async (placement) => {
+    const workdir = await mkdtemp(join(tmpdir(), "oma-acp-deadline-"));
+    temporaryDirectories.push(workdir);
+    const sandbox = new LocalSubprocessSandbox({ workdir });
+    const runtime = createAcpRuntime(placement === "local"
+      ? { type: "local", spawner: new NodeSpawner() }
+      : { type: "sandbox", sandbox });
+    const source = cancellationIgnoringAcpAgentSource
+      .replace('// Intentionally never resolve this request.', 'globalThis.pending = request.id;')
+      .replace('// Ignore the notification and keep the prompt running forever.',
+        'send({ jsonrpc: "2.0", id: globalThis.pending, result: { stopReason: "cancelled" } });');
+    const session = await runtime.start({
+      agent: { command: process.execPath, args: ["-e", source], cwd: placement === "local" ? workdir : "/workspace" },
+      perTurnTimeoutMs: 20,
+    });
+    try {
+      await expect((async () => { for await (const _event of session.prompt("sleep")) {} })())
+        .rejects.toThrow("exceeded its 20ms turn deadline");
+    } finally { await session.dispose(); }
   });
 
   it("hard-kills an ACP child that ignores cancellation after the turn deadline", async () => {

@@ -26,13 +26,18 @@
 import { logWarn } from "@open-managed-agents/shared";
 
 /**
- * Mirror of @cloudflare/sandbox `DirectoryBackup`. Kept local to avoid
- * importing the SDK type into a module that needs to run in environments
- * without it. Shape MUST stay byte-compatible with the SDK type.
+ * Mirror of the @cloudflare/sandbox 1.0 `DirectoryBackupRecord`, kept local
+ * so this module runs without the SDK. Restore needs size, sha256 and format;
+ * rows written before Sandbox SDK 1.0 hold only {id, dir, localBucket?} and
+ * point at squashfs archives that 1.0 cannot restore.
  */
 export interface WorkspaceBackupHandle {
   id: string;
   dir: string;
+  size?: number;
+  sha256?: string;
+  format?: string;
+  name?: string;
   localBucket?: boolean;
 }
 

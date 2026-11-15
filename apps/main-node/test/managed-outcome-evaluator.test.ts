@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   Environment,
   Session,
@@ -118,17 +118,28 @@ describe("NodeManagedOutcomeEvaluator", () => {
     ]);
   });
 
-  it("rejects an untyped judge response instead of leaking it across the Port", async () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // #545 §0.7: the judge is session-outcomes' shared LLM judge (kept from
+  // Cloudflare): an unparseable reply is retried, then becomes a typed
+  // needs_revision verdict instead of an untyped value crossing the Port.
+  it("retries an untyped judge response and returns a typed needs_revision verdict", async () => {
+    vi.useFakeTimers();
+    let calls = 0;
     const evaluator = new NodeManagedOutcomeEvaluator({
       buildModel: async () => ({ provider: "test", modelId: "judge" }),
-      judge: async () => ({
-        text: "looks good",
-        usage: { inputTokens: 1, outputTokens: 1 },
-      }),
+      judge: async () => {
+        calls += 1;
+        return {
+          text: "looks good",
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
     });
 
-    await expect(
-      evaluator.evaluate({
+    const evaluation = evaluator.evaluate({
         workspaceId: "workspace_01",
         session,
         environment,
@@ -144,7 +155,67 @@ describe("NodeManagedOutcomeEvaluator", () => {
         historyEvents: [],
         iteration: 0,
         abortSignal: new AbortController().signal,
+      });
+    await vi.runAllTimersAsync();
+
+    await expect(evaluation).resolves.toEqual({
+      result: "needs_revision",
+      explanation: expect.stringContaining("llm judge exhausted retries"),
+      usage: {
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+        inputTokens: 4,
+        outputTokens: 4,
+      },
+    });
+    expect(calls).toBe(4);
+  });
+
+  it("resolves a file rubric through the workspace files Port", async () => {
+    const prompts: string[] = [];
+    const reads: string[] = [];
+    const evaluator = new NodeManagedOutcomeEvaluator({
+      buildModel: async () => ({ provider: "test", modelId: "judge" }),
+      judge: async ({ prompt }) => {
+        prompts.push(prompt);
+        return {
+          text: JSON.stringify({ result: "satisfied", explanation: "ok" }),
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+      rubricFiles: (workspaceId) => ({
+        read: async ({ fileId }) => {
+          reads.push(`${workspaceId}/${fileId}`);
+          return { type: "found", text: "Rubric from the file" };
+        },
       }),
-    ).rejects.toThrow("Outcome judge returned invalid JSON");
+    });
+
+    const result = await evaluator.evaluate({
+      workspaceId: "workspace_01",
+      session,
+      environment,
+      outcome: {
+        id: "event_outcome_03",
+        type: "user.define_outcome",
+        description: "Complete",
+        rubric: { type: "file", fileId: "file_01" },
+        maxIterations: 1,
+        outcomeId: "outc_03",
+        processedAt: "2026-08-26T01:00:00.000Z",
+      },
+      historyEvents: [{
+        id: "event_message_file_rubric",
+        type: "agent.message",
+        content: [{ type: "text", text: "Completed the file-rubric task." }],
+        processedAt: "2026-08-26T01:01:00.000Z",
+      }],
+      iteration: 0,
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(result.result).toBe("satisfied");
+    expect(reads).toEqual(["workspace_01/file_01"]);
+    expect(prompts[0]).toContain("Rubric from the file");
   });
 });

@@ -249,7 +249,7 @@
 
 所有事件类型在 `types.ts` 中都有定义。类型存在，但其中几种**只是类型，没有被 harness 真正发出**：
 
-- `session.thread_created`、`session.thread_idle` —— 类型已定义，但 session-do 或 default-loop 里没有代码通过正确的 thread 管理把它们发出去
+- `session.thread_created`、`session.thread_idle` —— 类型已定义，但 session-do 或 Pi host loop 里没有代码通过正确的 thread 管理把它们发出去
 - `session.status_rescheduled` —— 类型已定义，但没有重试/重排逻辑发出它
 
 **严重度：MINOR** —— 类型在；发射逻辑对 research-preview 特性不完整。

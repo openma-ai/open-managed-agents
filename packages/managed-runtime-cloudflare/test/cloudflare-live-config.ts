@@ -34,13 +34,17 @@ export function buildCloudflareLiveConfig(input: CloudflareLiveConfigInput) {
     name: input.workerName,
     main: input.workerPath,
     compatibility_date: "2026-09-01",
-    compatibility_flags: ["nodejs_compat"],
+    compatibility_flags: ["nodejs_compat", "enable_ctx_exports"],
     workers_dev: true,
     containers: [{
       class_name: "Sandbox",
-      image: input.dockerfilePath,
-      instance_type: "standard-1",
-      max_instances: 1,
+      name: `${input.workerName}-sandbox-do-v1`,
+      scheduling_policy: "durable_object",
+      images: {
+        sandbox: {
+          dockerfile: input.dockerfilePath,
+        },
+      },
     }],
     durable_objects: { bindings: [{ name: "SANDBOX", class_name: "Sandbox" }] },
     migrations: [{ tag: "v1", new_sqlite_classes: ["Sandbox"] }],

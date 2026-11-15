@@ -1,19 +1,36 @@
+import { hasOpenExecutionCall } from "./turn-preflight";
+import { handleWorkPhysicalObservation, isWorkPhysicalObservation } from "./work-physical-observation";
+import { handleCfWorkFinalization, CF_WORK_FINALIZATION_PREFIX } from "./cf-work-finalization-host";
+import { CfE2BWorkLease } from "./cf-work-provider-lease";
+import { recoverCfWorkLease, type CfWorkLeaseScope } from "./cf-work-lease-recovery";
+import { CF_WORK_DISPATCH_PATH, dispatchCfWorkRunnerRequest } from "./cf-work-runner-entry";
+import { waitForAlarmMaintenance } from "./alarm-maintenance";
+import { publishAgentsApiArtifacts } from "./artifact-publication";
+import { readSandboxFileBytes } from "./sandbox-output";
+import { appendStaleTurnEvent, backfillStaleTurnEvents } from "./stale-turn-settlement";
 import { UNKNOWN_TOOL_RESULT_TEXT } from "@open-managed-agents/session-runtime-contract/history";
+import { SESSION_OUTPUTS_PATH, sessionResourceEnvironment, type SessionMemoryResourceFact } from "@open-managed-agents/runtime-resource-contract";
+import { cfSkillResourceFacts } from "./session-resource-guidance";
 import { DurableObject } from "cloudflare:workers";
-import { assertRuntimeAgentSnapshot, resolvePinnedSubagent, resolveThreadAgentSnapshot, resolveSubagentSkillReminders, resolveRuntimeSkillFiles } from "./multiagent";
+import {
+  assertRuntimeAgentSnapshot, resolvePinnedSubagent, resolveThreadAgentSnapshot,
+  resolveSubagentSkillReminders, resolveRuntimeSkillFiles, type HarnessContext,
+  type HarnessInterface, type HistoryStore, type SandboxExecutor, type ProcessHandle,
+  type FileResolver, HarnessLease, resolveHarness, composeSystemPrompt,
+  resolveRepositoryLocalPath, createPiModelRuntime, toAiSdkLanguageModel,
+  bindStoredModelCardCredentials, delegationCredentials, type ResolvedModelCardCredentials,
+  buildTools, disposeTools, ToolFailureError, resolveProxiedToolCall, resolveSkills,
+  resolveCustomSkills, resolveCustomSkillMounts, type SkillMountDescriptor, getSkillFiles,
+  getSkillFilesFromManagedSource, mountSkillFiles, agentUsesAssemblySkillMount,
+  resolveSkillAssemblyConfig, skillMountsShouldFetchBodies, resolveAppendablePrompts,
+  InMemoryHistory, INTERRUPTED_TOOL_RESULT_TEXT,
+} from "@open-managed-agents/agent-harness";
+import { SessionSubagents, type SubagentTurnInput, type SubagentTurnResult } from "@open-managed-agents/session-subagents";
+import { cloudflareSubagentThreadId, cloudflareSubagentWireEvents } from "./subagents";
 import type { RuntimeAgentConfig as AgentConfig } from "@open-managed-agents/api-types";
 import { nanoid } from "nanoid";
 import type { SharedV3ProviderOptions } from "@ai-sdk/provider";
 import { parseCronExpression } from "cron-schedule";
-import {
-  runAgentTurn,
-  recoverAgentTurn,
-  clearTurnRecoveryCount,
-  TurnAborted,
-  type TurnRuntimeAgent,
-  type RecoveryDecision,
-  type PartialStream,
-} from "./turn-runtime";
 import type { Env } from "@open-managed-agents/shared";
 import {
   logWarn,
@@ -43,28 +60,47 @@ import type {
 } from "@open-managed-agents/event-log";
 import { recoverInterruptedState as runRecovery } from "./recovery";
 import {
+  mountSessionResources,
   RuntimeAdapterImpl,
+  runAgentTurn,
+  TurnAborted,
+  classifyTurnFailure,
+  finishTurn,
+  finalizeStaleTurns,
+  type StaleToolUse,
+  isTurnCancellationError,
+  interruptTurn,
+  classifyTurnInput,
+  planRequiresActionAnswers,
+  type LaneStatus,
+  openTurnMarker,
+  reportTurnFailure,
+  sessionErrorMessage,
+  runTurnAttempts,
+  TURN_RETRY,
+  type TurnAttemptsResult,
+  type TurnFailureEventsPort,
   type RuntimeAdapter,
+  type TurnRuntimeAgent,
+  sessionTurnResourceGuidance,
 } from "@open-managed-agents/session-runtime";
-import { SessionExecutionHost, SessionSandboxRuntime } from "@open-managed-agents/session-runtime";
+import {
+  asWireEvents,
+  awaitsCustomToolResult,
+  knownToolCallIds,
+  requiresActionStopReason,
+  toolResultIds,
+  type PendingToolCall as ResolvedPendingToolCall,
+} from "@open-managed-agents/session-runtime-contract/requires-action";
+import { executionContinuationEvents, sessionExecutionLeaseTtlMs, decideExpiredExecution, decideLeaseRenewal, decideRecoveryFromCanonicalStream, evaluateCoordinationPolicy, type ActiveTurnRecord, type CanonicalTurnEvidence, type CoordinationAction, type ExecutionLeaseRecord, type QueuedInputRecord, type ScheduleWakeRecord, SessionExecutionHost, SessionSandboxRuntime, sessionSandboxWarningEvent, type SessionExecutionRunResult } from "@open-managed-agents/session-runtime";
 import { applyCapCliPlaceholderEnvironment } from "./cap-placeholder-env";
-import { interruptedTurnStopReason } from "@open-managed-agents/session-runtime-contract";
+import { interruptedTurnStopReason, linkAbort } from "@open-managed-agents/session-runtime-contract";
 import {
   ensureSessionExecutionCoordinatorSchema,
   SqlSessionExecutionStore,
 } from "@open-managed-agents/session-runtime-sql/coordination";
 import {
-  decideExpiredExecution,
-  decideLeaseRenewal,
-  decideRecoveryFromCanonicalStream,
-  evaluateCoordinationPolicy,
-  type ActiveTurnRecord,
-  type CanonicalTurnEvidence,
-  type CoordinationAction,
-  type ExecutionLeaseRecord,
-  type QueuedInputRecord,
-  type ScheduleWakeRecord,
-  consumeSessionInputs,
+  consumeSessionInputs, SessionExecutionLostError,
   takeQueuedSteeringInputs,
   type SessionExecution,
   type SessionExecutionFence,
@@ -74,18 +110,27 @@ import {
   settleOnlyRejectMessage,
   type SettleOnlyReason,
 } from "@open-managed-agents/session-runtime-contract/settle-events";
-import { encodeRuntimeSessionEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
+import { encodeRuntimeHistoryEvent, encodeRuntimeSessionEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
 import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
 import { SqlSessionExecutionContextSource } from "@open-managed-agents/session-runtime-sql/context";
+import type { SessionBudgetGate } from "@open-managed-agents/domain/sessions";
 import {
-  beginModelEgress,
-  budgetReachedEvents,
-  completeModelEgress,
-  createSessionBudgetGate,
-  runtimeListCost,
-  type SessionBudgetGate,
-  type TokenUsage,
-} from "@open-managed-agents/domain/sessions";
+  activeModelCardPricing,
+  applyModelEgressRequest,
+  budgetReachedStopEvents,
+  createSessionUsageMeter,
+  MODEL_EGRESS_ACTION_REQUIRED,
+  openSessionBudgetGate,
+  parseModelEgressRequest,
+  reportModelSpanUsage,
+  reportSessionUsage,
+  sessionUsageSnapshot,
+  sumModelSpanUsage,
+  type SessionUsageMeter,
+  type SessionUsageReport,
+} from "@open-managed-agents/managed-agents-application";
+import { sessionDoUsageStore } from "./session-usage-store";
+import { createRuntimeRoomRelay } from "./runtime-room-relay";
 import { cfWorkersAiToMarkdown } from "@open-managed-agents/markdown";
 import { isSpecEvent } from "@open-managed-agents/api-types";
 import type {
@@ -103,25 +148,11 @@ import type {
   SystemUserMessagePromotedEvent,
   SystemUserMessageCancelledEvent,
 } from "@open-managed-agents/shared";
-import type { HarnessContext, HarnessInterface, HistoryStore, SandboxExecutor, ProcessHandle, FileResolver } from "../harness/interface";
 import {
   supportsManagedWorkspaceLifecycle,
   supportsSessionOutputMount,
-  supportsWorkspaceBackup,
   withSandboxExecutionGuard,
 } from "@open-managed-agents/sandbox";
-import { HarnessLease, resolveHarness } from "../harness/registry";
-import { composeSystemPrompt } from "../harness/platform-guidance";
-import { resolveRepositoryLocalPath } from "../harness/acp-proxy-delivery";
-import {
-  createPiModelRuntime,
-  toAiSdkLanguageModel,
-} from "../harness/pi-provider";
-import {
-  bindStoredModelCardCredentials,
-  delegationCredentials,
-  type ResolvedModelCardCredentials,
-} from "../harness/model-card-credentials";
 import { resolveWorkspaceModelCredentials } from "@open-managed-agents/model-cards-store";
 import type { LanguageModel } from "ai";
 import { generateText } from "ai";
@@ -131,40 +162,19 @@ import {
   type ActiveOutcomeState,
   type OutcomeEvaluationRecord,
 } from "./outcome-supervisor";
-import { buildTools, disposeTools, ToolFailureError } from "../harness/tools";
-import { resolveProxiedToolCall } from "../harness/tool-proxy";
-import { MemoryStoreService } from "@open-managed-agents/memory-store";
 import { buildCfServices, buildCfTenantDbProvider, getCfServicesForTenant } from "@open-managed-agents/services";
 import { toEnvironmentConfig } from "@open-managed-agents/environments-store";
-import { ensureEnvironmentPackages } from "@open-managed-agents/sandbox";
-import {
-  resolveSkills,
-  resolveCustomSkills,
-  resolveCustomSkillMounts,
-  type SkillMountDescriptor,
-  getSkillFiles,
-  getSkillFilesFromManagedSource,
-  mountSkillFiles,
-} from "../harness/skills";
-import {
-  agentUsesAssemblySkillMount,
-  resolveSkillAssemblyConfig,
-  skillMountsShouldFetchBodies,
-} from "../harness/assembly/skill-config";
-import { resolveAppendablePrompts } from "./appendable-prompts";
+import { ensureEnvironmentPackages, environmentCommandPath } from "@open-managed-agents/sandbox";
 import { createCfBrowserHarness } from "@open-managed-agents/browser-harness/cf";
 import type { BrowserHarness, BrowserBillingHook, BrowserSession } from "@open-managed-agents/browser-harness";
-import { SqliteHistory, InMemoryHistory, INTERRUPTED_TOOL_RESULT_TEXT } from "./history";
-import { createSandbox, type CloudflareSandboxImage } from "./sandbox";
-import {
-  loadManagedSessionResources,
-  mountResources,
-} from "./resource-mounter";
+import { SqliteHistory } from "./sqlite-history";
+import type { CloudflareSandboxImage } from "./sandbox";
+import { createSessionSandbox } from "./session-sandbox-adapters";
+import { createSandboxIdleAlarm } from "./sandbox-idle-alarm";
+import type { PortsSessionSandbox } from "@open-managed-agents/session-runtime";
+import { acpSandboxExecutionEnv } from "./session-sandbox-token";
+import { installGhCli, loadManagedSessionResources, proxiedRepositoryAccess } from "./managed-session-resources";
 import { createSandboxWarmupFailureEvent } from "./warmup-failure-event";
-import { prepareSandboxEgress } from "./sandbox-warmup-egress";
-import {
-  findLatestBackup as findWorkspaceBackup,
-} from "./workspace-backups";
 import {
   createSessionWakeups,
   type SessionWakeupApplication,
@@ -394,8 +404,8 @@ const STATE_ROW_ID = "cf_state_row_id";
  * heartbeat + the alarm's policy renewal). The alarm is not itself the lease
  * authority: if it is lost, a replacement DO reclaims after expiry.
  */
-const KEEP_ALIVE_INTERVAL_MS = 30_000;
-const EXECUTION_LEASE_TTL_MS = KEEP_ALIVE_INTERVAL_MS * 3;
+const EXECUTION_LEASE_TTL_MS = sessionExecutionLeaseTtlMs();
+const KEEP_ALIVE_INTERVAL_MS = Math.floor(EXECUTION_LEASE_TTL_MS / 3);
 /** Wake promptly when a queue row / claimable execution exists. */
 const QUEUE_WAKE_DELAY_MS = 1_000;
 /** Admission must arm the alarm before the synchronous drain can be lost. */
@@ -446,6 +456,41 @@ function nextCronFireSeconds(cron: string, nowMs = Date.now()): number {
 }
 
 export class SessionDO extends DurableObject<Env> {
+  private readonly _cfWorkLease = new CfE2BWorkLease();
+  // Recovered native handles have hashes, never the raw token needed by egress.
+  private _cfWorkLeaseRecovered = false;
+
+  /** Existing durable schedules provide routing/retry, not ownership. A failed
+   * or unresolved provider RPC leaves this interval intact. No request timer. */
+  async maintainCfWorkLease(scope: CfWorkLeaseScope): Promise<void> {
+    if (this.env.SANDBOX_ADAPTER !== "e2b") return;
+    if (this.env.SESSION_DO?.idFromName(JSON.stringify([scope.workspaceId, scope.sessionId])).toString() !== this.ctx.id.toString()) {
+      throw new Error("Work lease maintenance scope mismatch");
+    }
+    if (this._cfWorkLease.active) {
+      await this._cfWorkLease.maintain();
+      if (this._cfWorkLease.active) return;
+    } else {
+      const sql = new CfD1SqlClient(await buildCfTenantDbProvider(this.env).resolve(scope.workspaceId));
+      this._cfWorkLeaseRecovered = true;
+      await recoverCfWorkLease({ sql, storage: this.ctx.storage, scope, env: this.env, lease: this._cfWorkLease });
+      if (this._cfWorkLease.active) {
+        await this._cfWorkLease.maintain();
+        if (!this._cfWorkLease.active) {
+          for (const schedule of this.getSchedules()) {
+            if (schedule.callback === "maintainCfWorkLease") await this.cancelSchedule(schedule.id);
+          }
+        }
+      }
+      // A pre-launch wake may race a pending native start. Do not delete it
+      // merely because there is no local target or sandbox record yet.
+      return;
+    }
+    for (const schedule of this.getSchedules()) {
+      if (schedule.callback === "maintainCfWorkLease") await this.cancelSchedule(schedule.id);
+    }
+  }
+
   // ── cf-agents-replacement state (see _ensureCfAgentsSchema below) ─────
   private _state: SessionState | undefined;
   private _initialized = false;
@@ -577,8 +622,6 @@ export class SessionDO extends DurableObject<Env> {
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    this._ensureCfAgentsSchema();
-    this._loadStateFromSql();
     this._wakeupScheduler = new CloudflareSessionWakeupScheduler({
       backend: {
         create: async (input) => {
@@ -643,12 +686,18 @@ export class SessionDO extends DurableObject<Env> {
           try {
             await this.schedule(5, "recoverEventQueue" as keyof this);
           } catch {}
-          this.drainEventQueue();
+          await this.dispatchEventQueue();
         },
       },
       clock: { now: () => new Date() },
       ids: { nextEventId: () => generateEventId() },
     });
+  }
+
+  private initializeSessionState(): void {
+    if (this._initialized) return;
+    this._ensureCfAgentsSchema();
+    this._loadStateFromSql();
     this._initialized = true;
   }
 
@@ -789,8 +838,12 @@ export class SessionDO extends DurableObject<Env> {
   observability: { emit?: (event: unknown) => void } | null = null;
   private initialized = false;
   private sandbox: SandboxExecutor | null = null;
+  /** The Sandbox SDK v2 runtime (any SANDBOX_ADAPTER): the same object as `sandbox`. */
+  private portsSandbox: PortsSessionSandbox<unknown> | null = null;
   private wrappedSandbox: SandboxExecutor | null = null;
   private sandboxRuntime: SessionSandboxRuntime | null = null;
+  /** The warm-up started by /init; owned here so /destroy (and tests) wait for it. */
+  private _sandboxWarm: Promise<void> = Promise.resolve();
   /** Strictly increasing processed_at stamps (list order = (processed_at, id)). */
   private readonly processedClock = createMonotonicClock();
 
@@ -810,14 +863,12 @@ export class SessionDO extends DurableObject<Env> {
    *  runs and /workspace gets repopulated from the latest backup. */
   private currentWarmupGen: string | null = null;
   private hasWritableManagedMemoryMount = false;
+  private mountedSessionResources: Array<Record<string, unknown> & { type: string }> = [];
+  private mountedMemoryFacts: SessionMemoryResourceFact[] = [];
   /**
-   * Per-turn dedup of `agent.message` broadcasts. Recovery's
-   * `loadRecoveryContext` reads prior agent messages out of SQL so the
-   * next streamText resumes with the right context, but each recovery
-   * attempt also calls `persistAgentMessage` for any partial streams it
-   * found — without this Set, every recovery re-`broadcastEvent`s the
-   * same message_id, producing the duplicate-broadcast storm we saw on
-   * `sess-lyh1t4ilelc87ypk` 2026-05-02 (12 dupes at 5x recovery cap fire).
+   * Per-turn dedup of `agent.message` broadcasts and aborted-stream rescue.
+   * A partial message persisted during stream finalization must not be
+   * appended or broadcast a second time.
    * Reset at the START of each new turn (drainEventQueue loop) so a
    * legitimately re-emitted message_id in a new turn isn't suppressed.
    */
@@ -864,6 +915,7 @@ export class SessionDO extends DurableObject<Env> {
    * the same execution twice.
    */
   private _recoveryRun: Promise<void> | null = null;
+  private readonly _reportedTurnErrors = new WeakSet<Error>();
   /** Consecutive failed recovery passes. */
   private _recoveryFailures = 0;
   /** Earliest epoch ms the next recovery retry may run (backoff horizon). */
@@ -919,7 +971,7 @@ export class SessionDO extends DurableObject<Env> {
     // paths race: the scan injects a placeholder for the same tool_use
     // the finalizer is about to abort (or vice versa), producing either
     // a non-is_error result or two results.
-    this._recoveryPromise = this.recoverInterruptedState();
+    this._recoveryPromise = backfillStaleTurnEvents({ binding: this.env.MAIN_MCP, workspaceId: this.state.tenant_id, sessionId: this.state.session_id, history: this.openHistory(), sockets: () => this.ctx.getWebSockets() }).then(() => this.recoverInterruptedState());
     // Cold start is the PRIMARY recovery path (Cloudflare Agents SDK:
     // first request / onStart). It runs the exact same shared lease/sweep
     // hook as the persisted alarm fallback, so a dead incarnation's
@@ -950,30 +1002,7 @@ export class SessionDO extends DurableObject<Env> {
     const start = new Promise<void>((resolve) => { release = resolve; });
     const run = start
       .then(() => this._runRecoveryInner(reason))
-      .catch(async (err) => {
-        this._recoveryFailures += 1;
-        const backoffMs = Math.min(
-          RECOVERY_BACKOFF_BASE_MS * 2 ** (this._recoveryFailures - 1),
-          RECOVERY_BACKOFF_MAX_MS,
-        );
-        this._recoveryRetryAtMs = this.processedClock.nowMs() + backoffMs;
-        sdoLog("recovery.failed", {
-          session_id: this._state?.session_id,
-          reason,
-          attempt: this._recoveryFailures,
-          backoff_ms: backoffMs,
-          retry_at_ms: this._recoveryRetryAtMs,
-          error: err instanceof Error ? err.message : String(err),
-        });
-        // Retain the wake through the single alarm slot. Never rethrow into
-        // the request/alarm caller: the next wake retries the same hook.
-        try {
-          await this._multiplexAlarm({
-            reason: "recovery_retry",
-            atMs: this._recoveryRetryAtMs,
-          });
-        } catch { /* the persisted schedule/lease wake still covers us */ }
-      })
+      .catch((err) => this._recordRecoveryFailure(reason, err))
       .finally(() => {
         if (this._recoveryRun === run) this._recoveryRun = null;
       });
@@ -982,7 +1011,33 @@ export class SessionDO extends DurableObject<Env> {
     return run;
   }
 
+  private async _recordRecoveryFailure(reason: string, err: unknown): Promise<void> {
+    this._recoveryFailures += 1;
+    const backoffMs = Math.min(
+      RECOVERY_BACKOFF_BASE_MS * 2 ** (this._recoveryFailures - 1),
+      RECOVERY_BACKOFF_MAX_MS,
+    );
+    this._recoveryRetryAtMs = this.processedClock.nowMs() + backoffMs;
+    sdoLog("recovery.failed", {
+      session_id: this._state?.session_id,
+      reason,
+      attempt: this._recoveryFailures,
+      backoff_ms: backoffMs,
+      retry_at_ms: this._recoveryRetryAtMs,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    // Retain the wake through the single alarm slot. Never rethrow into
+    // the request/alarm caller: the next wake retries the same hook.
+    try {
+      await this.runAlarmMaintenance("recovery_retry", () => this._multiplexAlarm({
+        reason: "recovery_retry",
+        atMs: this._recoveryRetryAtMs ?? undefined,
+      }));
+    } catch { /* the persisted schedule/lease wake still covers us */ }
+  }
+
   private async _runRecoveryInner(reason: "cold_start" | "alarm"): Promise<void> {
+    this._recoveryDispatchedLanes.clear();
     const nowMs = this.processedClock.nowMs();
     if (this._recoveryRetryAtMs !== null && nowMs < this._recoveryRetryAtMs) {
       // Backing off: do not re-run (and re-fail) the hook before the horizon.
@@ -992,23 +1047,17 @@ export class SessionDO extends DurableObject<Env> {
         reason,
         retry_at_ms: this._recoveryRetryAtMs,
       });
-      await this._multiplexAlarm({ reason: "recovery_backoff" });
+      await this.runAlarmMaintenance("recovery_rearm", () => this._multiplexAlarm({ reason: "recovery_backoff" }));
       return;
     }
     // alarm() can reach here before any fetch() warmed the in-memory schema.
     this.ensureSchema();
+    await this._multiplexAlarm({ reason: "recovery_start", backstop: true });
     // Join a request-level cold-start finalizer that is already in flight.
     // Without this the fetch()/onStart pass can finish and clear its
     // single-flight guard before this hook reaches finalization, causing a
     // second pass over the same orphans.
     const inFlightFinalize = this._finalizePromise;
-    if (this._recoveryPromise !== null) {
-      try {
-        await this._recoveryPromise;
-      } catch (err) {
-        console.warn(`[recovery] cold-start stream scan failed:`, err);
-      }
-    }
     sdoLog("recovery.start", {
       session_id: this._state?.session_id,
       reason,
@@ -1016,22 +1065,37 @@ export class SessionDO extends DurableObject<Env> {
     // The shared lease/sweep hook: expired owners are requeued (input
     // provably unapplied) or finalized-interrupted (applied work / unpaired
     // tool call) from canonical-stream evidence, then live leases renew.
-    await this._sweepExpiredLeases(nowMs);
-    await this._applyPolicyLeaseRenewals(nowMs);
-    // Finalize dangling turns, then drain/claim whatever the policy exposes.
-    if (inFlightFinalize !== null) {
-      await inFlightFinalize;
-    } else {
-      await this._finalizeStaleTurns();
+    // Bound each phase's wait, retaining its RPC singleflight until settlement.
+    // An unavailable sweep/renew must not hold unrelated lease or queue work.
+    const failures = this._recoveryFailures;
+    const phase = (key: string, work: () => Promise<void>) =>
+      this.runAlarmMaintenance(key, work, err => this._recordRecoveryFailure(reason, err));
+    await phase("recovery_sweep", async () => {
+      if (this._recoveryPromise) {
+        try { await this._recoveryPromise; }
+        catch (err) { console.warn(`[recovery] cold-start stream scan failed:`, err); }
+      }
+      await this._sweepExpiredLeases(nowMs);
+    });
+    if (reason === "cold_start") {
+      for (const schedule of this.getSchedules()) {
+        if (schedule.callback === "maintainCfWorkLease" && !this._cfWorkLease.active) {
+          await phase(`schedule:${schedule.id}`, () => this.maintainCfWorkLease(schedule.payload as CfWorkLeaseScope));
+        }
+      }
     }
+    await phase("recovery_renew", () => this._applyPolicyLeaseRenewals(nowMs));
+    await phase("recovery_finalize", () => inFlightFinalize ?? this._finalizeStaleTurns());
     await this.recoverExecutionQueue();
-    this._recoveryFailures = 0;
-    this._recoveryRetryAtMs = null;
+    if (this._recoveryFailures === failures && !["recovery_sweep", "recovery_renew", "recovery_finalize"].some(key => this._maintenanceRuns.has(key))) {
+      this._recoveryFailures = 0;
+      this._recoveryRetryAtMs = null;
+    }
     sdoLog("recovery.done", {
       session_id: this._state?.session_id,
       reason,
     });
-    await this._multiplexAlarm({ reason: `recovery_${reason}` });
+    await this.runAlarmMaintenance("recovery_rearm", () => this._multiplexAlarm({ reason: `recovery_${reason}` }));
   }
 
   /**
@@ -1043,10 +1107,15 @@ export class SessionDO extends DurableObject<Env> {
    * running work or any queue row is still present.
    */
   private async _multiplexAlarm(
-    hint: { reason?: string; atMs?: number } = {},
+    hint: { reason?: string; atMs?: number; backstop?: boolean } = {},
   ): Promise<void> {
     try {
       const nowMs = this.processedClock.nowMs();
+      if (hint.backstop) {
+        const current = await this.ctx.storage.getAlarm();
+        await this.ctx.storage.setAlarm(Math.min(current ?? Infinity, nowMs + KEEP_ALIVE_INTERVAL_MS));
+        return; // Storage-only heartbeat before any failable external maintenance.
+      }
       const scheduleNextMs = this._nextScheduleWakeMs(nowMs);
       const queuedInputs = this._localQueuedInputs();
       let executions: ExecutionLeaseRecord[] = [];
@@ -1069,7 +1138,7 @@ export class SessionDO extends DurableObject<Env> {
         queuedInputs,
         activeTurns,
         schedules,
-        heartbeatIntervalMs: KEEP_ALIVE_INTERVAL_MS,
+        heartbeatIntervalMs: Math.floor(sessionExecutionLeaseTtlMs(this.env.OMA_SESSION_EXECUTION_LEASE_TTL_MS) / 3),
         queuedWakeDelayMs: QUEUE_WAKE_DELAY_MS,
         ...(queueBackoffAtMs === undefined
           ? {}
@@ -1083,7 +1152,8 @@ export class SessionDO extends DurableObject<Env> {
         policy.actions.some((action) => action.type === "requeue");
       const hasBlocked = policy.blockedQueuedRows > 0;
       const hasRunning =
-        executions.some((e) => e.state === "running") || activeTurns.length > 0;
+        executions.some((e) => e.state === "running") || activeTurns.length > 0 || this._dispatchedLanes.size > 0 ||
+        ["recovery_sweep", "recovery_renew", "recovery_finalize"].some(key => this._maintenanceRuns.has(key));
       const hasSchedule = scheduleNextMs !== null;
       // Hard invariant: queued or running work always keeps a wake armed.
       // Blocked/held rows still keep the slot, but only at a slow safety net.
@@ -1374,7 +1444,7 @@ export class SessionDO extends DurableObject<Env> {
    * here; the per-derive cache wrapping this caches the null result so a
    * single failure doesn't trigger a retry storm within one projection.
    *
-   * No per-file logging — the existing default-loop log lines cover the
+   * No per-file logging — the existing host-harness log lines cover the
    * shape of each call (messages count) without paying per-attachment
    * verbosity.
    */
@@ -1447,10 +1517,14 @@ export class SessionDO extends DurableObject<Env> {
    * thread that's already draining returns immediately.
    */
   async recoverEventQueue(): Promise<void> {
+    await this.runAlarmMaintenance("event_queue", () => this.recoverEventQueueInner());
+  }
+
+  private async recoverEventQueueInner(): Promise<void> {
     this.ensureSchema();
     // Single-table queue: active queued inputs are events rows with
     // processed_at IS NULL. Cancelled rows are excluded.
-    const threads = this.queue.threadsWithQueueInputs();
+    const threads = [...new Set(this._localQueuedInputs().filter(input => !input.heldAfterExhausted && !input.blocked).map(input => input.laneId))];
     if (threads.length === 0) {
       // Nothing pending anywhere. Do not invoke drainEventQueue just to
       // discover an empty queue: the central execution path arms a lease
@@ -1458,7 +1532,7 @@ export class SessionDO extends DurableObject<Env> {
       // session (and makes alarm() look like it has live work).
       return;
     }
-    await Promise.all(threads.map((t) => this.drainEventQueue(t)));
+    await Promise.all(threads.map((t) => this.dispatchEventQueue(t)));
   }
 
   /**
@@ -1598,144 +1672,6 @@ export class SessionDO extends DurableObject<Env> {
     }));
   }
 
-  /**
-   * Called by _checkOrphanTurns when an orphan turn (sessions row marked
-   * status='running' with a turn_id we don't own) is detected at alarm
-   * wake or cold-start. Historically this was wired into the cf-agents
-   * runFiber/onFiberRecovered hook; Phase 3 unified the trigger via the
-   * RuntimeAdapter, so the entry shape is identical to what the old
-   * fiber API produced — { id, name, snapshot:null }. Recovery itself
-   * works the same way: emit a session.status_rescheduled marker so
-   * observers see what happened, reset stale state.status, and re-drain.
-   * The unprocessed user.message at seq is still pending (we never
-   * emitted status_idle for it) so drain re-runs the harness; generateText
-   * sees prior tool_use/tool_result rows in history and continues from
-   * roughly where it left off (at-least-once semantics — a tool may be
-   * re-decided once, but no tool effect is lost since each result is in
-   * SQL).
-   */
-  async onFiberRecovered(ctx: { id: string; name: string; snapshot: unknown }): Promise<void> {
-    if (!ctx.name.startsWith("turn:")) {
-      console.warn(`[orphan-recover] unknown turn name: ${ctx.name}`);
-      return;
-    }
-    console.warn(
-      `[orphan-recover] turn ${ctx.name} (id=${ctx.id}) interrupted; routing through recoverAgentTurn`,
-    );
-    this.ensureSchema();
-
-    // Status is derived from cf_agents_runs row presence — onFiberRecovered
-    // is invoked AFTER _checkRunFibers DELETEs the orphan, so deriveStatus
-    // automatically reads "idle" here. No manual state mutation needed.
-
-    const history = this.openHistory();
-
-    const decision = await recoverAgentTurn(
-      this.turnRuntimeAdapter(),
-      ctx,
-      // loadRecoveryContext: read SQL events + streams to reconstruct the
-      // state at the moment of interruption. We deliberately do NOT use
-      // ctx.snapshot from cf-agents stash — OMA's events table already
-      // carries richer canonical state.
-      async () => {
-        const lastUserMsgSeq = this.getLastEventSeq("user.message");
-        const eventsAfter = this.getEventsBetween(lastUserMsgSeq, Number.MAX_SAFE_INTEGER);
-        const partialStreams: PartialStream[] = [];
-        try {
-          const cursor = this.ctx.storage.sql.exec(
-            `SELECT message_id, status, chunks_json FROM streams WHERE status IN ('streaming', 'interrupted') ORDER BY started_at`,
-          );
-          for (const row of cursor) {
-            try {
-              const chunks = JSON.parse(row.chunks_json as string) as string[];
-              partialStreams.push({
-                message_id: row.message_id as string,
-                partial_text: chunks.join(""),
-                status: (row.status as "streaming" | "interrupted"),
-              });
-            } catch {}
-          }
-        } catch {
-          // streams table might not exist yet (older session); fine, return empty
-        }
-        return { history: eventsAfter, partialStreams };
-      },
-      // Resume policy: always continue. recoverAgentTurn caps at 5 attempts;
-      // on the 6th the cap fires and we get a session.error + force-idle
-      // automatically (no need to track it here). Persist partial agent
-      // messages so the trajectory shows what was streamed before the cut.
-      async (rctx) => {
-        const reschedEvent: SessionEvent = {
-          type: "session.status_rescheduled",
-          reason: `Recovered after DO eviction (turn ${ctx.name}, recovery ${rctx.recoveryCount}/5)`,
-        };
-        history.append(reschedEvent);
-        this.broadcastEvent(reschedEvent);
-        return { continue: true, persistPartial: true };
-      },
-      {
-        emitEvent: (e) => {
-          history.append(e);
-          this.broadcastEvent(e);
-        },
-        persistAgentMessage: (text, message_id) => {
-          // Recovery's loadRecoveryContext seeds streamText with prior
-          // partials; each recovery iteration also passes those same
-          // (text, message_id) tuples through this callback. Without
-          // dedup we'd re-append + re-broadcast each one per recovery
-          // attempt — observed as 12 duplicate agent.message events at
-          // 5x cap fire. Set is in-memory + per-turn (cleared at the
-          // start of each drainEventQueue iteration).
-          if (this.broadcastedMessageIds.has(message_id)) return;
-          this.broadcastedMessageIds.add(message_id);
-          const ev: SessionEvent = {
-            type: "agent.message",
-            id: message_id,
-            content: [{ type: "text", text }],
-          } as unknown as SessionEvent;
-          history.append(ev);
-          this.broadcastEvent(ev);
-        },
-        forceIdle: () => {
-          // Status auto-derives to "idle" once recoverAgentTurn returns
-          // and cf_agents_runs is empty. Just emit the trajectory event.
-          const idleEvent: SessionEvent = { type: "session.status_idle", stop_reason: { type: "end_turn" } };
-          history.append(idleEvent);
-          this.broadcastEvent(idleEvent);
-        },
-        maxRecoveries: 5,
-      },
-    );
-
-    if (decision.continue) {
-      await this.drainEventQueue();
-    }
-  }
-
-  /**
-   * Read events strictly between two seq values (exclusive on both ends).
-   * Helper used by recoverAgentTurn's loadRecoveryContext.
-   */
-  private getEventsBetween(afterSeq: number, beforeSeq: number): SessionEvent[] {
-    const out: SessionEvent[] = [];
-    try {
-      const cursor = this.ctx.storage.sql.exec(
-        `SELECT data FROM events WHERE seq > ? AND seq < ? ORDER BY seq`,
-        afterSeq,
-        beforeSeq,
-      );
-      for (const row of cursor) {
-        try {
-          out.push(JSON.parse(row.data as string) as SessionEvent);
-        } catch {
-          // Skip rows that fail to parse (read-side resilience).
-        }
-      }
-    } catch {
-      // events table may not exist yet
-    }
-    return out;
-  }
 
   /**
    * Drain the event queue for one thread: pull pending user events
@@ -2030,6 +1966,55 @@ export class SessionDO extends DurableObject<Env> {
     return out;
   }
 
+  private readonly _maintenanceRuns = new Map<string, Promise<void>>();
+  private async runAlarmMaintenance(key: string, work: () => Promise<void>, onError?: (error: unknown) => Promise<void>): Promise<void> {
+    let run = this._maintenanceRuns.get(key);
+    if (!run) {
+      run = Promise.resolve().then(work).catch(async error => {
+        if (onError) await onError(error);
+        else console.error("[session_do] alarm maintenance failed", { key, error });
+      }).finally(() => { this._maintenanceRuns.delete(key); });
+      this._maintenanceRuns.set(key, run);
+    }
+    try { await waitForAlarmMaintenance(run); }
+    catch (error) { console.warn("[session_do] alarm maintenance still pending", { key, error }); }
+  }
+
+  private readonly _dispatchedLanes = new Set<string>();
+  private readonly _recoveryDispatchedLanes = new Set<string>();
+
+  /** Short platform dispatch; never return the long drain promise to an alarm. */
+  private async dispatchEventQueue(threadId = "sthr_primary"): Promise<void> {
+    if (this._dispatchedLanes.has(threadId) || this._draining.has(threadId)) return;
+    if (this._recoveryRun && this._recoveryDispatchedLanes.has(threadId)) return;
+    if (this._recoveryRun) this._recoveryDispatchedLanes.add(threadId);
+    this._dispatchedLanes.add(threadId);
+    try {
+      // Persist before starting claim/model/tool work, including synchronous failures.
+      const safety = await this.schedule(5, "recoverEventQueue");
+      void Promise.resolve().then(async () => {
+        const before = this._queueProgressToken([], this._localQueuedInputs());
+        await this.drainEventQueue(threadId);
+        const after = this._queueProgressToken([], this._localQueuedInputs());
+        if (before !== after) this._resetQueueDrainBackoff();
+        else this._recordQueueDrainNoProgress({ queued: this.queue.listQueue(threadId).length, blocked: 0, running: 0 });
+      })
+        .catch(error => {
+          this._recordQueueDrainNoProgress({ queued: this.queue.listQueue(threadId).length, blocked: 0, running: 0 });
+          console.error("[session_do] detached lane failed", { threadId, error });
+        })
+        .finally(async () => {
+          this._dispatchedLanes.delete(threadId);
+          this.ctx.storage.sql.exec("DELETE FROM cf_agents_schedules WHERE id = ?", safety.id);
+          try { await this._multiplexAlarm({ reason: "lane_settled" }); }
+          catch (error) { console.error("[session_do] settlement wake failed", error); }
+        });
+    } catch (error) {
+      this._dispatchedLanes.delete(threadId);
+      throw error;
+    }
+  }
+
   private async drainEventQueue(threadId: string = "sthr_primary"): Promise<void> {
     // Sync re-entry mutex per thread — two callers for the same thread
     // can't both reach the SQL pending lookup before either marks a
@@ -2062,8 +2047,8 @@ export class SessionDO extends DurableObject<Env> {
         ownerId: this._executionOwnerId,
         clock: { now: () => new Date() },
         ids: { nextAttemptId: () => `attempt_${nanoid()}` },
-        leaseTtlMs: EXECUTION_LEASE_TTL_MS,
-        heartbeatIntervalMs: KEEP_ALIVE_INTERVAL_MS,
+        leaseTtlMs: sessionExecutionLeaseTtlMs(this.env.OMA_SESSION_EXECUTION_LEASE_TTL_MS),
+        heartbeatIntervalMs: Math.floor(sessionExecutionLeaseTtlMs(this.env.OMA_SESSION_EXECUTION_LEASE_TTL_MS) / 3),
         onFenceChanged: (fence) => {
           const previous = this._executionFences.get(threadId);
           this._executionFences.set(threadId, fence);
@@ -2092,206 +2077,31 @@ export class SessionDO extends DurableObject<Env> {
       // replacement DO sweeps it after expiry via the shared policy.
       await this._armLeaseWake();
       try {
-      while (true) {
-        this.broadcastedMessageIds.clear();
-        // Parked in requires_action: only the client's answers may run; a
-        // queued user.message waits for the paused turn to finish.
-        const awaitingClient = (this.state.pending_tool_calls?.length ?? 0) > 0;
-        const result = await host.runOne(async (execution, fence, signal) => {
-          this._executionFences.set(threadId, fence);
-          const executionHistory = this.guardHistoryForExecution(history, fence);
-          let holdQueuedOnLane = false;
-          let turnFailed = false;
-          const executionEventIds = execution.events
-            .map((e) => (e as { id?: string }).id)
-            .filter((id): id is string => typeof id === "string");
-          sdoLog("queue.drain", {
-            session_id: this.state.session_id,
-            thread_id: threadId,
-            source: "outbox",
-            execution_id: execution.id,
-            event_ids: executionEventIds,
-          });
-          sdoLog("queue.claim", {
-            session_id: this.state.session_id,
-            thread_id: threadId,
-            execution_id: execution.id,
-            event_ids: executionEventIds,
-          });
-          // The outbox path used to call processUserMessage directly, so it
-          // never ran runAgentTurn's beginTurn/hintTurnInFlight pair. That
-          // left no durable `sessions.turn_id` marker and relied solely on
-          // the one-shot alarm above. If that alarm was lost with the
-          // isolate, a cold alarm found no orphan row, finalized nothing,
-          // and the multiplexer deleted it — exactly the stuck
-          // status_running session from the 5d95d88 incident.
-          //
-          // Mark the turn in D1 and (re)arm the keep-alive BEFORE the
-          // harness can issue its model request. D1 is the authority the
-          // cold-start finalizer reads; the alarm is what wakes it.
-          const turnId = `turn_${nanoid()}`;
-          let turnMarked = false;
-          try {
-            await this.runtimeAdapter.beginTurn(this.state.session_id, turnId);
-            turnMarked = true;
-            this._activeTurnIds.add(turnId);
-          } catch (err) {
-            // Don't fail the execution just because the lifecycle mirror
-            // couldn't be written. The event-log dangling-turn fallback in
-            // _finalizeStaleTurns still ends it after a reset.
-            console.warn(`[drain] beginTurn failed for ${turnId}:`, err);
-          }
-          sdoLog("turn.begin", {
-            session_id: this.state.session_id,
-            thread_id: threadId,
-            turn_id: turnId,
-            execution_id: execution.id,
-            d1_marked: turnMarked,
-          });
-          // Await the durable write. A fire-and-forget setAlarm can be lost
-          // if the isolate resets right after the turn starts.
-          await this._armLeaseWake("turn_start");
-          // Lane is running a new execution (held rows already absorbed on
-          // claim): drop the exhausted mark unless a pre-exhausted queued
-          // input still awaits fallback admission.
-          {
-            const at = this.state.exhausted_at_by_lane?.[threadId];
-            if (at !== undefined && !this.queue.listQueue(threadId).some((r) =>
-              r.enqueued_at <= at && !execution.events.some((e) => (e as { id?: string }).id === r.event_id))) {
-              this.setExhaustedAt(threadId, undefined);
-            }
-          }
-          try {
-            const broadcastIds = await this.consumeAcceptedInputs(execution.events, execution.id, this.processedClock.nowIso());
-            for (const rawEvent of execution.events) {
-              if (rawEvent.type === "system.message") continue;
-              if (rawEvent.type === "session.updated") {
-                // Budget resume: continue from history, no new user input.
-                if (rawEvent.resume === true) {
-                  await this.processUserMessage({
-                    type: "user.message",
-                    content: [{ type: "text", text: "" }],
-                  }, 0, true, signal, fence);
-                }
-                continue;
-              }
-              // Execution rows use the Managed Agents domain shape. The DO
-              // runtime uses the legacy wire shape, so this is the one
-              // explicit protocol projection at the host boundary.
-              const event = encodeRuntimeSessionEvent(rawEvent as never) as SessionEvent;
-              const localQueued = this.ensureLocalQueueInput(event);
-              if (localQueued !== null) this.promoteQueueRow(localQueued, broadcastIds.has(localQueued.event_id));
-              if (event.type === "user.message") {
-                const turn = await this.processUserMessage(event as UserMessageEvent, 0, false, signal, fence);
-                if (turn?.holdQueuedOnLane) {
-                  holdQueuedOnLane = true;
-                  this.setExhaustedAt(threadId, Date.now());
-                }
-              } else if (event.type === "user.tool_confirmation") {
-                await this.handleToolConfirmation(event as UserToolConfirmationEvent, executionHistory, signal, fence);
-              } else if (event.type === "user.custom_tool_result") {
-                const customResult = event as UserCustomToolResultEvent;
-                // Late answer for a call that is already closed (interrupt
-                // settled it, or a duplicate POST): a second tool_result for
-                // one tool_use makes the provider 400 the whole transcript.
-                if (this.toolUseAlreadyAnswered(customResult.custom_tool_use_id, executionHistory)) continue;
-                const toolResultEvent: SessionEvent = {
-                  type: "agent.tool_result",
-                  tool_use_id: customResult.custom_tool_use_id,
-                  content: (customResult.content ?? [])
-                    .map((b) => b.type === "text" ? b.text : "").join(""),
-                  parent_event_id: customResult.custom_tool_use_id,
-                };
-                executionHistory.append(toolResultEvent);
-                this.broadcastEvent(toolResultEvent, fence);
-                await this.resumeWhenToolBatchSettled(customResult.custom_tool_use_id, executionHistory, signal, fence);
-              }
-            }
-            // `broadcastEvent` deliberately serializes the managed-runtime
-            // projection in a promise chain.  Drain that chain while this
-            // lease is still active; otherwise the host could settle the
-            // execution first and every fenced projection would correctly
-            // be rejected as stale.  This is the commit barrier between the
-            // harness side effects and execution settlement.
-            await this._managedProjectionChain;
-            // Node parity (runner `afterExecution`): terminal facts are
-            // committed and this attempt still holds its fence, so completed
-            // root-turn outputs become Agents API artifacts before settle.
-            if (threadId === "sthr_primary" && !signal.aborted) {
-              await this.publishAgentsApiArtifacts(fence);
-            }
-            return holdQueuedOnLane ? { holdQueuedOnLane: true } : undefined;
-          } catch (err) {
-            turnFailed = true;
-            throw err;
-          } finally {
-            const currentFence = this._executionFences.get(threadId);
-            if (
-              currentFence?.executionId === fence.executionId &&
-              currentFence.attemptId === fence.attemptId
-            ) {
-              this._executionFences.delete(threadId);
-            }
-            // Mirror runAgentTurn's finally: clear the D1 marker before the
-            // host settles the execution so a successful turn never looks
-            // like a cold-start orphan. Filter by turnId inside endTurn, so
-            // a finalizer that already ended this turn makes this a no-op.
-            let endTurnOk = true;
-            if (turnMarked) {
-              try {
-                await this.runtimeAdapter.endTurn(this.state.session_id, turnId, "idle");
-              } catch (err) {
-                endTurnOk = false;
-                console.warn(`[drain] endTurn failed for ${turnId}:`, err);
-              }
-              this._activeTurnIds.delete(turnId);
-            }
-            sdoLog("turn.end", {
-              session_id: this.state.session_id,
-              thread_id: threadId,
-              turn_id: turnId,
-              execution_id: execution.id,
-              reason: signal.aborted
-                ? "aborted"
-                : turnFailed
-                  ? "error"
-                  : holdQueuedOnLane
-                    ? "held"
-                    : "completed",
-              d1_marked: turnMarked,
-              end_turn_ok: endTurnOk,
-            });
-          }
-        }, { continuationsOnly: awaitingClient });
-        if (result.type === "empty") {
+        await host.drainLane({
+          beforeClaim: () => {
+            this.broadcastedMessageIds.clear();
+            // Parked in requires_action: only the client's answers may run; a
+            // queued user.message waits for the paused turn to finish.
+            return (this.state.pending_tool_calls?.length ?? 0) > 0;
+          },
+          run: (execution, fence, signal) => this.runLaneExecution(threadId, history, execution, fence, signal),
           // Direct DO callers and pre-outbox deliveries may have a queued
           // input row but no D1 admission yet. Admit it once as a
           // reconciliation step; normal main-worker traffic already has the
           // atomic D1 outbox row and takes the claim path directly.
-          if (await this.admitQueueFallback(executionStore, threadId)) continue;
-          break;
-        }
-        if (result.type === "completed") continue;
-        // An interrupt cancels only the running execution; queued ones
-        // survive and drain next (Backchat policy). After cancelSession the
-        // queue is empty and the next runOne returns "empty".
-        if (result.type === "cancelled") continue;
-        if (result.type === "failed") {
-          const errorEvent: SessionEvent = {
-            type: "session.error",
-            error: result.error.message,
-          };
-          history.append(errorEvent);
-          this.broadcastEvent(errorEvent);
-        } else {
+          admitUnclaimed: () => this.admitQueueFallback(executionStore, threadId),
+          failed: (error) => {
+            if (this._reportedTurnErrors.has(error) || isTurnCancellationError(error)) return; // only suppress an error actually emitted
+            const errorEvent: SessionEvent = { type: "session.error", error: error.message };
+            history.append(errorEvent);
+            this.broadcastEvent(errorEvent);
+          },
           // A stale incarnation may still have emitted live chunks, but it
           // cannot commit a terminal event. The next alarm/request reclaims.
-          console.warn(`[drain] execution ${result.execution.id} lost its lease`);
-        }
-        break;
-      }
+          lost: (execution) => { console.warn(`[drain] execution ${execution.id} lost its lease`); },
+        });
       } finally {
-        this._executionActiveLanes.delete(threadId);
+        this._executionActiveLanes.delete(threadId); this._executionFences.delete(threadId);
       }
       return;
     }
@@ -2304,7 +2114,7 @@ export class SessionDO extends DurableObject<Env> {
       if (!row) break;
 
       // Fresh per-turn dedup window for agent.message broadcasts. See
-      // broadcastedMessageIds field doc for the recovery-replay context.
+      // broadcastedMessageIds field doc for aborted-stream rescue.
       this.broadcastedMessageIds.clear();
 
       // Stamp processed_at = now on the SAME row. AMA spec: processed_at is
@@ -2346,34 +2156,9 @@ export class SessionDO extends DurableObject<Env> {
         await runAgentTurn(
           this.turnRuntimeAdapter(),
           turnName,
-          async () => {
-            if (event.type === "user.message") {
-              await this.processUserMessage(event as UserMessageEvent);
-            } else if (event.type === "user.tool_confirmation") {
-              await this.handleToolConfirmation(event as UserToolConfirmationEvent, history);
-            } else if (event.type === "user.custom_tool_result") {
-              const customResult = event as UserCustomToolResultEvent;
-              if (this.toolUseAlreadyAnswered(customResult.custom_tool_use_id, history)) return;
-              const toolResultEvent: SessionEvent = {
-                type: "agent.tool_result",
-                tool_use_id: customResult.custom_tool_use_id,
-                content: customResult.content.map(b => b.type === "text" ? b.text : "").join(""),
-                // v1-additive (docs/trajectory-v1-spec.md "Causality"):
-                // matching agent.custom_tool_use's EventBase.id IS the
-                // custom_tool_use_id (AgentCustomToolUseEvent.id overrides
-                // EventBase.id with `id: string`).
-                parent_event_id: customResult.custom_tool_use_id,
-              };
-              history.append(toolResultEvent);
-              this.broadcastEvent(toolResultEvent);
-              await this.resumeWhenToolBatchSettled(customResult.custom_tool_use_id, history);
-            }
-          },
+          async () => { await this.runAcceptedTurn(event, [event], history); },
           {},
         );
-        // Turn finished cleanly — clear any prior recovery counter so the
-        // next turn doesn't inherit stale state.
-        await clearTurnRecoveryCount(this.turnRuntimeAdapter(), turnName);
       } catch (err) {
         if (err instanceof TurnAborted) {
           console.warn(`[drain] turn ${turnName} aborted: ${err.cause.kind}`);
@@ -2436,11 +2221,162 @@ export class SessionDO extends DurableObject<Env> {
     }
   }
 
+  /** One claimed execution on a lane: its turn marker, the inputs it carries,
+   * and the commit barrier before the host settles it. */
+  private async runLaneExecution(
+    threadId: string,
+    history: HistoryStore,
+    execution: SessionExecution,
+    fence: SessionExecutionFence,
+    signal: AbortSignal,
+  ): Promise<SessionExecutionRunResult> {
+    this._executionFences.set(threadId, fence);
+    const executionHistory = this.guardHistoryForExecution(history, fence);
+    let holdQueuedOnLane = false;
+    let turnFailed = false;
+    const executionEventIds = execution.events
+      .map((e) => (e as { id?: string }).id)
+      .filter((id): id is string => typeof id === "string");
+    sdoLog("queue.drain", {
+      session_id: this.state.session_id,
+      thread_id: threadId,
+      source: "outbox",
+      execution_id: execution.id,
+      event_ids: executionEventIds,
+    });
+    sdoLog("queue.claim", {
+      session_id: this.state.session_id,
+      thread_id: threadId,
+      execution_id: execution.id,
+      event_ids: executionEventIds,
+    });
+    // The outbox path used to call processUserMessage directly, so it
+    // never ran runAgentTurn's beginTurn/hintTurnInFlight pair. That
+    // left no durable `sessions.turn_id` marker and relied solely on
+    // the one-shot alarm above. If that alarm was lost with the
+    // isolate, a cold alarm found no orphan row, finalized nothing,
+    // and the multiplexer deleted it — exactly the stuck
+    // status_running session from the 5d95d88 incident.
+    //
+    // Mark the turn in D1 and (re)arm the keep-alive BEFORE the
+    // harness can issue its model request. D1 is the authority the
+    // cold-start finalizer reads; the alarm is what wakes it.
+    const turnId = `turn_${nanoid()}`;
+    // A marker that couldn't be written doesn't fail the execution: the
+    // event-log dangling-turn fallback in _finalizeStaleTurns still
+    // ends it after a reset.
+    const turnMarker = await openTurnMarker(this.runtimeAdapter, this.state.session_id, turnId, {
+      began: (id) => { this._activeTurnIds.add(id); },
+      ended: (id) => { this._activeTurnIds.delete(id); },
+    });
+    sdoLog("turn.begin", {
+      session_id: this.state.session_id,
+      thread_id: threadId,
+      turn_id: turnId,
+      execution_id: execution.id,
+      d1_marked: turnMarker.marked,
+    });
+    // Await the durable write. A fire-and-forget setAlarm can be lost
+    // if the isolate resets right after the turn starts.
+    await this._armLeaseWake("turn_start");
+    // Lane is running a new execution (held rows already absorbed on
+    // claim): drop the exhausted mark unless a pre-exhausted queued
+    // input still awaits fallback admission.
+    {
+      const at = this.state.exhausted_at_by_lane?.[threadId];
+      if (at !== undefined && !this.queue.listQueue(threadId).some((r) =>
+        r.enqueued_at <= at && !execution.events.some((e) => (e as { id?: string }).id === r.event_id))) {
+        this.setExhaustedAt(threadId, undefined);
+      }
+    }
+    try {
+      await backfillStaleTurnEvents({ binding: this.env.MAIN_MCP, workspaceId: this.state.tenant_id, sessionId: this.state.session_id, history: this.openHistory(), sockets: () => this.ctx.getWebSockets() }); for (const event of executionContinuationEvents(history.getEvents() as never, { executionId: execution.id, attempt: execution.attemptCount, laneId: threadId })) { executionHistory.append(event as never); this.broadcastEvent(event as never); }
+      const broadcastIds = await this.consumeAcceptedInputs(execution.events, execution.id, this.processedClock.nowIso());
+      const turnInput = classifyTurnInput(execution.events);
+      // user.interrupt is applied on receipt (POST /event), never as an execution.
+      if (turnInput.type === "run") {
+        const batch: SessionEvent[] = [];
+        for (const rawEvent of execution.events) {
+          if (rawEvent.type === "system.message" || rawEvent.type === "session.updated") continue;
+          // Execution rows use the Managed Agents domain shape. The DO
+          // runtime uses the legacy wire shape, so this is the one
+          // explicit protocol projection at the host boundary.
+          const event = encodeRuntimeSessionEvent(rawEvent as never) as SessionEvent;
+          const localQueued = this.ensureLocalQueueInput(event);
+          if (localQueued !== null) this.promoteQueueRow(localQueued, broadcastIds.has(localQueued.event_id));
+          batch.push(event);
+        }
+        // A budget resume continues from history with no new user input.
+        const trigger = turnInput.trigger.type === "session.updated" ? null : batch.at(-1) ?? null;
+        const turn = await this.runAcceptedTurn(trigger, batch, executionHistory, signal, fence);
+        if (turn?.holdQueuedOnLane) {
+          holdQueuedOnLane = true;
+          this.setExhaustedAt(threadId, Date.now());
+        }
+      }
+      // `broadcastEvent` deliberately serializes the managed-runtime
+      // projection in a promise chain.  Drain that chain while this
+      // lease is still active; otherwise the host could settle the
+      // execution first and every fenced projection would correctly
+      // be rejected as stale.  This is the commit barrier between the
+      // harness side effects and execution settlement.
+      await this._managedProjectionChain;
+      if (threadId === "sthr_primary" && !signal.aborted) {
+        try { await this.publishAgentsApiArtifacts(fence); }
+        catch {
+          // Commit under canonical authority before any local/client append.
+          // The same fenced helper serves recovery and active finalization.
+          const recorded = await appendStaleTurnEvent({ binding: this.env.MAIN_MCP,
+            workspaceId: this.state.tenant_id, sessionId: this.state.session_id,
+            append: event => executionHistory.append(event), sockets: () => this.ctx.getWebSockets("chunks") },
+            { type: "session.warning", source: "agents_api.artifact_publication",
+              message: "The derived Agents API Files publication failed. This does not establish loss of the underlying managed output bytes." }, fence);
+          logWarn({ op: "session_do.openai_agents.artifact_publication_failed", session_id: this.state.session_id,
+            execution_id: fence.executionId, warning_recorded: recorded }, "Derived artifact publication failed");
+        }
+      }
+      signal.throwIfAborted();
+      return holdQueuedOnLane ? { holdQueuedOnLane: true } : undefined;
+    } catch (err) {
+      turnFailed = true;
+      await this._managedProjectionChain;
+      if ((err as { holdQueuedOnLane?: boolean }).holdQueuedOnLane) this.setExhaustedAt(threadId, Date.now());
+      throw err;
+    } finally {
+      const currentFence = this._executionFences.get(threadId);
+      if (
+        currentFence?.executionId === fence.executionId &&
+        currentFence.attemptId === fence.attemptId
+      ) {
+        this._executionFences.delete(threadId);
+      }
+      // Mirror runAgentTurn's finally: clear the D1 marker before the
+      // host settles the execution so a successful turn never looks
+      // like a cold-start orphan. Filter by turnId inside endTurn, so
+      // a finalizer that already ended this turn makes this a no-op.
+      const endTurnOk = await turnMarker.end();
+      sdoLog("turn.end", {
+        session_id: this.state.session_id,
+        thread_id: threadId,
+        turn_id: turnId,
+        execution_id: execution.id,
+        reason: signal.aborted
+          ? "aborted"
+          : turnFailed
+            ? "error"
+            : holdQueuedOnLane
+              ? "held"
+              : "completed",
+        d1_marked: turnMarker.marked,
+        end_turn_ok: endTurnOk,
+      });
+    }
+  }
+
   /**
    * Build the adapter turn-runtime needs from this DO. Returns a
    * RuntimeAdapter (the unified adapter Node also uses) wrapped in the
-   * thin TurnRuntimeAgent shape that pins it to this DO's sessionId
-   * and exposes ctx.storage for the recovery counter.
+   * thin TurnRuntimeAgent shape that pins it to this DO's sessionId.
    *
    * The RuntimeAdapter's `hintTurnInFlight` callback is wired here to
    * setAlarm(now+30s) — this is CF's keep-alive: the alarm rearms
@@ -2451,11 +2387,6 @@ export class SessionDO extends DurableObject<Env> {
     return {
       adapter: this.runtimeAdapter,
       sessionId: this.state.session_id,
-      storage: {
-        get: <T = unknown,>(key: string) => this.ctx.storage.get<T>(key),
-        put: <T = unknown,>(key: string, value: T) => this.ctx.storage.put(key, value),
-        delete: (key: string) => this.ctx.storage.delete(key).then(() => undefined),
-      },
     };
   }
 
@@ -2527,7 +2458,7 @@ export class SessionDO extends DurableObject<Env> {
         this._activeTurnIds.add(turnId);
       },
       onTurnEnded: (_sessionId, turnId) => {
-        // Idempotent: turn-runtime.ts also fires hintTurnEnded as a
+        // Idempotent: turn-lifetime.ts also fires hintTurnEnded as a
         // safety net in its outer finally if endTurn itself throws.
         // Set.delete on missing key is a no-op.
         this._activeTurnIds.delete(turnId);
@@ -2540,18 +2471,6 @@ export class SessionDO extends DurableObject<Env> {
     return this._runtimeAdapter;
   }
 
-  /**
-   * Get the sequence number of the last event of a given type.
-   * Returns 0 if no such event exists.
-   */
-  private getLastEventSeq(type: string): number {
-    const result = this.ctx.storage.sql.exec(
-      "SELECT seq FROM events WHERE type = ? ORDER BY seq DESC LIMIT 1",
-      type
-    );
-    for (const row of result) return row.seq as number;
-    return 0;
-  }
 
   /**
    * Get the first event after a given sequence number matching any of the given types.
@@ -2575,6 +2494,32 @@ export class SessionDO extends DurableObject<Env> {
    * handle everything here and only delegate alarm() to Agent's scheduler.
    */
   async fetch(request: Request): Promise<Response> {
+    if (isWorkPhysicalObservation(new URL(request.url).pathname)) {
+      return handleWorkPhysicalObservation(request, this.env, { storage: this.ctx.storage, id: this.ctx.id.toString() });
+    }
+    this.initializeSessionState();
+    // Dedicated Work storage barrier bypasses MA recovery/init. Lease alarms
+    // remain independent and continue through storage, terminal and artifacts.
+    if (new URL(request.url).pathname.startsWith(CF_WORK_FINALIZATION_PREFIX)) {
+      return handleCfWorkFinalization(request, this.env, {
+        storage: this.ctx.storage, id: this.ctx.id.toString(),
+        hasSessionExecution: this._executionFences.size > 0,
+      });
+    }
+    // Work owns its SQL claim; never enter the SessionExecution recovery/brain.
+    if (request.method === "POST" && new URL(request.url).pathname === CF_WORK_DISPATCH_PATH) {
+      return dispatchCfWorkRunnerRequest(request, this.env, {
+        storage: this.ctx.storage, id: this.ctx.id.toString(),
+        hasSessionExecution: this._executionFences.size > 0,
+        workLease: this._cfWorkLease,
+        beforeWorkStart: async ({ workspaceId, environmentId, sessionId }) => {
+          if (this._cfWorkLeaseRecovered && this._cfWorkLease.active) throw new Error("Recovered Work is maintenance-only; bootstrap must not rotate its holder");
+          await this.scheduleEvery(30, "maintainCfWorkLease", { workspaceId, environmentId, sessionId });
+          // scheduleEvery may reuse a row; explicitly rearm a previously lost wake.
+          await this._multiplexAlarm({ reason: "work_provider_lease", backstop: true });
+        },
+      });
+    }
     // Cold-start orphan flush: first request after DO activation triggers
     // a one-shot scan of unpaired tool_use + stale 'running' turns and
     // emits abort events for them. Idempotent (cheap when there's nothing
@@ -2687,14 +2632,9 @@ export class SessionDO extends DurableObject<Env> {
         });
       }
 
-      // NO ctx.waitUntil(this.warmUpSandbox()) — that pattern dies on
-      // DO reset (which happens regularly under our concurrent traffic
-      // pattern). Let warmUp fire lazily on the first /event handler
-      // below, where it runs as part of the user's request and holds the
-      // DO alive for the full duration. First user
-      // message pays the cold-start cost (~1-3 min for an env that
-      // needs install + snapshot); subsequent messages restore in
-      // seconds from the persisted handle.
+      // Warm at creation (§0.0 rule 10): acquire + record only; the first execution attaches it.
+      this._sandboxWarm = this.sessionSandboxRuntime().acquire().then(() => this.portsSandbox?.warm())
+        .catch(error => logWarn({ op: "session_do.sandbox_warm", session_id: this.state.session_id, err: error }, "sandbox warm-up failed"));
 
       return new Response("ok");
     }
@@ -2706,6 +2646,7 @@ export class SessionDO extends DurableObject<Env> {
         ctrl.abort();
       }
       this._threadAbortControllers.clear();
+      await this._sandboxWarm; // a warm-up still running would record a sandbox after this destroy
       await this._primaryHarness.dispose();
       // Snapshot /workspace BEFORE we destroy the container — once destroy()
       // runs the container is gone and we can't read its filesystem.
@@ -2753,6 +2694,7 @@ export class SessionDO extends DurableObject<Env> {
         }
       }
       this.sandbox = null;
+      this.portsSandbox = null;
       this.wrappedSandbox = null;
       this.sandboxRuntime = null;
       // Close the browser session if one was created
@@ -2898,224 +2840,77 @@ export class SessionDO extends DurableObject<Env> {
             await this.schedule(5, "recoverEventQueue");
           } catch {}
         }
-        // Fire-and-forget the drain. ctx.waitUntil is a no-op inside DO classes
-        // (Workers Context API is stateless-only — see CF docs), so don't try
-        // to use it. The DO is kept alive instead by:
-        //   (a) the unified RuntimeAdapter's hintTurnInFlight callback —
-        //       wired in this DO's constructor to setAlarm(now+30s). The
-        //       alarm() handler rearms itself while a turn is still in
-        //       flight (sessions row status='running'), AND
-        //   (b) the keepAliveWhile no-op the harness still receives in
-        //       its HarnessRuntime — purely a stub today; the alarm-
-        //       rearm path covers what it used to defend.
-        // The 5s recoverEventQueue schedule above is the safety-net
-        // re-trigger if this background promise dies before drain runs.
-        console.log(`[post /event] user.message enqueued (thread=${umThread}), firing drainEventQueue`);
-        if (enqueued) this.drainEventQueue(umThread);
+        // Start detached work after durable admission; schedule/alarm remains the recovery safety net.
+        if (enqueued) await this.dispatchEventQueue(umThread);
         return new Response(null, { status: 202 });
       }
 
       if (body.type === "user.interrupt") {
-        // AMA-spec semantics for user.interrupt:
-        //   1. Abort the in-flight turn for the target thread (only that
-        //      thread — siblings keep running). If no session_thread_id
-        //      is set, defaults to primary.
-        //   2. Flush queued user.* inputs (AMA: "queued inputs are
-        //      flushed"): they are marked cancelled_at and never promote.
-        //      DELETE /pending/:event_id can also cancel one specific row.
-        //   3. Append the user.interrupt event itself + idle marker.
+        // Only this thread's turn is interrupted; siblings keep running.
         const targetThread =
           (body as unknown as { session_thread_id?: string })
             .session_thread_id ?? "sthr_primary";
-        const ctrl = this._threadAbortControllers.get(targetThread);
-        const hadActiveTurn = !!ctrl;
-        // Official CMA: "Against an already-idle session an interrupt is
-        // normally a no-op." That includes idle requires_action: accept the
-        // interrupt, leave event_ids / pending_tool_calls / stop_reason
-        // untouched, and do not call interruptPending or emit a fresh idle.
-        // (Self-hosted failed-claim re-queue is the documented exception and
-        // is not this path.)
-        {
-          let idleStop: string | undefined;
-          let lastStatus: string | undefined;
-          for (const e of history.getEvents()) {
-            if (((e as { session_thread_id?: string }).session_thread_id ?? "sthr_primary") !== targetThread) continue;
-            if (e.type === "session.status_running" || e.type === "session.status_idle") {
-              lastStatus = e.type;
-              idleStop = e.type === "session.status_idle"
-                ? ((e as { stop_reason?: { type?: string } }).stop_reason?.type ?? "")
-                : undefined;
+        const interrupt = body as UserInterruptEvent & { id?: string; processed_at?: string };
+        const result = await interruptTurn({
+          activeTurn: () => {
+            const ctrl = this._threadAbortControllers.get(targetThread);
+            return ctrl ? {
+              abort: async () => {
+                ctrl.abort();
+                this._threadAbortControllers.delete(targetThread);
+                // Official CMA: the interrupt can take longer to apply while
+                // tool calls run. Wait on THIS turn's settlement, bounded: the
+                // lane may already be running the next queued input.
+                const settledTurn = this._turnSettled.get(ctrl);
+                if (settledTurn) {
+                  await Promise.race([settledTurn, new Promise((resolve) => setTimeout(resolve, INTERRUPT_GRACE_MS))]);
+                }
+              },
+            } : null;
+          },
+          lastStatus: () => this.laneLastStatus(history, targetThread),
+          requestDurableInterrupt: async () => {
+            const executionStore = await this.getExecutionStore();
+            if (executionStore !== null && this.state.tenant_id && this.state.session_id) {
+              await executionStore.requestInterrupt({
+                workspaceId: this.state.tenant_id,
+                sessionId: this.state.session_id,
+                laneId: targetThread,
+                requestedAt: new Date().toISOString(),
+              });
             }
-          }
-          if (!hadActiveTurn && lastStatus === "session.status_idle") {
-            const interrupt = body as UserInterruptEvent & { id?: string; processed_at?: string };
+          },
+          ownInterruptedIdle: () => { this._interruptIdleOwned.add(targetThread); },
+          settlePendingActions: () => this.settleInterruptedRunnerActions(history, targetThread),
+          recordInterrupt: () => {
             const interruptAt = this.processedClock.nowIso();
             if (!interrupt.id) interrupt.id = `sevt_${generateEventId()}`;
             interrupt.processed_at = interruptAt;
             this.markAcceptedEventsProcessed([interrupt.id], interruptAt);
             history.append(interrupt);
+            // Claude Managed Agents: user.interrupt itself appears on the stream.
             this.broadcastEventIgnoringExecutionFence(interrupt);
-            void idleStop; // retained for readability / future budget carve-outs
-            return new Response(null, { status: 202 });
-          }
+          },
+          closeOpenToolUses: () => this.closeToolUsesAfterInterrupt(history, undefined, targetThread),
+          emitIdle: () => {
+            const idleEvent: SessionEvent = {
+              type: "session.status_idle",
+              stop_reason: interruptedTurnStopReason(),
+              ...(targetThread !== "sthr_primary" ? { session_thread_id: targetThread } : {}),
+            };
+            history.append(idleEvent);
+            // The interrupt ended the turn's execution fence; broadcastEvent
+            // would drop this as stale and never project it to D1.
+            this.broadcastEventIgnoringExecutionFence(idleEvent);
+          },
+        });
+        if (result === "runner_unconfirmed") {
+          return new Response(JSON.stringify({ type: "error", error: { type: "api_error", message: "Runner interrupt was not confirmed. The pending action is still available; reconnect and try again." } }),
+            { status: 503, headers: { "content-type": "application/json" } });
         }
-        // The execution store is the durable interrupt authority. The local
-        // AbortController is only a latency optimization for this DO
-        // incarnation; a replacement host observes the same request through
-        // its next renew/claim and cannot resurrect the cancelled generation.
-        const executionStore = await this.getExecutionStore();
-        if (executionStore !== null && this.state.tenant_id && this.state.session_id) {
-          await executionStore.requestInterrupt({
-            workspaceId: this.state.tenant_id,
-            sessionId: this.state.session_id,
-            laneId: targetThread,
-            requestedAt: new Date().toISOString(),
-          });
-        }
-        if (ctrl) {
-          // The handler owns the interrupted turn's idle from here on.
-          this._interruptIdleOwned.add(targetThread);
-          ctrl.abort();
-          this._threadAbortControllers.delete(targetThread);
-          // Official CMA: "the interrupt can take longer to apply while tool
-          // calls are running" and processed_at stays null until applied.
-          // Give the aborted turn a short grace (Codex: cancel token, then
-          // bounded wait) to unwind its tools before we stamp the interrupt.
-          // Wait on THIS turn's settlement, not lane activity: the lane may
-          // already be running the next queued user.message.
-          const settledTurn = this._turnSettled.get(ctrl);
-          if (settledTurn) {
-            await Promise.race([settledTurn, new Promise((resolve) => setTimeout(resolve, INTERRUPT_GRACE_MS))]);
-          }
-        }
-        const cancelTs = Date.now();
-        // user.interrupt is separate from steer (cma-steer-coherent-turn.md):
-        // interrupt → idle; a following user.message starts the NEXT turn.
-        // AMA "queued inputs are flushed": cancel every active queued input
-        // on this thread by stamping cancelled_at on the SAME events rows
-        // (processed_at stays NULL, so they never promote). Cancelling one
-        // specific row is also available through DELETE /pending/:event_id.
-        const cancelledRows = this.queue.cancelQueueForThread(targetThread, cancelTs);
-        const cancelledCount = cancelledRows.length;
-        for (const row of cancelledRows) {
-          this.broadcastEventIgnoringExecutionFence({
-            type: "system.user_message_cancelled",
-            pending_seq: row.seq,
-            event_id: row.event_id,
-            session_thread_id: row.session_thread_id,
-            cancelled_at: cancelTs,
-          } as SystemUserMessageCancelledEvent);
-        }
-        const settledRequests: string[] = [];
-        if (!hadActiveTurn && (this.state.pending_tool_calls?.length ?? 0) > 0) {
-          const pendingIds = new Set(this.state.pending_tool_calls.map((pending) => pending.toolCallId));
-          const pendingActions = history.getEvents().filter((event) =>
-            "id" in event && typeof event.id === "string" && pendingIds.has(event.id) &&
-            ((event as { session_thread_id?: string }).session_thread_id ?? "sthr_primary") === targetThread,
-          );
-          if (pendingActions.length > 0) {
-            const threadAgent = targetThread === "sthr_primary" ? this.state.agent_id
-              : [...this.ctx.storage.sql.exec("SELECT agent_id FROM threads WHERE id = ? LIMIT 1", targetThread)][0]?.agent_id;
-            const agent = typeof threadAgent === "string" ? await this.getAgentConfig(threadAgent) : null;
-            if (agent) {
-              try {
-                // Resolve through the registry even after DO eviction; no
-                // in-memory AbortController exists once a callback paused run.
-                const harness = resolveHarness(agent.harness || "default");
-                const settled = await harness.interruptPending?.({ agent, session_id: this.state.session_id,
-                  tenant_id: this.state.tenant_id, env: { RUNTIME_ROOM: this.env.RUNTIME_ROOM }, pendingActions });
-                settledRequests.push(...(settled ?? []).filter((id) => pendingActions.some((event) => "id" in event && event.id === id)));
-              } catch {
-                return new Response(JSON.stringify({ type: "error", error: { type: "api_error", message: "Runner interrupt was not confirmed. The pending action is still available; reconnect and try again." } }),
-                  { status: 503, headers: { "content-type": "application/json" } });
-              }
-            }
-          }
-          if (settledRequests.length > 0) {
-            const settled = new Set(settledRequests);
-            this.setState({ ...this.state, pending_tool_calls: this.state.pending_tool_calls.filter((pending) => !settled.has(pending.toolCallId)) });
-            for (const requestId of settled) {
-              // Reuse the same error extension emitted by orphan-tool recovery.
-              const result: SessionEvent & { is_error: true } = { type: "agent.tool_result", tool_use_id: requestId,
-                content: [{ type: "text", text: INTERRUPTED_TOOL_RESULT_TEXT }], is_error: true,
-                ...(targetThread !== "sthr_primary" ? { session_thread_id: targetThread } : {}),
-              };
-              history.append(result);
-              this.broadcastEvent(result);
-            }
-          }
-        }
-        const interrupt = body as UserInterruptEvent & { id?: string; processed_at?: string };
-        const interruptAt = this.processedClock.nowIso();
-        if (!interrupt.id) interrupt.id = `sevt_${generateEventId()}`;
-        interrupt.processed_at = interruptAt;
-        this.markAcceptedEventsProcessed([interrupt.id], interruptAt);
-        history.append(interrupt);
-        // Claude Managed Agents: user.interrupt itself appears on the stream.
-        this.broadcastEventIgnoringExecutionFence(interrupt);
-        // Emit status_idle when interrupt actually changed thread state:
-        // either an active turn was aborted, or queued events were
-        // cancelled. Skip when both are false (no-op interrupt) — that
-        // case had been emitting a duplicate status_idle right after a
-        // natural-end one, observed 2026-05-11 sess-y5saq (seq 93 idle
-        // stop_reason=end_turn, seq 95 idle stop_reason=None).
-        // Scope: only synchronous calls of this thread's current turn that
-        // never got a result. Anything that already returned (including a
-        // future async/background handle) is untouched; OpenMA has no async
-        // tool handles today, and their lifecycle is deliberately not tied to
-        // interrupt (separate design).
-        // Close every still-open tool_use / custom_tool_use / confirmation
-        // BEFORE the idle so the turn never ends in requires_action and a
-        // late answer cannot resume it (findings.md §3/§4).
-        const closedCount = this.closeToolUsesAfterInterrupt(history, undefined, targetThread);
-        // Decide idle from durable history, not only the in-memory controller.
-        // After DO eviction / wrangler HMR / a concurrent interrupt that already
-        // deleted the controller, hadActiveTurn can be false while the last
-        // status is still running — skipping idle leaves the session stuck
-        // (race NOT_SETTLED, interrupt-v2 double_interrupt). Official CMA:
-        // interrupt ends the turn with status_idle end_turn.
-        // True no-op: already idle end_turn and nothing was closed/cancelled.
-        let lastStatusType: string | undefined;
-        let lastStop: string | undefined;
-        for (const e of history.getEvents()) {
-          if (((e as { session_thread_id?: string }).session_thread_id ?? "sthr_primary") !== targetThread) continue;
-          if (e.type === "session.status_running" || e.type === "session.status_idle") {
-            lastStatusType = e.type;
-            lastStop = e.type === "session.status_idle"
-              ? ((e as { stop_reason?: { type?: string } }).stop_reason?.type ?? "")
-              : undefined;
-          }
-        }
-        const lastIsRunning = lastStatusType === "session.status_running";
-        // Official CMA: interrupt against an already-idle session is normally
-        // a no-op (handled above). This emitIdle path is for an active or
-        // still-running turn only.
-        const emitIdle =
-          closedCount > 0 ||
-          settledRequests.length > 0 ||
-          cancelledCount > 0 ||
-          hadActiveTurn ||
-          lastIsRunning;
-        if (emitIdle) {
-          // If a zombie turn's finally still runs, suppress its catch-all idle.
-          if (lastIsRunning || hadActiveTurn) this._interruptIdleOwned.add(targetThread);
-          // stop_reason is required on session.status_idle per Anthropic
-          // spec — pydantic v2 in @anthropic-ai/sdk-python rejects events
-          // without it. Anthropic's StopReason union has no `interrupted`
-          // variant, so use `end_turn` (the closest semantic — agent
-          // stopped, user can send the next message). The accompanying
-          // user.interrupt event in the log carries the actual cause.
-          const idleEvent: SessionEvent = {
-            type: "session.status_idle",
-            stop_reason: interruptedTurnStopReason(),
-            ...(targetThread !== "sthr_primary" ? { session_thread_id: targetThread } : {}),
-          };
-          history.append(idleEvent);
-          // Interrupt ends the turn's execution fence; broadcastEvent would
-          // drop this as stale and never project to D1 (GET /events reads D1).
-          // Force-publish lifecycle idle without a fence.
-          this.broadcastEventIgnoringExecutionFence(idleEvent);
-        }
+        // Queued inputs survive the interrupt (same as Node): the next one
+        // starts the lane's next turn.
+        await this.dispatchEventQueue(targetThread);
         return new Response(null, { status: 202 });
       }
 
@@ -3124,7 +2919,7 @@ export class SessionDO extends DurableObject<Env> {
         // event and its continuation execution are already in D1 (store
         // append + outbox); just wake the primary lane to claim it.
         if ((body as unknown as { resume?: boolean }).resume === true) {
-          this.drainEventQueue("sthr_primary");
+          await this.dispatchEventQueue("sthr_primary");
         }
         return new Response(null, { status: 202 });
       }
@@ -3145,8 +2940,7 @@ export class SessionDO extends DurableObject<Env> {
             await this.schedule(5, "recoverEventQueue");
           } catch {}
         }
-        console.log("[post /event] tool_confirmation enqueued, firing drainEventQueue (no await)");
-        if (enqueued) this.drainEventQueue(tcThread);
+        if (enqueued) await this.dispatchEventQueue(tcThread);
         return new Response(null, { status: 202 });
       }
 
@@ -3176,8 +2970,7 @@ export class SessionDO extends DurableObject<Env> {
             await this.schedule(5, "recoverEventQueue");
           } catch {}
         }
-        console.log("[post /event] custom_tool_result enqueued, firing drainEventQueue (no await)");
-        if (enqueued) this.drainEventQueue(ctrThread);
+        if (enqueued) await this.dispatchEventQueue(ctrThread);
         return new Response(null, { status: 202 });
       }
 
@@ -3371,6 +3164,7 @@ export class SessionDO extends DurableObject<Env> {
           // same wire contract or a spec-only client would silently get
           // OMA extension events on reconnect.
           if (!includeChunks && !isSpecEvent(event.type)) continue;
+          if ((event as { transcript_only?: boolean }).transcript_only) continue;
           pair[1].send(JSON.stringify(event));
         }
       }
@@ -3507,8 +3301,8 @@ export class SessionDO extends DurableObject<Env> {
         { status: 200, headers: { "content-type": "application/json" } });
     }
 
-    // GET /events — paginated event list
-    if (request.method === "GET" && url.pathname === "/events") {
+    // GET /events — reconcile committed recovery facts before reading local history.
+    if (request.method === "GET" && url.pathname === "/events") { await backfillStaleTurnEvents({ binding: this.env.MAIN_MCP, workspaceId: this.state.tenant_id, sessionId: this.state.session_id, history: this.openHistory(), sockets: () => this.ctx.getWebSockets() });
       const limitParam = url.searchParams.get("limit");
       let limit = limitParam ? parseInt(limitParam, 10) : 100;
       if (isNaN(limit) || limit < 1) limit = 100;
@@ -3522,7 +3316,7 @@ export class SessionDO extends DurableObject<Env> {
       // queued turn inputs: include them in the list (the frontend outbox
       // reads this list), but expose seq: null until promotion stamps the
       // same row/id — canonical seq only exists once processed_at is set.
-      const query = `SELECT seq, type, data, ts, processed_at, cancelled_at FROM events WHERE seq > ? ORDER BY seq ${order} LIMIT ?`;
+      const query = `SELECT seq, type, data, ts, processed_at, cancelled_at FROM events WHERE seq > ? AND json_extract(data, '$.transcript_only') IS NULL ORDER BY seq ${order} LIMIT ?`;
       // Retry the SQL exec on transient "Durable Object storage operation
       // exceeded timeout" errors only — these surface during write-contention
       // storms (e.g. 49+ concurrent model_request_start events), and a
@@ -3632,7 +3426,7 @@ export class SessionDO extends DurableObject<Env> {
         session_thread_id?: string;
       };
       const threadId = body.session_thread_id ?? "sthr_primary";
-      this.creditUsageToThread(threadId, {
+      this.usageMeter.credit(threadId, {
         input_tokens: body.input_tokens ?? 0,
         output_tokens: body.output_tokens ?? 0,
         cache_creation_input_tokens: body.cache_creation_input_tokens,
@@ -3810,7 +3604,7 @@ export class SessionDO extends DurableObject<Env> {
       const cursor = this.ctx.storage.sql.exec(
         `SELECT seq, type, data, ts, processed_at, cancelled_at, session_thread_id
            FROM events
-           WHERE session_thread_id = ? AND seq > ?
+           WHERE json_extract(data, '$.transcript_only') IS NULL AND session_thread_id = ? AND seq > ?
            ORDER BY seq ${order} LIMIT ?`,
         threadId, afterSeq, limit,
       );
@@ -3884,16 +3678,13 @@ export class SessionDO extends DurableObject<Env> {
       });
     }
 
-    // POST /model-egress — HTTP adapter for domain begin/completeModelEgress.
-    // Main's inference-proxy hits this so OpenSandbox shares the ONE meter.
+    // POST /model-egress — HTTP adapter for the application egress protocol
+    // (parse/applyModelEgressRequest over the domain meter). Main's
+    // inference-proxy hits this so OpenSandbox shares the ONE meter.
     if (request.method === "POST" && url.pathname === "/model-egress") {
-      const body = (await request.json().catch(() => null)) as {
-        action?: "begin" | "complete";
-        usage?: TokenUsage;
-      } | null;
-      const action = body?.action;
-      if (action !== "begin" && action !== "complete") {
-        return Response.json({ error: "action required (begin|complete)" }, { status: 400 });
+      const egress = parseModelEgressRequest(await request.json().catch(() => null));
+      if (egress === null) {
+        return Response.json({ error: MODEL_EGRESS_ACTION_REQUIRED }, { status: 400 });
       }
       let gate = this.activeBudgetGate;
       if (!gate) {
@@ -3902,24 +3693,7 @@ export class SessionDO extends DurableObject<Env> {
         );
         gate = await this.resolveBudgetGate(handle);
       }
-      if (!gate) {
-        return Response.json({ active: false, allowed: true, list_cost_pico: null });
-      }
-      if (action === "begin") {
-        const allowed = beginModelEgress(gate);
-        return Response.json({
-          active: true,
-          allowed,
-          reached: gate.reached,
-          list_cost_pico: gate.list_cost_pico,
-        });
-      }
-      completeModelEgress(gate, body?.usage ?? {});
-      return Response.json({
-        active: true,
-        reached: gate.reached,
-        list_cost_pico: gate.list_cost_pico,
-      });
+      return Response.json(applyModelEgressRequest(gate, egress));
     }
 
     // GET /file?path=... — read a file from the sandbox FS as raw bytes.
@@ -4070,6 +3844,9 @@ export class SessionDO extends DurableObject<Env> {
     };
   }
 
+  /** Idle pause alarm callback (sandbox-idle-alarm.ts). */
+  async pauseIdleSandbox(payload?: { version: number }): Promise<void> { this.ensureSandboxCreated(); await this.portsSandbox!.idlePause(payload?.version); }
+
   /** Used inside warmup itself to avoid the wrap → warmup → wrap recursion. */
   private getRawSandbox(): SandboxExecutor {
     this.ensureSandboxCreated();
@@ -4078,9 +3855,27 @@ export class SessionDO extends DurableObject<Env> {
 
   private ensureSandboxCreated() {
     if (!this.sandbox) {
-      // Sandbox ID must be 1-63 chars; DO hex ID is 64 chars — truncate to fit
-      const sandboxId = this.ctx.id.toString().slice(0, 63);
-      this.sandbox = createSandbox(this.env, sandboxId, this.state.sandbox_image);
+      this.portsSandbox = createSessionSandbox(this.env.SANDBOX_ADAPTER, {
+        env: this.env,
+        storage: this.ctx.storage,
+        sandboxId: this.ctx.id.toString().slice(0, 63), // 1-63 chars; the DO hex id is 64
+        // Operator catalog image (#545 / ADR 0016) for the Cloudflare adapter.
+        sandboxImage: this.state.sandbox_image ?? null,
+        session: () => ({ tenantId: this.state.tenant_id, environmentId: this.state.environment_id, sessionId: this.state.session_id, agentId: this.state.agent_id || null }),
+        harness: () => this.state.agent_snapshot?.harness ?? null, // sandbox token scope (#561)
+        networking: async () => {
+          const envId = this.state.environment_id;
+          const config = envId ? await this.getEnvConfig(envId) : null;
+          return (config?.config as { networking?: { type?: string; allowed_hosts?: string[]; allow_package_managers?: boolean } } | undefined)?.networking;
+        },
+        // Sandbox egress follows a current execution attempt of this Session; none between turns (design §0.0 rule 10).
+        fence: () => this._executionFences.values().next().value,
+        warn: (message) => { try { this.persistAndBroadcastEvent(sessionSandboxWarningEvent(message)); } catch {} },
+        idleTimer: createSandboxIdleAlarm(this, "pauseIdleSandbox"),
+        waitUntil: (p) => this.ctx.waitUntil(p.catch(() => undefined)),
+        environmentConfig: async () => (this.state.environment_id ? await this.getEnvConfig(this.state.environment_id) : null),
+      });
+      this.sandbox = this.portsSandbox;
       this.wrappedSandbox = this.wrapSandboxWithLazyWarmup(this.sandbox);
     }
   }
@@ -4155,6 +3950,8 @@ export class SessionDO extends DurableObject<Env> {
       this.sessionSandboxRuntime().invalidatePreparation();
       this.currentWarmupGen = null;
       this.hasWritableManagedMemoryMount = false;
+      this.mountedMemoryFacts = [];
+      this.mountedSessionResources = [];
       await this.warmUpSandbox();
     };
     return new Proxy(raw, {
@@ -4258,213 +4055,14 @@ export class SessionDO extends DurableObject<Env> {
     try {
       // Raw sandbox — wrapped one would recurse back into warmUpSandbox here.
       const sandbox = this.getRawSandbox();
+      const sessionId = this.state.session_id;
 
-      // Trigger container startup with retries — local dev containers can take
-      // 30-60s to start. SDK returns 503 while container port isn't listening.
-      // See: https://github.com/cloudflare/containers/issues/155
-      //
-      // Health-check semantics: `exec("true")` is the smallest possible probe
-      // (no-op posix binary, no fs/network IO). Cold-start: container needs
-      // ~30s for port 3000 to bind, so first attempt allows 30s. Steady-
-      // state: a healthy container responds in <100ms — anything over a few
-      // seconds means the shim is wedged (in-flight exec never resolved,
-      // file descriptors exhausted, kernel D-state on a dead socket).
-      // Using the default 120000ms timeout made wedged-container detection
-      // pathologically slow: staging 2026-05-19 saw 26× 120s timeouts =
-      // 53 min of retry-loop on a single bad container before recovery
-      // finally kicked in.
-      //
-      // After NUKE_AFTER_ATTEMPT failed probes we call sandbox.destroy() to
-      // force-tear-down the wedged container. CF's @cloudflare/sandbox SDK
-      // re-creates a fresh container on the next exec since the underlying
-      // Sandbox DO is keyed on sessionId (same DO, new container instance).
-      const HEALTH_TIMEOUT_FIRST_MS = 30_000;  // cold start allowance
-      const HEALTH_TIMEOUT_RETRY_MS = 5_000;   // wedged shim should answer <1s
-      const NUKE_AFTER_ATTEMPT = 3;
-      let ready = false;
-      let lastError = "";
-      let destroyed = false;
-      for (let attempt = 0; attempt < 10; attempt++) {
-        const timeout = attempt === 0 ? HEALTH_TIMEOUT_FIRST_MS : HEALTH_TIMEOUT_RETRY_MS;
-        try {
-          await sandbox.exec("true", timeout);
-          ready = true;
-          break;
-        } catch (err: any) {
-          lastError = err?.message || String(err);
-          if (attempt === NUKE_AFTER_ATTEMPT && !destroyed) {
-            console.warn(
-              `[warmup] container unhealthy after ${attempt + 1} probes ` +
-                `(last: ${lastError.slice(0, 120)}); destroying + recreating`,
-            );
-            try {
-              if (typeof (sandbox as { destroy?: () => Promise<void> }).destroy === "function") {
-                await (sandbox as { destroy: () => Promise<void> }).destroy();
-              }
-            } catch (destroyErr: any) {
-              console.warn(`[warmup] destroy failed: ${destroyErr?.message ?? destroyErr}`);
-            }
-            destroyed = true;
-          }
-          const delay = 1000 * Math.pow(1.5, attempt);
-          await new Promise(r => setTimeout(r, Math.min(delay, 5000)));
-        }
-      }
-      if (!ready) {
-        throw new Error(`Sandbox container failed to start after 10 attempts. Last error: ${lastError}`);
-      }
-
-      // Network egress is a warmup prerequisite, not a post-mount concern.
-      // Cloudflare sandboxes run with direct internet disabled; this installs
-      // the TLS interception handler and the GitHub host routes before package
-      // installation or repository materialization makes its first request.
-      if (this.state.session_id && this.state.tenant_id) {
-        await prepareSandboxEgress(sandbox, {
-          tenantId: this.state.tenant_id,
-          sessionId: this.state.session_id,
-        });
-      }
-
-      // Restore the most recent workspace backup for (tenant, environment)
-      // BEFORE mountResources runs, so the agent picks up where it left
-      // off. Per CF's recommended pattern (changelog 2026-02-23, "pick up
-      // where you left off, even after days of inactivity").
-      //
-      // Skip when the session attaches a github_repository resource: that
-      // resource git-clones into /workspace, and `git clone` requires the
-      // target dir to be empty. Restore-then-clone would fail; the user
-      // explicitly asked for a clone so they want clone semantics, not
-      // restore semantics. (Future: smarter merge — restore then `git pull`.)
-      if (
-        supportsWorkspaceBackup(sandbox) &&
-        this.state.tenant_id &&
-        this.state.environment_id &&
-        this.env.MAIN_DB
-      ) {
-        try {
-          // If /tmp/.oma-warm is present, the container survived since a
-          // previous warmup — /workspace is already populated by whoever
-          // wrote the marker. Skip restore: re-running it would download
-          // the latest backup over a live /workspace, throwing away any
-          // writes since that backup. This is the path that lets a verify
-          // exec arriving N minutes after the agent turn just see the
-          // files the agent wrote, no D1 round-trip needed.
-          let containerWarmAlready = false;
-          try {
-            const probed = await sandbox.exec("cat /tmp/.oma-warm 2>/dev/null");
-            const m = /^exit=(-?\d+)\n([\s\S]*)$/.exec(probed);
-            if (m && m[1] === "0" && m[2].trim().length > 0) {
-              containerWarmAlready = true;
-              this.currentWarmupGen = m[2].trim();
-              logWarn(
-                { op: "session_do.warmup.skip_restore_container_alive", session_id: this.state.session_id, marker: this.currentWarmupGen },
-                "skipping workspace restore — container still warm with previous /workspace",
-              );
-            }
-          } catch { /* probe failed → fall through to normal restore path */ }
-
-          let hasGitRepo = false;
-          if (this.state.session_id) {
-            const services = await getCfServicesForTenant(this.env, this.state.tenant_id);
-            const rows = await services.sessions.listResourcesBySession({ sessionId: this.state.session_id });
-            hasGitRepo = rows.some(
-              (r) => r.type === "github_repository" || r.type === "github_repo",
-            );
-          }
-          if (containerWarmAlready) {
-            // already short-circuited above with a warning log
-          } else if (hasGitRepo) {
-            logWarn(
-              { op: "session_do.warmup.skip_restore_github_repo", session_id: this.state.session_id },
-              "skipping workspace restore — session attaches github_repository (git clone needs empty /workspace)",
-            );
-          } else {
-            // Route to the tenant's shard — workspace_backups is per-tenant
-            // data, so the row lives wherever this tenant was sharded.
-            const provider = buildCfTenantDbProvider(this.env);
-            const backupDb = await provider.resolve(this.state.tenant_id);
-            const handle = await findWorkspaceBackup(
-              backupDb,
-              this.state.tenant_id,
-              this.state.environment_id,
-              this.state.session_id ?? "unknown",
-              Date.now(),
-            );
-            if (handle) {
-              const restoreStart = Date.now();
-              const result = await sandbox.restoreWorkspaceBackup(handle);
-              const restoreMs = Date.now() - restoreStart;
-              const ok = result.ok;
-              const restoreError = result.error;
-              try {
-                this.persistAndBroadcastEvent({
-                  type: "session.warning",
-                  message: ok
-                    ? `workspace_restored backup_id=${handle.id} elapsed_ms=${restoreMs}`
-                    : `workspace_restore_failed backup_id=${handle.id} elapsed_ms=${restoreMs} error=${(restoreError ?? "unknown").slice(0, 300)}`,
-                } as unknown as SessionEvent);
-              } catch {}
-              if (!ok) {
-                logWarn(
-                  {
-                    op: "session_do.warmup.restore_backup",
-                    session_id: this.state.session_id,
-                    tenant_id: this.state.tenant_id,
-                    environment_id: this.state.environment_id,
-                    backup_id: handle.id,
-                    elapsed_ms: restoreMs,
-                    error: restoreError,
-                  },
-                  "workspace backup restore failed — continuing with empty workspace",
-                );
-              }
-            } else {
-              // No backup found — fresh session, expected case. Log
-              // for ops/debugging only; don't emit as session.warning
-              // because a "warning" event leaks into the trajectory
-              // and confuses operators reading session timelines (it's
-              // not actually a problem). Failed restore (above) and
-              // successful restore (above) are different — those ARE
-              // worth a session event.
-              log(
-                {
-                  op: "session_do.warmup.no_backup",
-                  session_id: this.state.session_id,
-                  tenant_id: this.state.tenant_id,
-                  environment_id: this.state.environment_id,
-                },
-                "no workspace backup found for this session — starting fresh",
-              );
-            }
-          }
-        } catch (err) {
-          // Best-effort. Workspace persistence shouldn't block session
-          // warmup — agent still works with empty /workspace.
-          logWarn(
-            { op: "session_do.warmup.restore_backup", session_id: this.state.session_id, err },
-            "workspace backup restore failed; continuing with empty /workspace",
-          );
-        }
-      }
-
-      // A writable Memory workspace must be private to one concrete sandbox
-      // incarnation. Reuse the marker when this DO reconnects to a live
-      // container; mint it only after workspace restore has decided whether
-      // the container is fresh, otherwise the marker would incorrectly make
-      // the first warmup look retained.
-      if (this.currentWarmupGen === null) {
-        try {
-          const probed = await sandbox.exec("cat /tmp/.oma-warm 2>/dev/null");
-          const match = /^exit=(-?\d+)\n([\s\S]*)$/.exec(probed);
-          const retained = match?.[1] === "0" ? match[2].trim() : "";
-          if (retained.length > 0) this.currentWarmupGen = retained;
-        } catch { /* fresh container */ }
-      }
-      if (this.currentWarmupGen === null) {
-        const generation = crypto.randomUUID().slice(0, 12);
-        await sandbox.exec(`echo ${generation} > /tmp/.oma-warm`);
-        this.currentWarmupGen = generation;
-      }
+      // Sandbox SDK v2 Ports (session-sandbox.ts): attach the Session's
+      // sandbox, else resume from its latest restore point, else acquire;
+      // then egress.attach and storage.attach. A failed step rolls back and
+      // throws. The generation is the /tmp/.oma-warm marker and the private
+      // Memory runtime generation.
+      this.currentWarmupGen = await this.portsSandbox!.prepare();
 
       // image_strategy fast path REMOVED. Was a base_snapshot lazy-prepare
       // path that ran a multi-minute install + tar + R2 upload via a single
@@ -4514,9 +4112,13 @@ export class SessionDO extends DurableObject<Env> {
             throw new Error(
               `Environment setup failed at ${result.path}: ${result.error}`,
             );
-          }
+          } else this.portsSandbox!.environmentPrepared(); // environment cache: build its snapshot in the background
         }
       }
+
+      // Same PATH as Node (environmentCommandPath): installed tools, then the
+      // image PATH that bash -l's /etc/profile would otherwise drop.
+      await sandbox.setEnvVars?.({ PATH: await environmentCommandPath({ exec: (cmd: string, timeout?: number) => sandbox.exec(cmd, timeout) }) });
 
       // Mount FILES_BUCKET at /mnt/session/outputs/ so any file the agent
       // writes there immediately appears via the caller-facing
@@ -4540,7 +4142,7 @@ export class SessionDO extends DurableObject<Env> {
             "Session outputs are mounted but the sandbox cannot publish their environment contract",
           );
         }
-        await sandbox.setEnvVars({ OMA_OUTPUTS_DIR: "/mnt/session/outputs" });
+        await sandbox.setEnvVars(sessionResourceEnvironment({ memoryStores: [], outputs: { path: SESSION_OUTPUTS_PATH } }));
       }
 
       // Materialize the current canonical Managed Session resources. The
@@ -4548,7 +4150,6 @@ export class SessionDO extends DurableObject<Env> {
       // consumes a service-binding projection and performs provider I/O.
       // Resolve on every warmup so files added after Session creation are
       // visible before the first model request.
-      const sessionId = this.state.session_id;
       if (sessionId) {
         const source = this.env.MAIN_MCP;
         if (source === undefined) {
@@ -4561,21 +4162,19 @@ export class SessionDO extends DurableObject<Env> {
           sessionId,
           runtimeGeneration: this.currentWarmupGen,
         });
-        this.hasWritableManagedMemoryMount = loaded.resources.some((resource) =>
+        const resources = loaded.resources;
+        this.mountedSessionResources = resources;
+        this.hasWritableManagedMemoryMount = resources.some((resource) =>
           resource.type === "memory_store" && resource.access !== "read_only"
         );
 
-        if (loaded.resources.length) {
-          await mountResources(
-            sandbox,
-            loaded.resources,
-            this.env.CONFIG_KV,
-            new Map(),
-            undefined,
-            this.state.tenant_id,
-            undefined,
-            loaded.fileSource,
-          );
+        if (resources.length) {
+          this.mountedMemoryFacts = await mountSessionResources(sandbox, resources, {
+            downloadFile: async (fileId) => (await loaded.fileSource.downloadFile(fileId)).content,
+            repositories: proxiedRepositoryAccess(sandbox),
+            memoryStores: { mode: "native" },
+            afterRepositories: () => installGhCli(sandbox),
+          });
         }
       }
 
@@ -4626,47 +4225,11 @@ export class SessionDO extends DurableObject<Env> {
         },
       });
 
-      // Hand backup context to OmaSandbox so its onActivityExpired hook
-      // (sleepAfter teardown) writes the final /workspace snapshot scoped
-      // to this (tenant, env, session). Container DO is keyed by sessionId,
-      // so this only needs to land once per warmup. Restoration on the
-      // next session uses (tenant, env) — see findWorkspaceBackup above.
-      if (
-        supportsManagedWorkspaceLifecycle(sandbox)
-        && this.state.session_id
-        && this.state.tenant_id
-        && this.state.environment_id
-      ) {
-        await sandbox.setBackupContext({
-          tenantId: this.state.tenant_id,
-          environmentId: this.state.environment_id,
-          sessionId: this.state.session_id,
-        });
-      }
-
-      // Hand billing context to OmaSandbox so its onStop hook (sleepAfter
-      // teardown OR explicit destroy) emits one sandbox_active_seconds
-      // row scoped to this (tenant, session, agent). Same idempotency
-      // story as setBackupContext — same-session rewarms keep the
-      // original startedAt; new-session containers mint a fresh one.
-      const sandboxAny = sandbox as unknown as {
-        setBillingContext?: (c: {
-          tenantId: string;
-          sessionId: string;
-          agentId: string | null;
-        }) => Promise<void>;
-      };
-      if (sandboxAny.setBillingContext && this.state.session_id && this.state.tenant_id) {
-        await sandboxAny.setBillingContext({
-          tenantId: this.state.tenant_id,
-          sessionId: this.state.session_id,
-          agentId: this.state.agent_id || null,
-        });
-      }
-
     } catch (err) {
       this.currentWarmupGen = null;
       this.hasWritableManagedMemoryMount = false;
+      this.mountedMemoryFacts = [];
+      this.mountedSessionResources = [];
       console.error(
         `[warmup] failed session=${this.state.session_id ?? "unknown"}: ${err instanceof Error ? err.message : String(err)}`,
       );
@@ -4676,39 +4239,8 @@ export class SessionDO extends DurableObject<Env> {
     }
   }
 
-  /** Agents API artifact publication for an execution whose terminal just
-   * committed. Main owns the sealed Session mapping, Files and the fence
-   * check (shared publisher, idempotent by path + content); this DO only
-   * serves its sandbox outputs. A copy failure is reported and never turns
-   * the completed execution into a failure. */
   private async publishAgentsApiArtifacts(executionFence: SessionExecutionFence): Promise<void> {
-    const binding = this.env.MAIN_MCP;
-    const tenantId = this.state.tenant_id;
-    const sessionId = this.state.session_id;
-    if (binding?.publishManagedSessionArtifacts === undefined || !tenantId || !sessionId) return;
-    try {
-      await binding.publishManagedSessionArtifacts({
-        tenantId,
-        sessionId,
-        executionFence,
-        outputManifest: async () => sandboxStdout(
-          await this.getOrCreateSandbox(),
-          "cd /workspace && if test -d ./outputs; then find ./outputs -type f -print0 | base64 -w0; fi",
-          30_000,
-        ),
-        readOutput: async (path: string) => readSandboxFileBytes(await this.getOrCreateSandbox(), path, 60_000),
-      });
-    } catch (error) {
-      logWarn(
-        {
-          op: "session_do.openai_agents.artifact_publication_failed",
-          session_id: sessionId,
-          execution_id: executionFence.executionId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        "Completed Session output could not be published as an Agents API artifact",
-      );
-    }
+    await publishAgentsApiArtifacts(this.env.MAIN_MCP, this.state, executionFence, () => this.getOrCreateSandbox());
   }
 
   /** Commit writable canonical Memory mounts before the public idle boundary.
@@ -4730,6 +4262,11 @@ export class SessionDO extends DurableObject<Env> {
       || sessionId.length === 0
       || runtimeGeneration === null
     ) return;
+    // Copy-sync must write this turn's Memory bytes to the working projection
+    // before canonical reconciliation reads it. Checkpoint sync writes Memory
+    // only; output publication remains independent of idle.
+    if (this.portsSandbox === null) throw new Error("Managed Memory has no sandbox to synchronize");
+    await this.portsSandbox.syncStorage("checkpoint");
     let lastError: unknown;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
@@ -4849,6 +4386,7 @@ export class SessionDO extends DurableObject<Env> {
     const eventDocument = JSON.stringify(event);
     this._managedProjectionChain = this._managedProjectionChain
       .then(async () => {
+        if (executionFence && !this.isExecutionFenceCurrent(executionFence)) return;
         const result = await binding.managedSessionEventProduced({
           workspaceId,
           sessionId,
@@ -4952,76 +4490,28 @@ export class SessionDO extends DurableObject<Env> {
   }
 
   /**
-   * Inspect an outbound event for a `span.model_request_end` carrying
-   * `model_usage` and credit cache tokens to the given thread. Input /
-   * output token totals already arrive via reportUsage at the end of the
-   * turn (default-loop step 10), so this only handles the cache-bucket
-   * deltas reportUsage doesn't carry. Idempotent across primary +
-   * sub-agent broadcast paths because each model_request_end event is
-   * emitted exactly once per LLM step.
+   * Put a shared usage report (reportSessionUsage / reportModelSpanUsage) on
+   * this Session's log: the `session.usage` snapshot is appended, broadcast
+   * and projected onto Session.usage like on Node. A child lane's report is
+   * tagged with its thread.
    */
-  private maybeCreditCacheTokens(threadId: string, event: SessionEvent): void {
-    if (event.type !== "span.model_request_end") return;
-    const usage = (event as unknown as {
-      model_usage?: {
-        cache_creation_input_tokens?: number;
-        cache_read_input_tokens?: number;
-      };
-    }).model_usage;
-    if (!usage) return;
-    const cc = usage.cache_creation_input_tokens || 0;
-    const cr = usage.cache_read_input_tokens || 0;
-    if (cc === 0 && cr === 0) return;
-    this.creditUsageToThread(threadId, {
-      input_tokens: 0,
-      output_tokens: 0,
-      cache_creation_input_tokens: cc,
-      cache_read_input_tokens: cr,
-    });
+  private publishSessionUsage(
+    report: SessionUsageReport,
+    history: HistoryStore,
+    executionFence: SessionExecutionFence | undefined,
+    threadId?: string,
+  ): void {
+    const encoded = encodeRuntimeHistoryEvent(report as never) as unknown as SessionEvent;
+    const event = threadId === undefined ? encoded : { ...encoded, session_thread_id: threadId } as SessionEvent;
+    history.append(event);
+    this.broadcastEvent(event, executionFence);
   }
 
-  /**
-   * Credit token usage to a specific thread AND keep the session-wide
-   * `state.input_tokens` / `state.output_tokens` in sync. Cache token
-   * fields are tracked per-thread only — the session-wide totals just
-   * cover input/output (their existing meaning).
-   *
-   * Called from the `reportUsage` closures wired into HarnessRuntime
-   * for both the primary turn and sub-agent turns; threadId is the
-   * session_thread_id the closure was bound to ("sthr_primary" or a
-   * sub-agent "sthr_*").
-   */
-  private creditUsageToThread(
-    threadId: string,
-    delta: {
-      input_tokens: number;
-      output_tokens: number;
-      cache_creation_input_tokens?: number;
-      cache_read_input_tokens?: number;
-    },
-  ): void {
-    const existing = this.state.thread_usage ?? {};
-    const prior = existing[threadId] ?? {
-      input_tokens: 0,
-      output_tokens: 0,
-      cache_creation_input_tokens: 0,
-      cache_read_input_tokens: 0,
-    };
-    const next = {
-      input_tokens: prior.input_tokens + (delta.input_tokens || 0),
-      output_tokens: prior.output_tokens + (delta.output_tokens || 0),
-      cache_creation_input_tokens:
-        prior.cache_creation_input_tokens + (delta.cache_creation_input_tokens || 0),
-      cache_read_input_tokens:
-        prior.cache_read_input_tokens + (delta.cache_read_input_tokens || 0),
-    };
-    this.setState({
-      ...this.state,
-      input_tokens: (this.state.input_tokens ?? 0) + (delta.input_tokens || 0),
-      output_tokens: (this.state.output_tokens ?? 0) + (delta.output_tokens || 0),
-      thread_usage: { ...existing, [threadId]: next },
-    });
-  }
+  /** The application usage meter over this DO's state (session-usage-store). */
+  private readonly usageMeter: SessionUsageMeter = createSessionUsageMeter(sessionDoUsageStore({
+    get: () => this.state,
+    set: (next) => this.setState(next),
+  }));
 
   /**
    * Persist a SessionEvent to the events table AND broadcast to WS subscribers.
@@ -5124,23 +4614,24 @@ export class SessionDO extends DurableObject<Env> {
         workspaceId: this.state.tenant_id,
         sessionId: this.state.session_id,
       });
-      const budget = context?.session.budget ?? null;
-      if (budget === null) return null;
-      const services = await getCfServicesForTenant(this.env, this.state.tenant_id);
-      const card = await services.modelCards.findByModelId({ tenantId: this.state.tenant_id, modelId: handle });
-      const pricing = card && card.archived_at === null ? card.pricing ?? null : null;
-      // Domain gate; CF ListCostPicoStore persists domain property list_cost_pico.
-      const store = {
-        load: (): string | null => this.state.list_cost_pico ?? null,
-        save: (list_cost_pico: string): void => {
-          this.setState({ ...this.state, list_cost_pico });
+      if (!context) return null;
+      const tenantId = this.state.tenant_id;
+      // Application gate opener; the CF ListCostPicoStore persists the domain
+      // property list_cost_pico in DO state.
+      const gate = await openSessionBudgetGate({
+        session: context.session,
+        pricing: async () => {
+          const services = await getCfServicesForTenant(this.env, tenantId);
+          const card = await services.modelCards.findByModelId({ tenantId, modelId: handle });
+          return activeModelCardPricing(card);
         },
-      };
-      const gate = createSessionBudgetGate(
-        { amount: budget.amountMinor, currency: budget.currency },
-        pricing,
-        store,
-      );
+        store: {
+          load: (): string | null => this.state.list_cost_pico ?? null,
+          save: (list_cost_pico: string): void => {
+            this.setState({ ...this.state, list_cost_pico });
+          },
+        },
+      });
       this.activeBudgetGate = gate;
       return gate;
     } catch (err) {
@@ -5150,26 +4641,6 @@ export class SessionDO extends DurableObject<Env> {
       );
       return null;
     }
-  }
-
-  /** Session-wide usage snapshot for the budget_reached `session.usage`. */
-  private budgetUsageSnapshot(gate: SessionBudgetGate, events: readonly SessionEvent[]): Record<string, unknown> {
-    const totals = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
-    for (const event of events) {
-      if (event.type !== "span.model_request_end") continue;
-      const usage = (event as { model_usage?: Partial<typeof totals> }).model_usage ?? {};
-      for (const key of Object.keys(totals) as (keyof typeof totals)[]) totals[key] += usage[key] ?? 0;
-    }
-    return {
-      input_tokens: totals.input_tokens,
-      output_tokens: totals.output_tokens,
-      ...(totals.cache_read_input_tokens > 0 && { cache_read_input_tokens: totals.cache_read_input_tokens }),
-      ...(totals.cache_creation_input_tokens > 0 && {
-        cache_creation: { ephemeral_five_minute_input_tokens: totals.cache_creation_input_tokens },
-      }),
-      list_cost: runtimeListCost(BigInt(gate.list_cost_pico)),
-      list_cost_pico: gate.list_cost_pico,
-    };
   }
 
   /** The main model handle for `agent`, matching every turn path. */
@@ -5222,14 +4693,15 @@ export class SessionDO extends DurableObject<Env> {
    * Handle tool confirmation: execute the confirmed tool or inject denial,
    * then re-run the harness to continue the conversation.
    */
-  private async handleToolConfirmation(
+  /** A confirmed call runs and a denied one gets its denial result; the turn
+   * itself is resumed by runAcceptedTurn. */
+  private async applyToolConfirmation(
     confirmation: UserToolConfirmationEvent,
     history: HistoryStore,
     parentSignal?: AbortSignal,
     executionFence?: SessionExecutionFence,
   ): Promise<void> {
     // Wrapped sandbox: per-method warmup happens inside any actual call.
-    if (this.toolUseAlreadyAnswered(confirmation.tool_use_id, history)) return;
     // Confirmation handlers may not even touch the sandbox depending on
     // tool type, so eager warmup is wasted; lazy is the right default.
     const sandbox = this.bindSandboxToExecution(
@@ -5308,6 +4780,7 @@ export class SessionDO extends DurableObject<Env> {
               type: "agent.tool_result",
               tool_use_id: pending.toolCallId,
               content: resultStr,
+              is_error: false,
               // v1-additive (docs/trajectory-v1-spec.md "Causality"):
               // matching agent.tool_use's EventBase.id IS pending.toolCallId.
               parent_event_id: pending.toolCallId,
@@ -5321,6 +4794,7 @@ export class SessionDO extends DurableObject<Env> {
               // ToolFailureError messages are pre-formatted model-facing
               // text ("Error: " prefix included); use them verbatim.
               content: e instanceof ToolFailureError ? e.message : `Error: ${e instanceof Error ? e.message : String(e)}`,
+              is_error: true,
               parent_event_id: pending.toolCallId,
             };
             history.append(toolResultEvent);
@@ -5336,6 +4810,7 @@ export class SessionDO extends DurableObject<Env> {
         type: "agent.tool_result",
         tool_use_id: confirmation.tool_use_id,
         content: `Denied: ${denyMsg}`,
+        is_error: true,
         // v1-additive: matching agent.tool_use's EventBase.id IS the
         // tool_use_id the confirmation references.
         parent_event_id: confirmation.tool_use_id,
@@ -5343,22 +4818,8 @@ export class SessionDO extends DurableObject<Env> {
       history.append(toolResultEvent);
       this.broadcastEvent(toolResultEvent);
     }
-
-    // Remove the confirmed/denied call from pending, and only resume the
-    // model once every parallel call of the batch has a result.
-    await this.resumeWhenToolBatchSettled(confirmation.tool_use_id, history, parentSignal, executionFence);
   }
 
-  /**
-   * A model step can emit several tool calls at once (parallel
-   * custom_tool_use / always_ask tool_use). Each one is answered by its own
-   * user event. Resuming the model after the FIRST answer replays a
-   * transcript with unmatched tool_use blocks, which providers reject
-   * (400 "tool_result without tool_use" / missing results) and the turn
-   * then loops through rescheduled+error. CMA semantics: stay
-   * idle(requires_action) listing the still-outstanding ids, and resume
-   * only when the whole batch is settled.
-   */
   /**
    * The aborted step's partial output can still land after user.interrupt
    * (stream-end fixup persists it), including tool_use blocks. Left open,
@@ -5411,11 +4872,26 @@ export class SessionDO extends DurableObject<Env> {
     return closedCount;
   }
 
+  /**
+   * The harness transcript's tool result for a client's custom tool answer.
+   * The public log carries only user.custom_tool_result (official CMA), so this
+   * is appended for the model and pairing checks, never broadcast or projected.
+   */
+  private customToolResultTranscriptEvent(result: UserCustomToolResultEvent): SessionEvent {
+    return {
+      type: "agent.tool_result",
+      tool_use_id: result.custom_tool_use_id,
+      content: (result.content ?? []).map((b) => b.type === "text" ? b.text : "").join(""),
+      // v1-additive (docs/trajectory-v1-spec.md "Causality"): matching
+      // agent.custom_tool_use's EventBase.id IS the custom_tool_use_id.
+      parent_event_id: result.custom_tool_use_id,
+      transcript_only: true,
+    } as SessionEvent;
+  }
+
   private toolUseExists(toolUseId: string, history: HistoryStore): boolean {
     try {
-      return history.getEvents().some((e) =>
-        (e.type === "agent.tool_use" || e.type === "agent.custom_tool_use" || e.type === "agent.mcp_tool_use") &&
-        (e as unknown as { id?: string }).id === toolUseId);
+      return knownToolCallIds(asWireEvents(history.getEvents())).has(toolUseId);
     } catch {
       return true;
     }
@@ -5433,6 +4909,61 @@ export class SessionDO extends DurableObject<Env> {
    * DO state still lists pending_tool_calls). budget_reached is not enforced
    * here yet (emitter/gate gap — see cma-steer-coherent-turn.md).
    */
+  /** The lane's last status event in the durable log. */
+  private laneLastStatus(history: HistoryStore, threadId: string): LaneStatus | null {
+    let last: LaneStatus | null = null;
+    for (const e of history.getEvents()) {
+      if (((e as { session_thread_id?: string }).session_thread_id ?? "sthr_primary") !== threadId) continue;
+      if (e.type === "session.status_running") last = "running";
+      else if (e.type === "session.status_idle") last = "idle";
+    }
+    return last;
+  }
+
+  /**
+   * An interrupt while no turn runs settles calls parked on a runner, through
+   * the registry even after DO eviction (no AbortController survives a
+   * callback-paused run). Settled calls get the orphan-recovery error result.
+   * Returns null when the runner did not confirm.
+   */
+  private async settleInterruptedRunnerActions(history: HistoryStore, threadId: string): Promise<number | null> {
+    if ((this.state.pending_tool_calls?.length ?? 0) === 0) return 0;
+    const pendingIds = new Set(this.state.pending_tool_calls.map((pending) => pending.toolCallId));
+    const pendingActions = history.getEvents().filter((event) =>
+      "id" in event && typeof event.id === "string" && pendingIds.has(event.id) &&
+      ((event as { session_thread_id?: string }).session_thread_id ?? "sthr_primary") === threadId,
+    );
+    const settledRequests: string[] = [];
+    if (pendingActions.length > 0) {
+      const threadAgent = threadId === "sthr_primary" ? this.state.agent_id
+        : [...this.ctx.storage.sql.exec("SELECT agent_id FROM threads WHERE id = ? LIMIT 1", threadId)][0]?.agent_id;
+      const agent = typeof threadAgent === "string" ? await this.getAgentConfig(threadAgent) : null;
+      if (agent) {
+        try {
+          const harness = resolveHarness(agent.harness || "default");
+          const settled = await harness.interruptPending?.({ agent, session_id: this.state.session_id,
+            tenant_id: this.state.tenant_id, runnerRelay: createRuntimeRoomRelay(this.env.RUNTIME_ROOM), pendingActions });
+          settledRequests.push(...(settled ?? []).filter((id) => pendingActions.some((event) => "id" in event && event.id === id)));
+        } catch {
+          return null;
+        }
+      }
+    }
+    if (settledRequests.length > 0) {
+      const settled = new Set(settledRequests);
+      this.setState({ ...this.state, pending_tool_calls: this.state.pending_tool_calls.filter((pending) => !settled.has(pending.toolCallId)) });
+      for (const requestId of settled) {
+        const result: SessionEvent & { is_error: true } = { type: "agent.tool_result", tool_use_id: requestId,
+          content: [{ type: "text", text: INTERRUPTED_TOOL_RESULT_TEXT }], is_error: true,
+          ...(threadId !== "sthr_primary" ? { session_thread_id: threadId } : {}),
+        };
+        history.append(result);
+        this.broadcastEvent(result);
+      }
+    }
+    return settledRequests.length;
+  }
+
   private laneSettleOnlyReason(history: HistoryStore, threadId: string): SettleOnlyReason | null {
     const pending = this.state.pending_tool_calls ?? [];
     if (pending.length > 0) return "requires_action";
@@ -5457,60 +4988,83 @@ export class SessionDO extends DurableObject<Env> {
 
   private toolUseAlreadyAnswered(toolUseId: string, history: HistoryStore): boolean {
     try {
-      return history.getEvents().some((e) =>
-        e.type === "agent.tool_result" &&
-        (e as unknown as { tool_use_id?: string }).tool_use_id === toolUseId);
+      return toolResultIds(asWireEvents(history.getEvents())).has(toolUseId);
     } catch {
       return false;
     }
   }
 
-  private async resumeWhenToolBatchSettled(
-    answeredId: string,
+  /** Pending calls named by their resolved tool: a call proxied through
+   * mcp_invoke awaits confirmation of its target. */
+  private resolvedPendingCalls(pending: readonly PendingToolCall[]): ResolvedPendingToolCall[] {
+    return pending.map((p) => ({ toolCallId: p.toolCallId, toolName: resolveProxiedToolCall(p.toolName, p.args).toolName }));
+  }
+
+  /**
+   * One turn over an accepted batch, in the Node accept order. Answers to
+   * closed calls change nothing; a partial answer batch re-announces what is
+   * still owed without sampling (a model step can park several parallel
+   * calls, and resuming on the first answer replays unmatched tool_use
+   * blocks); otherwise the trigger runs one turn. `trigger` is null for a
+   * budget resume.
+   */
+  private async runAcceptedTurn(
+    trigger: SessionEvent | null,
+    batch: readonly SessionEvent[],
     history: HistoryStore,
     signal?: AbortSignal,
     fence?: SessionExecutionFence,
-  ): Promise<void> {
-    const before = this.state.pending_tool_calls ?? [];
-    let resolved = new Set<string>([answeredId]);
-    if (before.length > 1) {
-      try {
-        for (const e of history.getEvents()) {
-          if (e.type === "agent.tool_result") {
-            const id = (e as unknown as { tool_use_id?: string }).tool_use_id;
-            if (id) resolved.add(id);
-          }
-        }
-      } catch { resolved = new Set([answeredId]); }
+  ): Promise<{ holdQueuedOnLane?: boolean } | void> {
+    // Receipt echoes can precede consumption (including a duplicate early reply).
+    // Only transcript results prove a custom answer has actually been applied.
+    const answers = planRequiresActionAnswers(asWireEvents(batch), () => asWireEvents(history.getEvents()).filter((event) => event.type !== "user.custom_tool_result"));
+    if (answers.type === "no_effect") return;
+    const parkedStill = (answers.remaining?.length ?? 0) > 0;
+    const answeredNow = new Set<string>();
+    // A confirmed tool's result lands inside running...idle.
+    const runningAnnounced = !parkedStill && batch.some((event) => event.type === "user.tool_confirmation");
+    if (runningAnnounced) {
+      const runningEvent: SessionEvent = { type: "session.status_running" };
+      history.append(runningEvent);
+      this.broadcastEvent(runningEvent, fence);
     }
-    const remaining = before.filter((p) => !resolved.has(p.toolCallId));
-    this.setState({ ...this.state, pending_tool_calls: remaining });
-    if (remaining.length > 0) {
-      const builtin = ["bash", "read", "write", "edit", "glob", "grep", "web_fetch", "web_search"];
-      const anyCustom = remaining.some((p) => {
-        const name = resolveProxiedToolCall(p.toolName, p.args).toolName;
-        return !builtin.includes(name) && !name.startsWith("mcp_") &&
-          !name.startsWith("call_agent_") && !name.startsWith("memory_");
-      });
+    for (const event of batch) {
+      if (event.type === "user.tool_confirmation") {
+        const confirmation = event as UserToolConfirmationEvent;
+        answeredNow.add(confirmation.tool_use_id);
+        // A second tool_result for one tool_use makes the provider 400 the
+        // whole transcript.
+        if (this.toolUseAlreadyAnswered(confirmation.tool_use_id, history)) continue;
+        await this.applyToolConfirmation(confirmation, history, signal, fence);
+      } else if (event.type === "user.custom_tool_result") {
+        const customResult = event as UserCustomToolResultEvent;
+        answeredNow.add(customResult.custom_tool_use_id);
+        if (this.toolUseAlreadyAnswered(customResult.custom_tool_use_id, history)) continue;
+        history.append(this.customToolResultTranscriptEvent(customResult));
+      }
+    }
+    if (answeredNow.size > 0) {
+      const closed = toolResultIds(asWireEvents(history.getEvents()));
+      this.setState({ ...this.state, pending_tool_calls: (this.state.pending_tool_calls ?? [])
+        .filter((pending) => !answeredNow.has(pending.toolCallId) && !closed.has(pending.toolCallId)) });
+    }
+    if (parkedStill) {
       const idleEvent: SessionEvent = {
         type: "session.status_idle",
-        stop_reason: {
-          type: "requires_action",
-          action_type: anyCustom ? "custom_tool_result" : "tool_confirmation",
-          event_ids: remaining.map((p) => p.toolCallId),
-        },
+        stop_reason: requiresActionStopReason(answers.remaining!),
       } as SessionEvent;
       history.append(idleEvent);
       this.broadcastEvent(idleEvent, fence);
       return;
     }
-    // Re-run the harness to continue the conversation
-    // Use an empty user message — the history already has the tool result
-    const resumeMsg: UserMessageEvent = {
-      type: "user.message",
-      content: [{ type: "text", text: "" }],
-    };
-    await this.processUserMessage(resumeMsg, 0, true, signal, fence);
+    // The batch's newest message drives the turn. Answers, a budget resume and
+    // an outcome alone continue from history: the empty message adds no input
+    // of its own. CF applied a user.define_outcome on receipt (POST /event), so
+    // this turn ends with its grading.
+    const message: UserMessageEvent = (trigger?.type === "user.message" ? trigger
+      : [...batch].reverse().find((event) => event.type === "user.message")) as UserMessageEvent | undefined
+      ?? { type: "user.message", content: [{ type: "text", text: "" }] };
+    return this.processUserMessage(message, runningAnnounced, signal, fence);
   }
 
   /**
@@ -5643,7 +5197,7 @@ export class SessionDO extends DurableObject<Env> {
             this._broadcastPendingFrame(notifEvent, "sthr_primary");
           }
           this.ctx.storage.sql.exec(`DELETE FROM background_tasks WHERE task_id = ?`, task_id);
-          await this.drainEventQueue();
+          await this.dispatchEventQueue();
           continue;
         }
 
@@ -5689,7 +5243,7 @@ export class SessionDO extends DurableObject<Env> {
         this.ctx.storage.sql.exec(`DELETE FROM background_tasks WHERE task_id = ?`, task_id);
 
         // Re-trigger harness
-        await this.drainEventQueue();
+        await this.dispatchEventQueue();
       } catch (err) {
         anyPending = true;
         logWarn(
@@ -5734,71 +5288,92 @@ export class SessionDO extends DurableObject<Env> {
     const parentConfig = parentThreadId === "sthr_primary"
       ? this.state.agent_snapshot : this.threads.get(parentThreadId)?.agentConfig;
     if (!parentConfig) throw new Error("Pinned parent agent snapshot is unavailable");
-    const subAgent = resolvePinnedSubagent(parentConfig, agentId);
+    // #545 §0.7: one orchestration for both platforms
+    // (@open-managed-agents/session-subagents). This DO supplies the thread
+    // row, the Cloudflare wire events and the child harness turn.
+    const subagents = new SessionSubagents<AgentConfig>({
+      parentThreadId,
+      parentAgentName: parentConfig.name,
+      abortSignal: parentSignal ?? new AbortController().signal,
+      resolveAgent: async (request) => {
+        const agent = resolvePinnedSubagent(parentConfig, request.agentId ?? "general");
+        return { agentId: request.agentId ?? "general", agentName: agent.name, agent };
+      },
+      // Optional generic host hook for session-thread starts (unbound → admit).
+      // A denial fails the spawn before any thread row or event is written.
+      admission: {
+        admit: async ({ agent }) => {
+          const environment = this.state.environment_id
+            ? await this.getEnvConfig(this.state.environment_id)
+            : null;
+          const decision = await admitViaSessionAdmissionHook(this.env.SESSION_ADMISSION, {
+            kind: "thread_start",
+            workspaceId: this.state.tenant_id,
+            sessionId: this.state.session_id,
+            agentId: agent.id,
+            environmentId: this.state.environment_id,
+            isLocalRuntime: agent.runtime_binding != null || environment?.config?.type === "self_hosted",
+          });
+          if (decision.type === "denied") throw new SessionAdmissionDeniedError(decision.status, decision.body);
+        },
+      },
+      threads: {
+        insert: async (thread) => {
+          // Child runtime events inherit the parent's execution fence: the
+          // child is a logical lane, not a second execution owner.
+          this._executionParentLane.set(thread.id, thread.parentThreadId);
+          // In-memory map (hot path config lookup) + persistent threads row
+          // (survives DO eviction, lets HTTP CRUD see this thread).
+          this.threads.set(thread.id, { agentId: thread.agentId, agentConfig: thread.agent });
+          this.ctx.storage.sql.exec(
+            `INSERT OR IGNORE INTO threads (id, agent_id, agent_name, parent_thread_id, created_at)
+             VALUES (?, ?, ?, ?, ?)`,
+            thread.id, thread.agentId, thread.agentName, thread.parentThreadId, Date.now(),
+          );
+          return thread;
+        },
+        // Each delegate call owns its children; nothing is restored by id.
+        find: async () => null,
+      },
+      events: {
+        emit: async (event) => {
+          try {
+            for (const wire of cloudflareSubagentWireEvents(event)) {
+              parentHistory.append(wire);
+              this.broadcastEvent(wire);
+            }
+          } catch (error) {
+            // A lost parent fence deliberately rejects the terminal marker.
+            if (event.type !== "thread_idle") throw error;
+          } finally {
+            if (event.type === "thread_idle") this._executionParentLane.delete(event.threadId);
+          }
+        },
+      },
+      turns: { run: (input) => this.runSubAgentTurn(input, parentHistory, sandbox) },
+      ids: { threadId: cloudflareSubagentThreadId, messageId: () => `sevt_${generateEventId()}` },
+    });
+    return subagents.delegate({ agentId, message });
+  }
 
-    // Optional generic host hook for session-thread starts (unbound → admit).
-    // A denial fails the spawn before any thread row or event is written.
+  /** One child harness turn on the shared sandbox (session-subagents turn Port). */
+  private async runSubAgentTurn(
+    input: SubagentTurnInput<AgentConfig>,
+    parentHistory: HistoryStore,
+    sandbox: SandboxExecutor,
+  ): Promise<SubagentTurnResult> {
+    const threadId = input.thread.id;
+    const parentThreadId = input.thread.parentThreadId;
+    const subAgent = input.thread.agent;
     const subEnvironment = this.state.environment_id
       ? await this.getEnvConfig(this.state.environment_id)
       : null;
-    const threadAdmit = await admitViaSessionAdmissionHook(this.env.SESSION_ADMISSION, {
-      kind: "thread_start",
-      workspaceId: this.state.tenant_id,
-      sessionId: this.state.session_id,
-      agentId: subAgent.id,
-      environmentId: this.state.environment_id,
-      isLocalRuntime:
-        subAgent.runtime_binding != null ||
-        subEnvironment?.config?.type === "self_hosted",
-    });
-    if (threadAdmit.type === "denied") {
-      throw new SessionAdmissionDeniedError(threadAdmit.status, threadAdmit.body);
-    }
-
-    // Generate a unique thread ID. Prefix `sthr_` matches AMA spec
-    // (BetaManagedAgentsSessionThread.id is `sthr_*`); previous prefix
-    // was `thread_*` and pre-existing live sessions may still hold those
-    // in their in-memory Map — both work but new threads land on `sthr_`.
-    const threadId = `sthr_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
-    // Runtime events emitted by this child must inherit the parent's
-    // execution fence. The child is a logical lane, not a second execution
-    // owner; walking this map lets projection writes remain fenced even when
-    // the child event carries its own session_thread_id.
-    this._executionParentLane.set(threadId, parentThreadId);
-
-    // In-memory map (hot path config lookup) + persistent threads row
-    // (Phase 1 — survives DO eviction, lets HTTP CRUD see this thread).
-    // INSERT OR IGNORE for safety against rare ID collision.
-    this.threads.set(threadId, { agentId, agentConfig: subAgent });
-    this.ctx.storage.sql.exec(
-      `INSERT OR IGNORE INTO threads (id, agent_id, agent_name, parent_thread_id, created_at)
-       VALUES (?, ?, ?, ?, ?)`,
-      threadId,
-      agentId,
-      subAgent.name,
-      parentThreadId,
-      Date.now(),
-    );
-
-    // Emit thread_created. Includes parent_thread_id so Console (and any
-    // other SSE consumers) can build a tree without a follow-up GET
-    // /threads round-trip. Mirrors the threads table column written
-    // above.
-    const threadCreatedEvent: SessionEvent = {
-      type: "session.thread_created",
-      session_thread_id: threadId,
-      agent_id: agentId,
-      agent_name: subAgent.name,
-      parent_thread_id: parentThreadId,
-    } as SessionEvent;
-    parentHistory.append(threadCreatedEvent);
-    this.broadcastEvent(threadCreatedEvent);
 
     // Create sub-agent's isolated history
     const subHistory = new InMemoryHistory(this.processedClock);
     const userMsg: UserMessageEvent = {
       type: "user.message",
-      content: [{ type: "text", text: message }],
+      content: [{ type: "text", text: input.message?.text ?? "" }],
     };
     subHistory.append(userMsg);
 
@@ -5816,15 +5391,12 @@ export class SessionDO extends DurableObject<Env> {
       harness = resolveHarness(resolvedHarnessName);
     }
 
-    // Bind the child to both its parent lease and its own interrupt slot.
-    // The sandbox instance is shared for filesystem continuity, but this
-    // guard makes a child-targeted interrupt stop provider calls made by the
-    // child without affecting sibling lanes.
-    const abortController = new AbortController();
+    // The child's interrupt slot is the domain turn's controller (already
+    // linked to the parent lease). The sandbox instance is shared for
+    // filesystem continuity; this guard makes a child-targeted interrupt stop
+    // provider calls made by the child without affecting sibling lanes.
+    const abortController = input.abortController;
     this._threadAbortControllers.set(threadId, abortController);
-    const abortFromParent = () => abortController.abort(parentSignal?.reason);
-    if (parentSignal?.aborted) abortFromParent();
-    else parentSignal?.addEventListener("abort", abortFromParent, { once: true });
     const childSandbox = withSandboxExecutionGuard(sandbox, {
       signal: abortController.signal,
     });
@@ -5909,6 +5481,9 @@ export class SessionDO extends DurableObject<Env> {
       budget: this.activeBudgetGate,
       systemPrompt: composeSystemPrompt(subAgent.system || "", subSkillReminders),
       platformReminders: subSkillReminders,
+      // The child runs inside this Session: per-session harness bookkeeping
+      // (e.g. session-scoped harness bookkeeping) keys on it.
+      session_id: this.state.session_id,
       // Sub-agent inherits the parent's tenant — same daemon, same per-tenant
       // ACP child key resolution. AcpProxyHarness reads this to forward
       // x-harness-tenant when opening a RuntimeRoom WS for the sub-agent.
@@ -5952,14 +5527,18 @@ export class SessionDO extends DurableObject<Env> {
           parentHistory.append(taggedEvent);
           this.broadcastEvent(taggedEvent);
           this.fanOutToHooks(taggedEvent);
-          this.maybeCreditCacheTokens(threadId, taggedEvent);
+          const cacheUsage = reportModelSpanUsage(this.usageMeter, threadId, taggedEvent, this.activeBudgetGate);
+          if (cacheUsage !== null) this.publishSessionUsage(cacheUsage, parentHistory, this._executionFences.get(parentThreadId), threadId);
         },
         ...this.buildStreamRuntimeMethods(
           threadId,
           this._executionFences.get(parentThreadId),
         ),
         reportUsage: async (input_tokens: number, output_tokens: number) => {
-          this.creditUsageToThread(threadId, { input_tokens, output_tokens });
+          this.publishSessionUsage(
+            reportSessionUsage(this.usageMeter, threadId, { input_tokens, output_tokens }, this.activeBudgetGate),
+            parentHistory, this._executionFences.get(parentThreadId), threadId,
+          );
         },
         abortSignal: abortController.signal,
         // Sub-agent runs inside supervisor's harness.run, which is
@@ -5975,56 +5554,32 @@ export class SessionDO extends DurableObject<Env> {
       },
     };
 
-    let responseText = "";
     try {
-      // Run the sub-agent harness
       await harness.run(subCtx);
-
-      // Collect sub-agent response text from its history
-      const subEvents = subHistory.getEvents();
-      responseText = subEvents
-        .filter((e: SessionEvent) => e.type === "agent.message")
-        .map((e: SessionEvent) => {
-          const msg = e as AgentMessageEvent;
-          return msg.content?.map((b) => b.type === "text" ? b.text : "").join("") || "";
-        })
-        .join("\n");
+      return {
+        agentMessages: subHistory.getEvents()
+          .filter((e: SessionEvent) => e.type === "agent.message")
+          .map((e: SessionEvent) => (e as AgentMessageEvent).content?.map((b) => b.type === "text" ? b.text : "").join("") || ""),
+      };
     } finally {
       await disposeTools(subTools);
-      // Identity-guarded delete: a nested runSubAgent on the same threadId
-      // would have replaced our slot — don't stomp on its controller.
+      // Identity-guarded delete: a nested child on the same threadId would
+      // have replaced our slot — don't stomp on its controller.
       if (this._threadAbortControllers.get(threadId) === abortController) {
         this._threadAbortControllers.delete(threadId);
       }
-      parentSignal?.removeEventListener("abort", abortFromParent);
-      try {
-        const threadIdleEvent: SessionEvent = {
-          type: "session.thread_idle",
-          session_thread_id: threadId,
-        };
-        parentHistory.append(threadIdleEvent);
-        this.broadcastEvent(threadIdleEvent);
-      } catch {
-        // A lost parent fence deliberately rejects this terminal marker.
-      } finally {
-        this._executionParentLane.delete(threadId);
-      }
     }
-
-    return responseText || "(sub-agent produced no text output)";
   }
 
   /**
    * Process a user message: resolve agent, build context, run harness,
    * evaluate outcome, emit status.
    *
-   * @param skipAppend — if true, the message is already in history (resume after tool confirmation)
-   * @param retryCount — for transient error retries
+   * @param runningAnnounced — if true, this turn's status_running is already out (resume after tool confirmation)
    */
   private async processUserMessage(
     userMessage: UserMessageEvent,
-    retryCount: number = 0,
-    skipAppend: boolean = false,
+    runningAnnounced: boolean = false,
     parentSignal?: AbortSignal,
     executionFence?: SessionExecutionFence,
   ): Promise<{ holdQueuedOnLane?: boolean } | void> {
@@ -6059,22 +5614,19 @@ export class SessionDO extends DurableObject<Env> {
       activeFence,
     );
 
-    // Status-pair invariant: every status_running emit (line ~3889
-    // below) MUST be followed by exactly one status_idle emit before
-    // this function returns. The success path emits at line ~4067; the
-    // error paths historically didn't, leaving Console showing
-    // "Running" forever even after adapter.endTurn flipped the D1 row
-    // to 'idle' (Console derives the pill from SSE events, not D1
-    // polling). Tracked via this flag — finally emits if no earlier
-    // path did.
+    // Pair running with one public terminal, only after bounded cleanup.
+    let terminalError: Error | undefined;
+    let terminalReported = false;
     let idleEmitted = false;
     let managedMemorySynchronized = false;
+    let managedMemoryFailed = false;
     // A successful turn knows its precise stop reason before tool disposal,
     // but `status_idle` is the externally visible lifecycle boundary. Hold
     // the event until every turn-scoped tool (including remote MCP sessions)
     // has finished closing so clients cannot observe idle while resources are
     // still live.
     let completedIdleEvent: SessionEvent | undefined;
+    let failedAttempts: Exclude<TurnAttemptsResult, { type: "completed" }> | undefined;
 
     // Reuse session-level sandbox (singleton) — files persist across turns.
     // Returned object is a lazy proxy. Warmup starts concurrently with the
@@ -6104,43 +5656,26 @@ export class SessionDO extends DurableObject<Env> {
       }
     }
 
-    // Fetch memory store attachments from session resources
-    const sessionId = this.state.session_id;
-    const memoryAttachments: Array<{
-      store_id: string;
-      access: "read_write" | "read_only";
-      instructions?: string;
-    }> = [];
-    let sessionResourceRows: Awaited<
-      ReturnType<Awaited<ReturnType<typeof getCfServicesForTenant>>["sessions"]["listResourcesBySession"]>
-    > = [];
-    if (sessionId) {
-      // listResourcesBySession queries the session_id column directly — no
-      // tenant-prefix mismatch, no JSON.parse loop. Replaces the prior
-      // CONFIG_KV.list scan that tripped over staging KV namespaces.
-      const services = await getCfServicesForTenant(this.env, this.state.tenant_id);
-      sessionResourceRows = await services.sessions.listResourcesBySession({ sessionId });
-      for (const row of sessionResourceRows) {
-        if (row.type === "memory_store" && row.resource.type === "memory_store" && row.resource.memory_store_id) {
-          memoryAttachments.push({
-            store_id: row.resource.memory_store_id,
-            access: row.resource.access === "read_only" ? "read_only" : "read_write",
-            // Accept Anthropic-aligned `instructions` going forward.
-            instructions:
-              typeof (row.resource as { instructions?: unknown }).instructions === "string"
-                ? ((row.resource as { instructions: string }).instructions)
-                : undefined,
-          });
-        }
-      }
-    }
-    const memoryStoreIds = memoryAttachments.map((a) => a.store_id);
-
     // Warmup may overlap the preceding control-plane reads, but it must
     // finish before harness/tool construction. This closes the first-turn
     // race where files, repositories or skills were absent from the model's
     // initial capability snapshot and only appeared on a later sandbox call.
-    await this.warmUpSandbox();
+    try {
+      await this.warmUpSandbox();
+    } catch (err) {
+      // This is turn preparation, before this invocation constructs tools or
+      // starts the harness. Tool/job failures must instead return by call ID;
+      // never terminal them from runLaneExecution's general catch.
+      if (!parentSignal?.aborted && !(err instanceof SessionExecutionLostError) && !isTurnCancellationError(err) &&
+          !hasOpenExecutionCall(history.getEvents(), turnThreadId)) {
+        const errorEvent: SessionEvent = { type: "session.error", error: this.describeError(err) };
+        const idleEvent: SessionEvent = { type: "session.status_idle", stop_reason: { type: "retries_exhausted" } };
+        history.append(errorEvent); this.broadcastEvent(errorEvent, activeFence);
+        history.append(idleEvent); this.broadcastEvent(idleEvent, activeFence);
+        if (err instanceof Error) this._reportedTurnErrors.add(err);
+      }
+      throw err;
+    }
 
     // Resolve harness via registry — SessionDO never imports a concrete harness
     let harness: HarnessInterface;
@@ -6172,9 +5707,8 @@ export class SessionDO extends DurableObject<Env> {
     let resolveTurnSettled!: () => void;
     this._turnSettled.set(abortController, new Promise<void>((resolve) => { resolveTurnSettled = resolve; }));
     this._threadAbortControllers.set(turnThreadId, abortController);
-    const abortFromParent = () => abortController.abort(parentSignal?.reason);
-    if (parentSignal?.aborted) abortFromParent();
-    else parentSignal?.addEventListener("abort", abortFromParent, { once: true });
+    const unlinkParentAbort = linkAbort(parentSignal, abortController);
+    // The parent execution signal covers tools, delegation, harness and outcome.
     const effectiveAbortSignal = abortController.signal;
     sandbox = this.bindSandboxToExecution(
       sandbox,
@@ -6219,16 +5753,7 @@ export class SessionDO extends DurableObject<Env> {
       },
     });
 
-    // Memory store mounts: per the Anthropic Managed Agents Memory contract,
-    // each attached store appears as /mnt/memory/<store_name>/ inside the
-    // sandbox. The agent reads/writes via the standard file tools (no
-    // bespoke memory_* tools). The mount itself is set up further down in
-    // the resource-mounter call. We only need MemoryStoreService here to
-    // resolve store metadata for the system-prompt reminder block.
-    let memoryStoreService: MemoryStoreService | null = null;
-    if (memoryAttachments.length && this.env.MAIN_DB) {
-      memoryStoreService = (await getCfServicesForTenant(this.env, this.state.tenant_id)).memory;
-    }
+    const memoryStoreIds = this.mountedMemoryFacts.map((fact) => fact.storeId);
 
     const piRuntime = createPiModelRuntime({
       model: creds.model,
@@ -6252,7 +5777,7 @@ export class SessionDO extends DurableObject<Env> {
     // Build system prompt: agent.system + platform guidance + skill /
     // memory_store / appendable_prompt content (the latter passed in as
     // platformReminders, see collection below). Shared with the self-host
-    // Node path via @open-managed-agents/agent/harness/platform-guidance
+    // Node path via @open-managed-agents/agent-harness (platform-guidance)
     // so the two surfaces stay byte-identical (prompt-cache prefix
     // invariant). Pre-2026-05-17: skill/memory content was broadcast as
     // <system-reminder> user.message events by harness.onSessionInit;
@@ -6260,7 +5785,7 @@ export class SessionDO extends DurableObject<Env> {
     // belongs in the system prompt where Claude already knows to treat
     // it as such, and so it doesn't clutter the visible conversation
     // feed. composeSystemPrompt now takes the reminders directly; the
-    // default-loop's onSessionInit is a no-op for the same reason.
+    // The host harness onSessionInit is a no-op for the same reason.
     const rawSystemPrompt = agent.system || "";
 
     // Collect platformReminders first so composeSystemPrompt can inline
@@ -6268,6 +5793,9 @@ export class SessionDO extends DurableObject<Env> {
     // want to handle them differently — e.g. RAG harness might want to
     // resolve a query before injecting.)
     const platformReminders: Array<{ source: string; text: string }> = [];
+    // Skill files actually written by mountSkillFiles; their locations join
+    // the shared Session resource guidance below.
+    let skillFileFacts: ReturnType<typeof cfSkillResourceFacts> = [];
     const skillMounts: SkillMountDescriptor[] = [];
     const assemblySkillMount = agentUsesAssemblySkillMount(agent);
     const skillAssemblyConfig = assemblySkillMount ? resolveSkillAssemblyConfig(agent) : undefined;
@@ -6362,6 +5890,7 @@ export class SessionDO extends DurableObject<Env> {
           // Requested skills are required inputs, so a failed write aborts
           // warmup instead of silently starting a weaker agent.
           await mountSkillFiles(sandbox, skillFilesResults);
+          skillFileFacts = cfSkillResourceFacts(skillFilesResults);
         } catch (err) {
           logWarn(
             { op: "session_do.skill_files.mount", session_id: this.state.session_id, agent_id: agent.id, err },
@@ -6372,49 +5901,15 @@ export class SessionDO extends DurableObject<Env> {
       }
     }
 
-    // Memory store prompts → platformReminders (was: appended to systemPrompt
-    // every turn, KV-list-order dependent → permanent cache miss). Build the
-    // prompt strings on the fly from memory store metadata + per-attachment
-    // instructions overrides. Format mirrors Anthropic's auto-injected mount
-    // descriptors: `/mnt/memory/<name>/ (access)` so the agent knows where to
-    // find the store and uses standard file tools to interact.
-    const memoryPrompts: string[] = [];
-    if (memoryAttachments.length && memoryStoreService) {
-      try {
-        for (const att of memoryAttachments) {
-          const store = await memoryStoreService.getStore({
-            tenantId: this.state.tenant_id,
-            storeId: att.store_id,
-          });
-          if (!store) {
-            memoryPrompts.push("");
-            continue;
-          }
-          const accessLabel = att.access === "read_only" ? "read-only" : "read-write";
-          const lines = [
-            `## Memory store: ${store.name}`,
-            `Mounted at /mnt/memory/${store.name}/ (${accessLabel})`,
-          ];
-          if (store.description) lines.push(store.description);
-          if (att.instructions) lines.push(att.instructions);
-          if (att.access === "read_only") {
-            lines.push("(read-only mount — write attempts to this directory will fail)");
-          }
-          memoryPrompts.push(lines.join("\n"));
-        }
-      } catch (err) {
-        console.warn("memory store metadata fetch failed", {
-          err: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
-    for (let i = 0; i < memoryPrompts.length; i++) {
-      if (!memoryPrompts[i]) continue;
-      platformReminders.push({
-        source: `memory:${memoryStoreIds[i] ?? `idx${i}`}`,
-        text: memoryPrompts[i],
-      });
-    }
+    // Skill locations + Memory Store mounts → platformReminders, from the
+    // shared Session resource facts (same derivation as the Node host and
+    // the Work supervisor). Memory blocks keep the historical byte format
+    // (`/mnt/memory/<name>/ (access)`) for prompt-cache stability; store
+    // metadata only supplies the name (when undeclared) and description.
+    const { facts: resourceFacts, reminders: resourceReminders } = await sessionTurnResourceGuidance({
+      sandbox, skills: skillFileFacts, memoryStores: this.mountedMemoryFacts,
+    });
+    platformReminders.push(...resourceReminders);
 
     // Build the final system prompt: agent.system + platform guidance +
     // every platformReminder wrapped in a <source name="...">…</source>
@@ -6426,100 +5921,114 @@ export class SessionDO extends DurableObject<Env> {
 
     const acpSessionStartCwd = agent.runtime_binding
       ? resolveRepositoryLocalPath(
-          sessionResourceRows.map((row) => ({
-            type: row.type,
-            resource: row.resource as unknown as Record<string, unknown>,
-          })),
+          this.mountedSessionResources.map((resource) => ({ type: resource.type, resource })),
         )
       : undefined;
 
-    // --- Harness receives a fully-prepared context ---
-    const ctx: HarnessContext = {
-      agent,
-      budget: await this.resolveBudgetGate(effectiveHandle),
-      userMessage,
-      session_id: this.state.session_id,
-      tenant_id: this.state.tenant_id,
-      ...(acpSessionStartCwd ? { acpSessionStartCwd } : {}),
-      tools: allTools,
-      model,
-      pi: piRuntime,
-      systemPrompt,
-      rawSystemPrompt,
-      platformReminders,
-      ...(skillMounts.length > 0 ? { skillMounts } : {}),
-      // file_id → bytes resolver for ImageBlock/DocumentBlock content blocks
-      // whose `source.type === "file"`. Default-loop's eventsToMessagesAsync
-      // dedupes via a per-derive Promise cache, so the same file referenced
-      // across multiple turns of one projection only hits R2 once. Null
-      // returns are treated as "unavailable" — the derive layer emits a
-      // placeholder text part instead of crashing the turn.
-      fileFetcher: this.buildFileFetcher(this.state.tenant_id),
-      env: {
-        ...delegationCredentials(creds),
-        ANTHROPIC_MODEL: this.env.ANTHROPIC_MODEL,
-        TAVILY_API_KEY: this.env.TAVILY_API_KEY,
-        CONFIG_KV: this.env.CONFIG_KV,
-        memoryStoreIds,
-        environmentConfig,
-        // Cross-script DO binding so AcpProxyHarness can attach to the
-        // user's RuntimeRoom directly (no HTTP hop through main, no
-        // shared INTEGRATIONS_INTERNAL_SECRET). Optional on the env type
-        // — non-acp harnesses don't read it.
-        RUNTIME_ROOM: this.env.RUNTIME_ROOM,
-        // LLM full-body logging context. default-loop wraps each model
-        // call in middleware that PUTs request + response to R2 keyed
-        // by the per-step span event id. The matching
-        // span.model_request_end event grows a body_r2_key field
-        // pointing to the same key. r2 = null disables capture
-        // (test harnesses, env without FILES_BUCKET).
-        ...(this.env.LLM_LOGS_DISABLED === "1"
-          ? {}
-          : {
-              llmLog: {
-                tenant_id: this.state.tenant_id,
-                session_id: this.state.session_id,
-                r2: this.env.FILES_BUCKET ?? null,
-              },
-            }),
-        delegateToAgent: async (agentId: string, message: string) => {
-          return this.runSubAgent(agentId, message, history, sandbox, turnThreadId, effectiveAbortSignal);
-        },
-        watchBackgroundTask: (taskId: string, pid: string, outputFile: string, proc: ProcessHandle | null) => {
-          this.watchBackgroundTask(taskId, pid, outputFile, proc, sandbox);
-        },
+    // Official CMA ordering: session.error{retrying} then status_rescheduled.
+    const failureEvents: TurnFailureEventsPort = {
+      sessionError: (message, retry_status) => {
+        if (retry_status !== "retrying" && terminalReported) return;
+        if (retry_status !== "retrying") terminalReported = true;
+        const event = {
+          type: "session.error",
+          error: { type: "unknown_error", message, retry_status },
+        } as SessionEvent;
+        history.append(event);
+        this.broadcastEvent(event, activeFence);
       },
-      runtime: {
-        history,
-        sandbox,
-        ...(agentAdvertisesSteering(agent)
-          ? { takeSteeringInputs: () => this.takeSteeringInputs(turnThreadId) }
-          : {}),
-        broadcast: (event) => {
-          history.append(event);
-          this.broadcastEvent(event, activeFence);
-          this.fanOutToHooks(event);
-          this.maybeCreditCacheTokens(turnThreadId, event);
-        },
-        ...this.buildStreamRuntimeMethods(turnThreadId, activeFence),
-        reportUsage: async (input_tokens: number, output_tokens: number) => {
-          this.creditUsageToThread(turnThreadId, { input_tokens, output_tokens });
-        },
-        pendingConfirmations: [],
-        consumePendingConfirmation: (requestId) => {
-          if (activeFence !== undefined && !this.isExecutionFenceCurrent(activeFence)) {
-            const error = new Error("session execution fence is no longer valid");
-            error.name = "ExecutionFenceLostError";
-            throw error;
-          }
-          this.setState({ ...this.state, pending_tool_calls: this.state.pending_tool_calls.filter((pending) => pending.toolCallId !== requestId) });
-        },
-        abortSignal: effectiveAbortSignal,
-        keepAliveWhile: <T>(fn: () => Promise<T>) => fn(),
+      rescheduled: (reason) => {
+        const event: SessionEvent = { type: "session.status_rescheduled", reason };
+        history.append(event);
+        this.broadcastEvent(event, activeFence);
       },
     };
-
+    // Context construction failures must settle the turn too.
+    let ctx!: HarnessContext;
     try {
+      // --- Harness receives a fully-prepared context ---
+      ctx = {
+        agent,
+        budget: await this.resolveBudgetGate(effectiveHandle),
+        userMessage,
+        session_id: this.state.session_id,
+        tenant_id: this.state.tenant_id,
+        ...(acpSessionStartCwd ? { acpSessionStartCwd } : {}),
+        // RunnerRelayPort over the cross-script RuntimeRoom DO binding, so
+        // AcpProxyHarness attaches to the user's runner directly (no HTTP hop
+        // through main). Non-acp harnesses don't read it.
+        runnerRelay: createRuntimeRoomRelay(this.env.RUNTIME_ROOM),
+        tools: allTools,
+        model,
+        pi: piRuntime,
+        systemPrompt,
+        rawSystemPrompt,
+        platformReminders,
+        resourceFacts,
+        ...(skillMounts.length > 0 ? { skillMounts } : {}),
+        // file_id → bytes for "file" image/document blocks (null = placeholder text).
+        fileFetcher: this.buildFileFetcher(this.state.tenant_id),
+        env: {
+          ...delegationCredentials(creds),
+          ANTHROPIC_MODEL: this.env.ANTHROPIC_MODEL,
+          TAVILY_API_KEY: this.env.TAVILY_API_KEY,
+          CONFIG_KV: this.env.CONFIG_KV,
+          memoryStoreIds,
+          environmentConfig,
+          // ACP in the sandbox: model / MCP channels bound to this execution (design §0.6).
+          ...(resolvedHarnessName === "acp-sandbox" && activeFence ? await acpSandboxExecutionEnv(this.env, activeFence, resolvedHarnessName) : {}),
+          // Full-body LLM logs to R2, keyed by span event id (body_r2_key);
+          // r2 = null disables capture.
+          ...(this.env.LLM_LOGS_DISABLED === "1"
+            ? {}
+            : {
+                llmLog: {
+                  tenant_id: this.state.tenant_id,
+                  session_id: this.state.session_id,
+                  r2: this.env.FILES_BUCKET ?? null,
+                },
+              }),
+          delegateToAgent: async (agentId: string, message: string) => {
+            return this.runSubAgent(agentId, message, history, sandbox, turnThreadId, effectiveAbortSignal);
+          },
+          watchBackgroundTask: (taskId: string, pid: string, outputFile: string, proc: ProcessHandle | null) => {
+            this.watchBackgroundTask(taskId, pid, outputFile, proc, sandbox);
+          },
+        },
+        runtime: {
+          history,
+          sandbox,
+          ...(agentAdvertisesSteering(agent)
+            ? { takeSteeringInputs: () => this.takeSteeringInputs(turnThreadId) }
+            : {}),
+          broadcast: (event) => {
+            history.append(event);
+            this.broadcastEvent(event, activeFence);
+            this.fanOutToHooks(event);
+            const cacheUsage = reportModelSpanUsage(this.usageMeter, turnThreadId, event, this.activeBudgetGate);
+            if (cacheUsage !== null) this.publishSessionUsage(cacheUsage, history, activeFence);
+          },
+          ...this.buildStreamRuntimeMethods(turnThreadId, activeFence),
+          reportUsage: async (input_tokens: number, output_tokens: number) => {
+            this.publishSessionUsage(
+              reportSessionUsage(this.usageMeter, turnThreadId, { input_tokens, output_tokens }, this.activeBudgetGate),
+              history, activeFence,
+            );
+          },
+          pendingConfirmations: [],
+          consumePendingConfirmation: (requestId) => {
+            if (activeFence !== undefined && !this.isExecutionFenceCurrent(activeFence)) {
+              const error = new Error("session execution fence is no longer valid");
+              error.name = "ExecutionFenceLostError";
+              throw error;
+            }
+            this.setState({ ...this.state, pending_tool_calls: this.state.pending_tool_calls.filter((pending) => pending.toolCallId !== requestId) });
+          },
+          abortSignal: effectiveAbortSignal,
+          keepAliveWhile: <T>(fn: () => Promise<T>) => fn(),
+        },
+      };
+
       // Run harness.onSessionInit exactly once per session, BEFORE the first
       // running status. Default impl writes <system-reminder> user.message
       // events for skills/memory/appendable_prompts; custom harnesses can
@@ -6537,9 +6046,11 @@ export class SessionDO extends DurableObject<Env> {
       // user.interrupt may still start this turn after the interrupt already
       // closed its calls and emitted idle end_turn. Official CMA: the
       // interrupt ends the turn; only a new user.message resumes. So if the
-      // newest user input on this thread is the interrupt, do not sample.
+      // newest user input on this thread is the interrupt, a continuation does
+      // not sample. A queued user.message (it has its own id) still runs as the
+      // lane's next turn, as on Node.
       // https://platform.claude.com/docs/en/managed-agents/events-and-streaming
-      {
+      if ((userMessage as { id?: string }).id === undefined) {
         let lastUserType: string | undefined;
         for (const e of history.getEvents()) {
           if (((e as { session_thread_id?: string }).session_thread_id ?? "sthr_primary") !== turnThreadId) continue;
@@ -6560,11 +6071,32 @@ export class SessionDO extends DurableObject<Env> {
       await this._armLeaseWake("model_request");
 
       // Broadcast running status
-      const runningEvent: SessionEvent = { type: "session.status_running" };
-      history.append(runningEvent);
-      this.broadcastEvent(runningEvent, activeFence);
+      if (!runningAnnounced) {
+        const runningEvent: SessionEvent = { type: "session.status_running" };
+        history.append(runningEvent);
+        this.broadcastEvent(runningEvent, activeFence);
+      }
 
-      await harness.run(ctx);
+      const runHarness = async (userMessage = ctx.userMessage) => {
+        const attempts = await runTurnAttempts({
+          run: () => harness.run({ ...ctx, userMessage }),
+          agentEventCount: () => countAgentEvents(history.getEvents()),
+          // A lost execution fence is a cancellation too: the replacement owner
+          // runs the turn, so this one must neither retry nor report.
+          isCancelled: (error) => isTurnCancellationError(error) || abortController.signal.aborted,
+          classify: classifyTurnFailure,
+          retry: TURN_RETRY,
+          signal: effectiveAbortSignal,
+          events: failureEvents,
+          describe: (error) => this.describeError(error),
+        });
+        if (attempts.type !== "completed") {
+          failedAttempts = attempts;
+          if (attempts.type !== "cancelled") this._reportedTurnErrors.add(attempts.error);
+          throw attempts.error;
+        }
+      };
+      await runHarness();
 
       // A parked call can already be closed by the time the run returns
       // (steer/interrupt closed it with a tool_result, or the client answered
@@ -6633,144 +6165,124 @@ export class SessionDO extends DurableObject<Env> {
         const outcomeModelId =
           typeof agent.model === "string" ? agent.model : agent.model?.id;
         const judgeModel = ctx.model;
-        try {
-          await runOutcomeSupervisor({
-            outcome,
-            initialIteration: this.state.outcome_iteration ?? 0,
-            tenantId: this.state.tenant_id,
-            filesBucket: this.env.FILES_BUCKET ?? null,
-            abortSignal: effectiveAbortSignal,
-            judgeModelId: outcomeModelId,
-            getEvents: () => history.getEvents(),
-            appendAndBroadcast: (event) => {
-              history.append(event);
-              this.broadcastEvent(event, activeFence);
+        await runOutcomeSupervisor({
+          outcome,
+          initialIteration: this.state.outcome_iteration ?? 0,
+          tenantId: this.state.tenant_id,
+          filesBucket: this.env.FILES_BUCKET ?? null,
+          abortSignal: effectiveAbortSignal,
+          judgeModelId: outcomeModelId,
+          getEvents: () => history.getEvents(),
+          appendAndBroadcast: (event) => {
+            history.append(event);
+            this.broadcastEvent(event, activeFence);
+          },
+          persistState: (delta) => {
+            const next = { ...this.state };
+            if ("outcome" in delta) next.outcome = delta.outcome ?? null;
+            if (typeof delta.outcome_iteration === "number") {
+              next.outcome_iteration = delta.outcome_iteration;
+            }
+            if (delta.outcome_evaluations) {
+              next.outcome_evaluations = delta.outcome_evaluations;
+            }
+            this.setState(next);
+          },
+          readEvaluations: () => this.state.outcome_evaluations ?? [],
+          makeVerifierContext: () => ({
+            sessionId: this.state.session_id,
+            runExec: async (cmd, opts) => {
+              const raw = await sandbox.exec(cmd, opts?.timeoutMs ?? 600_000);
+              // sandbox.exec returns "exit=N\n<merged-output>"
+              const m = raw.match(/^exit=(-?\d+)\n([\s\S]*)$/);
+              return m
+                ? { exit_code: parseInt(m[1], 10), output: m[2] }
+                : { exit_code: -1, output: raw };
             },
-            broadcastOnly: (event) => this.broadcastEvent(event, activeFence),
-            persistState: (delta) => {
-              const next = { ...this.state };
-              if ("outcome" in delta) next.outcome = delta.outcome ?? null;
-              if (typeof delta.outcome_iteration === "number") {
-                next.outcome_iteration = delta.outcome_iteration;
-              }
-              if (delta.outcome_evaluations) {
-                next.outcome_evaluations = delta.outcome_evaluations;
-              }
-              this.setState(next);
-            },
-            readEvaluations: () => this.state.outcome_evaluations ?? [],
-            makeVerifierContext: () => ({
-              sessionId: this.state.session_id,
-              runExec: async (cmd, opts) => {
-                const sb = await this.getOrCreateSandbox();
-                const raw = await sb.exec(cmd, opts?.timeoutMs ?? 600_000);
-                // sandbox.exec returns "exit=N\n<merged-output>"
-                const m = raw.match(/^exit=(-?\d+)\n([\s\S]*)$/);
-                return m
-                  ? { exit_code: parseInt(m[1], 10), output: m[2] }
-                  : { exit_code: -1, output: raw };
-              },
-            }),
-            makeJudgeFn: () => async (prompt, signal) => {
-              const result = await generateText({
-                model: judgeModel,
-                system: prompt.system,
-                messages: [{ role: "user", content: prompt.user }],
-                maxOutputTokens: 800,
-                abortSignal: signal,
-              });
-              const text =
-                result.text ||
-                extractTextFromContent(
-                  (result as unknown as { content?: unknown }).content,
-                );
-              const u = (result as unknown as {
-                usage?: {
-                  inputTokens?: number;
-                  outputTokens?: number;
-                  cachedInputTokens?: number;
-                  cacheReadInputTokens?: number;
-                  cacheCreationInputTokens?: number;
-                };
-              }).usage;
-              const usage = u
-                ? {
-                    input_tokens: u.inputTokens ?? 0,
-                    output_tokens: u.outputTokens ?? 0,
-                    cache_creation_input_tokens:
-                      u.cacheCreationInputTokens ?? u.cachedInputTokens,
-                    cache_read_input_tokens: u.cacheReadInputTokens,
-                  }
-                : undefined;
-              return { text, usage };
-            },
-            runHarnessTurn: async (msg) => {
-              await harness.run({ ...ctx, userMessage: msg });
-            },
-          });
-        } catch (err) {
-          // Supervisor itself blew up (e.g. a persistState callback
-          // threw). Surface as a session warning — the supervisor's own
-          // failure path already handled verifier-internal errors and
-          // emitted a `failed` end span.
-          logWarn(
-            { op: "outcome.supervisor", session_id: this.state.session_id, err },
-            "outcome supervisor crashed",
-          );
-        }
+          }),
+          makeJudgeFn: () => async (prompt, signal) => {
+            const result = await generateText({
+              model: judgeModel,
+              system: prompt.system,
+              messages: [{ role: "user", content: prompt.user }],
+              maxOutputTokens: 800,
+              abortSignal: signal,
+            });
+            const text =
+              result.text ||
+              extractTextFromContent(
+                (result as unknown as { content?: unknown }).content,
+              );
+            const u = (result as unknown as {
+              usage?: {
+                inputTokens?: number;
+                outputTokens?: number;
+                cachedInputTokens?: number;
+                cacheReadInputTokens?: number;
+                cacheCreationInputTokens?: number;
+              };
+            }).usage;
+            const usage = u
+              ? {
+                  input_tokens: u.inputTokens ?? 0,
+                  output_tokens: u.outputTokens ?? 0,
+                  cache_creation_input_tokens:
+                    u.cacheCreationInputTokens ?? u.cachedInputTokens,
+                  cache_read_input_tokens: u.cacheReadInputTokens,
+                }
+              : undefined;
+            return { text, usage };
+          },
+          runHarnessTurn: runHarness,
+        });
       }
 
-      // Memory mutations are part of turn completion, not an asynchronous
-      // afterthought. This barrier precedes status_idle and execution settle.
-      await this.synchronizeManagedMemoryStores(activeFence);
-      managedMemorySynchronized = true;
+      abortController.signal.throwIfAborted();
+      // Persist Memory while this attempt still owns the fence. Persistence
+      // failure is explicit, but cannot rewrite a consumed model/tool turn.
+      try {
+        await this.synchronizeManagedMemoryStores(activeFence);
+        managedMemorySynchronized = true;
+      } catch (error) {
+        if (error instanceof Error && error.name === "ExecutionFenceLostError") throw error;
+        managedMemoryFailed = true;
+        const warning: SessionEvent = { type: "session.warning", source: "sandbox.persistence",
+          message: `Managed Memory publication failed; source runtime retained: ${this.describeError(error)}` };
+        history.append(warning);
+        this.broadcastEvent(warning, activeFence);
+      }
+      abortController.signal.throwIfAborted();
 
       // Determine stop reason based on pending tool confirmations or custom tool results
       const pendingConfirmations = ctx.runtime.pendingConfirmations || [];
 
-      // Check if any pending are custom tool uses (no execute function, not always_ask built-in)
-      const storedPendingCalls = this.state.pending_tool_calls;
-      const hasCustomToolPending = storedPendingCalls.some((p) => {
-        // A call proxied through mcp_invoke awaits confirmation of its target.
-        const toolName = resolveProxiedToolCall(p.toolName, p.args).toolName;
-        return !["bash", "read", "write", "edit", "glob", "grep", "web_fetch", "web_search"].includes(toolName) &&
-          !toolName.startsWith("mcp_") &&
-          !toolName.startsWith("call_agent_") &&
-          !toolName.startsWith("memory_");
+      // A pending custom tool use (no execute function) outranks always_ask confirmations.
+      const storedPendingCalls = this.resolvedPendingCalls(this.state.pending_tool_calls);
+      let stopReason: import("@open-managed-agents/shared").SessionStatusEvent["stop_reason"] = { type: "end_turn" };
+      const budget = ctx.budget;
+      finishTurn({
+        parkedOnClient: storedPendingCalls.some((p) => awaitsCustomToolResult(p.toolName)) || pendingConfirmations.length > 0,
+        budgetReached: budget?.reached === true,
+      }, {
+        requiresAction: () => { stopReason = requiresActionStopReason(pendingConfirmations); },
+        budgetReached: () => {
+          // Thread idle → usage snapshot here; the session idle is emitted
+          // below. Usage source on CF: every model span in this session's log.
+          const [threadIdle, usageEvent] = budgetReachedStopEvents({
+            agentName: agent.name,
+            sessionThreadId: turnThreadId,
+            usage: sessionUsageSnapshot(sumModelSpanUsage(history.getEvents()), budget!),
+            budget: budget!.maxListCost,
+          });
+          for (const applicationEvent of [threadIdle, usageEvent]) {
+            const event = encodeRuntimeHistoryEvent(applicationEvent as never) as unknown as SessionEvent;
+            history.append(event);
+            this.broadcastEvent(event, activeFence);
+          }
+          stopReason = { type: "budget_reached" } as unknown as typeof stopReason;
+        },
+        endTurn: () => { stopReason = { type: "end_turn" as const }; },
       });
-
-      let stopReason: import("@open-managed-agents/shared").SessionStatusEvent["stop_reason"];
-      if (hasCustomToolPending) {
-        stopReason = {
-          type: "requires_action" as const,
-          action_type: "custom_tool_result" as const,
-          event_ids: pendingConfirmations,
-        };
-      } else if (pendingConfirmations.length > 0) {
-        stopReason = {
-          type: "requires_action" as const,
-          action_type: "tool_confirmation" as const,
-          event_ids: pendingConfirmations,
-        };
-      } else if (ctx.budget?.reached) {
-        // Official budget stop (requires_action outranks it, above):
-        // thread idle → usage snapshot → session idle (emitted below).
-        const [threadIdle, usageEvent] = budgetReachedEvents({
-          sessionThreadId: turnThreadId,
-          usage: this.budgetUsageSnapshot(ctx.budget, history.getEvents()),
-          budget: ctx.budget.maxListCost,
-        }) as unknown as SessionEvent[];
-        for (const event of [
-          { ...threadIdle, agent_name: agent.name } as unknown as SessionEvent,
-          usageEvent!,
-        ]) {
-          history.append(event);
-          this.broadcastEvent(event, activeFence);
-        }
-        stopReason = { type: "budget_reached" } as unknown as typeof stopReason;
-      } else {
-        stopReason = { type: "end_turn" as const };
-      }
 
       const idleEvent: SessionEvent = {
         type: "session.status_idle",
@@ -6778,124 +6290,16 @@ export class SessionDO extends DurableObject<Env> {
       };
       completedIdleEvent = idleEvent;
     } catch (err) {
-      const errorMessage = this.describeError(err);
-
-      // A lost execution fence is an expected cancellation, not a model or
-      // infrastructure failure.  The lease owner may have been replaced by
-      // another worker; retrying here would let the stale worker race the new
-      // owner and would also try to append a second error/idle pair through
-      // the fenced history wrapper.  Treat the sandbox guard's equivalent
-      // error the same way as an AbortError.
-      if (
-        err instanceof Error &&
-        (err.name === "AbortError" ||
-          err.name === "ExecutionFenceLostError" ||
-          err.name === "SandboxExecutionFencedError")
-      ) {
-        // Interrupt handler (POST /event user.interrupt branch) already
-        // appended its own session.status_idle synchronously before
-        // the abort propagated, so the finally block must NOT emit a
-        // second one — this flag suppresses the duplicate.
-        idleEmitted = true;
-        return;
+      if (err instanceof SessionExecutionLostError) { idleEmitted = true; managedMemorySynchronized = true; throw err; }
+      // An interrupt or a lost execution fence ends the turn elsewhere: the
+      // interrupt emits its idle, a replacement owner runs the turn.
+      if (failedAttempts?.type === "cancelled" || isTurnCancellationError(err) || abortController.signal.aborted) {
+        idleEmitted = true; terminalError = err instanceof Error ? err : new Error(String(err));
+        throw err;
       }
-
-      // Retry-by-default policy. Specific fatal classes short-circuit;
-      // everything else (including unclassified errors) re-runs once
-      // before surfacing. The previous shape was a TRANSIENT allowlist
-      // of substrings ("timeout", "ECONNREFUSED"...); every new transient
-      // class (CF "version rollout", container OOM, future infra wording)
-      // silently fell off the list and the user saw a hard failure.
-      //
-      // Boundary wrappers (wrapSandboxWithLazyWarmup, the streamText
-      // boundary, ) re-throw native errors as
-      // typed OmaErrors via classifyExternalError, so most well-known
-      // fatal conditions arrive here as the right class already.
-      // For errors that escaped the boundaries (D1, KV, future SDKs),
-      // run classifyExternalError once more inline as belt-and-braces.
-      const classified = classifyExternalError(err);
-      // Session-terminal classes: retry_status terminal + terminate().
-      // ModelError is turn-dead only (exhausted + retries_exhausted): same
-      // prompt fails again, but the session stays usable for a new prompt.
-      // Caught 2026-05-11 sess-y2bfxm1de4e1zqxm: retries burned tokens.
-      const isSessionTerminal =
-        classified instanceof PaymentRequiredError ||
-        classified instanceof ConfigError ||
-        classified instanceof AuthError;
-      const isModelTurnDead = classified instanceof ModelError;
-      const isTransient = !isSessionTerminal && !isModelTurnDead;
-
-      if (isTransient && retryCount < 2) {
-        // Official CMA ordering: session.error{retrying} then status_rescheduled.
-        const retryingError: SessionEvent = {
-          type: "session.error",
-          error: {
-            type: "unknown_error",
-            message: errorMessage,
-            retry_status: "retrying",
-          },
-        } as SessionEvent;
-        history.append(retryingError);
-        this.broadcastEvent(retryingError, activeFence);
-        const rescheduledEvent: SessionEvent = {
-          type: "session.status_rescheduled",
-          reason: errorMessage,
-        };
-        history.append(rescheduledEvent);
-        this.broadcastEvent(rescheduledEvent, activeFence);
-        // Retry hold (cma-steer-coherent-turn.md): do not flush unstamped
-        // mid-turn inputs and do not start a new agent turn from them.
-        // Leave them until the next consume boundary after this resume;
-        // takeSteeringInputs then ingests them into the continuing turn.
-
-        // Exponential backoff: 1s, 2s
-        const delay = 1000 * Math.pow(2, retryCount);
-        await new Promise(r => setTimeout(r, delay));
-        // Recursive call owns the next idle emit (success or its own
-        // finally). Suppress this frame's catch-all so we don't get
-        // two status_idle events on a successful retry.
-        idleEmitted = true;
-        return this.processUserMessage(
-          userMessage,
-          retryCount + 1,
-          skipAppend,
-          parentSignal,
-          activeFence,
-        );
-      }
-
-      if (isTransient || isModelTurnDead) {
-        // Official CMA exhausted: session.error{exhausted} then idle
-        // retries_exhausted. No status_rescheduled on the final failure.
-        // Owner lock: retain mid-run queued inputs (holdQueuedOnLane), do not
-        // flush/delete (deliberate divergence from SDK "flushed").
-        const exhaustedError: SessionEvent = {
-          type: "session.error",
-          error: {
-            type: "unknown_error",
-            message: errorMessage,
-            retry_status: "exhausted",
-          },
-        } as SessionEvent;
-        history.append(exhaustedError);
-        this.broadcastEvent(exhaustedError, activeFence);
-        holdQueuedOnLane = true;
-        completedIdleEvent = {
-          type: "session.status_idle",
-          stop_reason: { type: "retries_exhausted" },
-        };
-      } else {
+      if (failedAttempts?.type === "terminal") {
         // Official CMA: retry_status terminal → session transitions to terminated.
-        const terminalError: SessionEvent = {
-          type: "session.error",
-          error: {
-            type: "unknown_error",
-            message: errorMessage,
-            retry_status: "terminal",
-          },
-        } as SessionEvent;
-        history.append(terminalError);
-        this.broadcastEvent(terminalError, activeFence);
+        const classified = classifyExternalError(err);
         this.terminate(
           classified instanceof PaymentRequiredError ? "payment_required"
             : classified instanceof AuthError ? "auth"
@@ -6904,10 +6308,25 @@ export class SessionDO extends DurableObject<Env> {
         );
         // terminate() emits status_terminated; suppress catch-all idle.
         idleEmitted = true;
+        return;
       }
+      terminalError = err instanceof Error ? err : new Error(String(err));
+      // Attempts already announced their failure; report only preparation/cleanup here.
+      if (failedAttempts === undefined) reportTurnFailure({ type: "exhausted" }, sessionErrorMessage(err, "turn.execution"), failureEvents);
+      // Exhaustion retains mid-run queued inputs for the client to resume.
+      holdQueuedOnLane = true;
+      completedIdleEvent = {
+        type: "session.status_idle",
+        stop_reason: { type: "retries_exhausted" },
+      };
     } finally {
-      await disposeTools(allTools);
-      if (!managedMemorySynchronized) {
+      try { await disposeTools(allTools); }
+      catch (error) {
+        terminalError ??= error instanceof Error ? error : new Error(String(error));
+        reportTurnFailure({ type: "exhausted" }, this.describeError(error), failureEvents);
+        completedIdleEvent = { type: "session.status_idle", stop_reason: { type: "retries_exhausted" } };
+      }
+      if (!managedMemorySynchronized && !managedMemoryFailed && !abortController.signal.aborted && !isTurnCancellationError(terminalError)) {
         try {
           // Error/cancel rescue pass. Reconciliation is idempotent, so a
           // partially committed prior attempt is safe to retry here.
@@ -6915,37 +6334,22 @@ export class SessionDO extends DurableObject<Env> {
           managedMemorySynchronized = true;
         } catch (error) {
           if (!(error instanceof Error && error.name === "ExecutionFenceLostError")) {
-            logWarn(
-              {
-                op: "session_do.memory_sync.rescue",
-                session_id: this.state.session_id,
-                error: error instanceof Error ? error.message : String(error),
-              },
-              "writable Managed Memory rescue sync failed",
-            );
+            managedMemoryFailed = true;
+            const warning: SessionEvent = { type: "session.warning", source: "sandbox.persistence",
+              message: `Managed Memory publication failed; source runtime retained: ${this.describeError(error)}` };
+            history.append(warning);
+            this.broadcastEvent(warning, activeFence);
+            logWarn({ op: "session_do.memory_sync.rescue", session_id: this.state.session_id,
+              error: error instanceof Error ? error.message : String(error) }, "writable Managed Memory rescue sync failed");
           }
         }
       }
-      // Only delete if it's still ours — a sub-agent run within the same
-      // thread may have temporarily replaced it. Same-thread re-entry is
-      // mutex'd by _draining so this is theoretical safety only.
-      if (this._threadAbortControllers.get(turnThreadId) === abortController) {
-        this._threadAbortControllers.delete(turnThreadId);
-      }
-      this._turnSettled.delete(abortController);
-      resolveTurnSettled();
-      parentSignal?.removeEventListener("abort", abortFromParent);
-      // Emit status_idle only after turn-scoped resources have settled. On a
-      // successful turn this preserves its precise stop_reason; error paths
-      // use the generic event because they have no meaningful stop reason.
-      // This also pairs with status_running so Console never remains stuck at
-      // "Running" after a model/tool failure.
-      // A user.interrupt already emitted this turn's status_idle; emitting
-      // the catch-all one too produced two idles per interrupt.
+      if (terminalError && terminalReported) this._reportedTurnErrors.add(terminalError);
+      // Interrupt owns its idle; a lost fence cannot append through guarded history.
       const interruptOwnsIdle = abortController.signal.aborted &&
         this._interruptIdleOwned.delete(turnThreadId);
       if (interruptOwnsIdle) this.closeToolUsesAfterInterrupt(history, activeFence, turnThreadId);
-      if (!idleEmitted && !interruptOwnsIdle) {
+      if (!idleEmitted && !interruptOwnsIdle && !abortController.signal.aborted) {
         try {
           const idleEvent: SessionEvent = completedIdleEvent ?? { type: "session.status_idle", stop_reason: { type: "end_turn" } };
           history.append(idleEvent);
@@ -6954,12 +6358,29 @@ export class SessionDO extends DurableObject<Env> {
           console.warn(`[processUserMessage] catch-all idle emit failed:`, err);
         }
       }
-      // Status auto-derives — Workspace backup is fired by
-      // OmaSandbox.onActivityExpired when the container's sleepAfter
-      // elapses (see oma-sandbox.ts) — exactly one snapshot per quiet
-      // period. Explicit /destroy snapshots eagerly via
-      // sandbox.snapshotWorkspaceNow(). Per-turn backup is intentionally off.
+      // CMA idle means the agent stopped, not that artifact uploads are complete.
+      // Keep the runtime and execution fence until existing finalization finishes;
+      // a later upload failure must not rewrite the consumed turn's outcome.
+      if (!terminalError && !managedMemoryFailed && !abortController.signal.aborted && this.portsSandbox !== null) {
+        await this._managedProjectionChain;
+        try { await this.portsSandbox.endExecution(); }
+        catch (error) {
+          const warning: SessionEvent = { type: "session.warning", source: "sandbox.persistence",
+            message: `Sandbox persistence failed; source runtime retained: ${this.describeError(error)}` };
+          history.append(warning);
+          this.broadcastEvent(warning, activeFence);
+          logWarn({ op: "session_do.sandbox_finalization_failed", session_id: this.state.session_id,
+            error: this.describeError(error) }, "Post-idle sandbox finalization failed; source runtime retained");
+        }
+      }
+      if (this._threadAbortControllers.get(turnThreadId) === abortController) {
+        this._threadAbortControllers.delete(turnThreadId);
+      }
+      this._turnSettled.delete(abortController);
+      resolveTurnSettled();
+      unlinkParentAbort();
     }
+    if (terminalError) throw Object.assign(terminalError, { holdQueuedOnLane: true });
     return holdQueuedOnLane ? { holdQueuedOnLane: true } : undefined;
   }
 
@@ -6993,25 +6414,20 @@ export class SessionDO extends DurableObject<Env> {
   // ── State (cf_agents_state, single row) ────────────────────────────────
 
   get state(): SessionState {
+    this.initializeSessionState();
     if (this._state === undefined) {
-      // Defensive — constructor calls _loadStateFromSql before any user code
-      // runs, so this should be impossible. If it fires, something called
-      // .state before super() ran.
+      // Defensive: normal requests/RPCs initialize lazily; observation never does.
       throw new Error("SessionDO.state read before init");
     }
     return this._state;
   }
 
   /**
-   * Live-derived session status. Single source of truth — replaces the old
-   * mutable `state.status` field which had a race window between the
-   * `setState({status:"running"})` write and the cf_agents_runs INSERT
-   * inside runFiber. With derivation that race is impossible: status is
-   * always consistent with whatever cf_agents_runs holds at query time.
+   * Live-derived session status from active turn and execution-lane markers.
    *
    * - `terminated_at` set → "terminated" (destroy is the only persistent
    *   state value that needs to survive restarts)
-   * - any cf_agents_runs row → "running"
+   * - any active turn or execution lane → "running"
    * - else → "idle"
    *
    * Back-compat: if a session was written before this refactor, its
@@ -7019,6 +6435,7 @@ export class SessionDO extends DurableObject<Env> {
    * gate so old sessions don't accept new events post-destroy.
    */
   deriveStatus(): "idle" | "running" | "terminated" {
+    this.initializeSessionState();
     if (this._state?.terminated_at != null || this._state?.status === "terminated") {
       return "terminated";
     }
@@ -7142,6 +6559,7 @@ export class SessionDO extends DurableObject<Env> {
   }
 
   setState(next: SessionState): void {
+    this.initializeSessionState();
     this._state = next;
     this.ctx.storage.sql.exec(
       `INSERT OR REPLACE INTO cf_agents_state (id, state) VALUES (?, ?)`,
@@ -7299,7 +6717,7 @@ export class SessionDO extends DurableObject<Env> {
     // active_seconds: SUM(end_ts - start_ts) over paired
     // span.model_request_start / span.model_request_end events for this
     // thread. Pairs join on the start event's `id` ↔ end event's
-    // `model_request_start_id` (set by default-loop's onStepFinish/onError/
+    // `model_request_start_id` (set by the host harness onStepFinish/onError/
     // onAbort). The SQL `ts` column is in seconds, so we get whole-second
     // resolution which is fine for a "time spent in the model" stat.
     //
@@ -7409,6 +6827,7 @@ export class SessionDO extends DurableObject<Env> {
     callback: keyof this | string,
     payload?: T,
   ): Promise<{ id: string; callback: string; type: SessionScheduleType; time: number; payload: T; cron?: string; delayInSeconds?: number }> {
+    this.initializeSessionState();
     const callbackName = String(callback);
     if (typeof (this as unknown as Record<string, unknown>)[callbackName] !== "function") {
       throw new Error(`this.${callbackName} is not a function`);
@@ -7459,6 +6878,7 @@ export class SessionDO extends DurableObject<Env> {
     if (typeof intervalSeconds !== "number" || intervalSeconds <= 0) {
       throw new Error("intervalSeconds must be a positive number");
     }
+    this.initializeSessionState();
     const callbackName = String(callback);
     if (typeof (this as unknown as Record<string, unknown>)[callbackName] !== "function") {
       throw new Error(`this.${callbackName} is not a function`);
@@ -7485,6 +6905,7 @@ export class SessionDO extends DurableObject<Env> {
   }
 
   getSchedule<T = unknown>(id: string): { id: string; callback: string; payload: T; type: string; time: number; cron?: string } | undefined {
+    this.initializeSessionState();
     const row = this.ctx.storage.sql
       .exec<{ id: string; callback: string; payload: string; type: string; time: number; cron: string | null }>(
         `SELECT id, callback, payload, type, time, cron FROM cf_agents_schedules WHERE id = ? LIMIT 1`,
@@ -7511,6 +6932,7 @@ export class SessionDO extends DurableObject<Env> {
     cron?: string;
   }> {
     let query = "SELECT id, callback, payload, type, time, cron FROM cf_agents_schedules WHERE 1=1";
+    this.initializeSessionState();
     const params: Array<string | number> = [];
     if (criteria.type) { query += " AND type = ?"; params.push(criteria.type); }
     if (criteria.timeRange) {
@@ -7533,6 +6955,7 @@ export class SessionDO extends DurableObject<Env> {
   }
 
   async cancelSchedule(id: string): Promise<boolean> {
+    this.initializeSessionState();
     const before = this.ctx.storage.sql
       .exec<{ id: string }>(`SELECT id FROM cf_agents_schedules WHERE id = ? LIMIT 1`, id)
       .toArray();
@@ -7581,6 +7004,9 @@ export class SessionDO extends DurableObject<Env> {
 
   /** Unprocessed inbound rows (events.processed_at IS NULL), one per lane. */
   private _localQueuedInputs(): QueuedInputRecord[] {
+    // Work-only owners route by their durable schedule and deliberately never
+    // /init the MA brain. Merely arming its alarm must not initialize a queue.
+    if (!this.state.session_id) return [];
     const out: QueuedInputRecord[] = [];
     try {
       for (const laneId of this.queue.threadsWithQueueInputs()) {
@@ -7857,15 +7283,15 @@ export class SessionDO extends DurableObject<Env> {
     if (base === null || base.type !== "requeue") return base;
     const evidence = this._canonicalTurnEvidence(record);
     const decision = decideRecoveryFromCanonicalStream(evidence, {
-      maxProviderRedispatches: 1,
+      maxAttempts: record.maxAttempts,
     });
     if (decision.type === "requeue") return base;
-    const reason = decision.type === "reuse" ? "input_applied" : decision.reason;
+    const reason = decision.reason;
     sdoLog("recovery.stream", {
       session_id: this._state?.session_id,
       lane_id: record.laneId ?? "sthr_primary",
       execution_id: record.executionId,
-      decision: decision.type === "reuse" ? "reuse_outputs" : "interrupt",
+      decision: "interrupt",
       reason,
       applied_events: evidence.eventsAfterInput.length,
       completed_outputs: evidence.completedOutputCount,
@@ -7890,7 +7316,7 @@ export class SessionDO extends DurableObject<Env> {
   private async _sweepExpiredLeases(nowMs: number): Promise<void> {
     const store = await this.getExecutionStore();
     if (store === null) return;
-    await store.sweepExpired(nowMs, {
+    await store.sweepExpired(nowMs, { excludeAttemptIds: [...this._executionFences.values()].map(fence => fence.attemptId),
       decideForRecord: (record) => this._decideSweepForRecord(record, nowMs),
       onDecision: (action: CoordinationAction) => {
         if (action.type === "requeue") {
@@ -7933,7 +7359,7 @@ export class SessionDO extends DurableObject<Env> {
     const policy = evaluateCoordinationPolicy({
       nowMs,
       executions: active.map((execution) => this._leaseRecordFor(execution)),
-      heartbeatIntervalMs: KEEP_ALIVE_INTERVAL_MS,
+      heartbeatIntervalMs: Math.floor(sessionExecutionLeaseTtlMs(this.env.OMA_SESSION_EXECUTION_LEASE_TTL_MS) / 3),
       queuedWakeDelayMs: QUEUE_WAKE_DELAY_MS,
     });
     for (const action of policy.actions) {
@@ -7954,14 +7380,14 @@ export class SessionDO extends DurableObject<Env> {
       const renewal = decideLeaseRenewal(
         this._leaseRecordFor(execution),
         nowMs,
-        { leaseTtlMs: EXECUTION_LEASE_TTL_MS },
+        { leaseTtlMs: sessionExecutionLeaseTtlMs(this.env.OMA_SESSION_EXECUTION_LEASE_TTL_MS) },
       );
       if (renewal === null) continue;
       try {
         const renewed = await store.renew({
           fence,
           renewedAt: new Date(nowMs).toISOString(),
-          leaseTtlMs: EXECUTION_LEASE_TTL_MS,
+          leaseTtlMs: sessionExecutionLeaseTtlMs(this.env.OMA_SESSION_EXECUTION_LEASE_TTL_MS),
         });
         if (renewed.type === "renewed") {
           this._executionFences.set(laneId, renewed.fence);
@@ -7997,6 +7423,10 @@ export class SessionDO extends DurableObject<Env> {
    * inside SessionExecutionStorePort.
    */
   private async recoverExecutionQueue(): Promise<void> {
+    await this.runAlarmMaintenance("execution_queue", () => this.recoverExecutionQueueInner());
+  }
+
+  private async recoverExecutionQueueInner(): Promise<void> {
     // alarm() can reach this before any fetch()/init has warmed the in-memory
     // schema. Without this, drainEventQueue later dereferences a null queue
     // repo and the cold-started lane is never re-driven.
@@ -8018,7 +7448,7 @@ export class SessionDO extends DurableObject<Env> {
       nowMs,
       executions,
       queuedInputs,
-      heartbeatIntervalMs: KEEP_ALIVE_INTERVAL_MS,
+      heartbeatIntervalMs: Math.floor(sessionExecutionLeaseTtlMs(this.env.OMA_SESSION_EXECUTION_LEASE_TTL_MS) / 3),
       queuedWakeDelayMs: QUEUE_WAKE_DELAY_MS,
     });
     const lanes = new Set<string>();
@@ -8035,44 +7465,18 @@ export class SessionDO extends DurableObject<Env> {
       return;
     }
     const laneIds = [...lanes];
-    const before = this._queueProgressToken(executions, queuedInputs);
-    sdoLog("recover.execution_queue", {
-      session_id: this.state.session_id,
-      lanes: laneIds.length,
-      lane_ids: laneIds,
-      blocked: policy.blockedQueuedRows,
-    });
-    await Promise.all(laneIds.map((lane) => this.drainEventQueue(lane)));
-
-    let afterExecutions: ExecutionLeaseRecord[];
-    try {
-      afterExecutions = await this._executionLeaseRecords();
-    } catch {
-      // Unknown post-drain state: do not manufacture a backoff from a read
-      // failure. The next alarm/recovery read will decide.
-      this._resetQueueDrainBackoff();
-      return;
-    }
-    const afterInputs = this._localQueuedInputs();
-    const after = this._queueProgressToken(afterExecutions, afterInputs);
-    if (after !== before) {
-      // A row drained, an execution was claimed/settled, or a turn started.
-      this._resetQueueDrainBackoff();
-      return;
-    }
-    this._recordQueueDrainNoProgress({
-      queued: queuedInputs.length + executions.filter((e) => e.state === "queued").length,
-      blocked: policy.blockedQueuedRows,
-      running: executions.filter((e) => e.state === "running").length,
-    });
+    sdoLog("recover.execution_queue", { session_id: this.state.session_id, lane_ids: laneIds });
+    await Promise.all(laneIds.map(lane => this.dispatchEventQueue(lane)));
+    // Pending dispatch is not failure; only its settled progress updates backoff.
   }
 
   /**
    * Alarm entry point. Fired by CF runtime when setAlarm() time is reached.
    * Dispatches all due schedules in time order, then runs housekeeping
-   * (orphan-fiber recovery), then re-arms the next alarm.
+   * (execution lease recovery), then re-arms the next alarm.
    */
   async alarm(): Promise<void> {
+    this.initializeSessionState();
     const nowSec = Math.floor(Date.now() / 1000);
     const due = this.ctx.storage.sql
       .exec<{
@@ -8093,6 +7497,9 @@ export class SessionDO extends DurableObject<Env> {
       due_schedules: due.length,
       reason: due.length > 0 ? "schedule" : "lease_or_queue",
     });
+    if (due.length || this._dispatchedLanes.size || this._localQueuedInputs().length) {
+      await this.runAlarmMaintenance("prearm", () => this._multiplexAlarm({ reason: "alarm_start" }));
+    }
     for (const row of due) {
       // Skip interval rows whose previous execution is still running unless
       // it's been hung past the timeout (then forcibly reset).
@@ -8124,14 +7531,12 @@ export class SessionDO extends DurableObject<Env> {
         this.ctx.storage.sql.exec(`DELETE FROM cf_agents_schedules WHERE id = ?`, row.id);
         continue;
       }
-      try {
-        await (callback as (p: unknown, r: unknown) => Promise<unknown>).call(this, parsedPayload, row);
-      } catch (err) {
-        console.error(`[schedule] callback "${row.callback}" (${row.id}) threw:`, err);
-        // Don't crash the alarm — log and continue. cf-agents has retry options
-        // but we don't use them in any current callsite.
-      }
-
+      await this.runAlarmMaintenance(`schedule:${row.id}`, async () => {
+        try {
+          await (callback as (p: unknown, r: unknown) => Promise<unknown>).call(this, parsedPayload, row);
+        } catch (err) {
+          console.error(`[schedule] callback "${row.callback}" (${row.id}) threw:`, err);
+        } finally {
       // Reschedule cron / interval, delete one-shots
       if (row.type === "cron" && row.cron) {
         try {
@@ -8151,33 +7556,21 @@ export class SessionDO extends DurableObject<Env> {
       } else {
         this.ctx.storage.sql.exec(`DELETE FROM cf_agents_schedules WHERE id = ?`, row.id);
       }
+        }
+      });
     }
 
     // The persisted alarm is the FALLBACK recovery path. Cold start (first
     // request / ensureSchema) calls this exact same hook, so the lease sweep,
     // renewal, stale-turn finalization, and queue re-drive are identical no
     // matter what woke the DO.
-    await this._runRecovery("alarm");
+    if (this.state.session_id) await this._runRecovery("alarm");
 
-    // Container keepalive: while there's at least one background_tasks row,
-    // ping the sandbox container to reset its sleepAfter timer. Means
-    // long-running `python script.py &` jobs that the agent is waiting on
-    // don't get killed by the 5-minute idle TTL. Cheap (~5 ms RPC).
-    try {
-      const rows = this.ctx.storage.sql
-        .exec("SELECT 1 FROM background_tasks LIMIT 1")
-        .toArray();
-      if (rows.length > 0) {
-        const sb = await this.getOrCreateSandbox();
-        if (typeof (sb as { renewActivityTimeout?: () => Promise<void> }).renewActivityTimeout === "function") {
-          await (sb as { renewActivityTimeout: () => Promise<void> }).renewActivityTimeout();
-        }
-      }
-    } catch {
-      // background_tasks table missing or container down — alarm continues
-    }
+    // No idle sandbox keepalive (design §0.0b A.10). The Work maintenance
+    // schedule above renews only under the SQL claim AND original holder,
+    // including leased stopping finalization; it never heartbeats SQL Work.
 
-    await this._multiplexAlarm({ reason: "alarm" });
+    await this.runAlarmMaintenance("rearm", () => this._multiplexAlarm({ reason: "alarm" }));
   }
 
   // ── Stale-turn finalization ──────────────────────────────────────────
@@ -8211,6 +7604,58 @@ export class SessionDO extends DurableObject<Env> {
    * All SQL writes; no LLM call, no harness re-run. Cheap enough to
    * call from alarm() AND first-fetch.
    */
+  private _staleToolUses(): StaleToolUse[] {
+    const uses: StaleToolUse[] = [];
+    try {
+      const cursor = this.ctx.storage.sql.exec(
+        `SELECT type, data, session_thread_id FROM events
+          WHERE type IN ('agent.tool_use','agent.custom_tool_use','agent.mcp_tool_use')`,
+      );
+      for (const row of cursor) {
+        try {
+          const d = JSON.parse(row.data as string) as { id?: string };
+          if (d.id) uses.push({ id: d.id, type: row.type as string, thread: row.session_thread_id as string | null });
+        } catch { /* skip malformed */ }
+      }
+    } catch { /* events table missing — skip flush, do row cleanup */ }
+    return uses;
+  }
+
+  private _staleToolResultIds(): string[] {
+    const ids: string[] = [];
+    try {
+      const cursor = this.ctx.storage.sql.exec(
+        `SELECT data FROM events
+          WHERE type IN ('agent.tool_result','agent.mcp_tool_result')`,
+      );
+      for (const row of cursor) {
+        try {
+          const d = JSON.parse(row.data as string) as { tool_use_id?: string; mcp_tool_use_id?: string };
+          const id = d.tool_use_id ?? d.mcp_tool_use_id;
+          if (id) ids.push(id);
+        } catch { /* skip */ }
+      }
+    } catch { /* skip */ }
+    return ids;
+  }
+
+  private async _clearMarkerlessTurn(now: number): Promise<boolean> {
+    try {
+      const update = await this.runtimeAdapter.sql
+        .prepare(
+          `UPDATE sessions
+              SET status='idle', turn_id=NULL, turn_started_at=NULL, updated_at=?
+            WHERE id=? AND status='running' AND turn_id IS NULL`,
+        )
+        .bind(now, this.state.session_id)
+        .run();
+      return (update.meta?.changes ?? 0) > 0;
+    } catch (err) {
+      console.warn(`[finalize-stale] markerless row cleanup failed:`, err);
+      return false;
+    }
+  }
+
   private async _finalizeStaleTurns(): Promise<void> {
     // Single-flight: fetch() starts the cold-start pass without awaiting
     // while alarm() can run the same pass concurrently. Both would read
@@ -8226,13 +7671,10 @@ export class SessionDO extends DurableObject<Env> {
 
   private async _finalizeStaleTurnsInner(): Promise<void> {
     if (!this._state) return;
-    // Ensure events table exists (alarm() runs without going through
-    // fetchInner's ensureSchema). Cheap idempotent CREATE IF NOT EXISTS.
+    // Ensure schema for alarm() too; CREATE IF NOT EXISTS is idempotent.
     try { this.ensureSchema(); } catch { /* schema already up-to-date */ }
-    const sql = this.ctx.storage.sql;
 
-    // Let the cold-start recovery scan (started by ensureSchema) finish
-    // before pairing. Otherwise it races this finalizer: it can inject a
+    // Await the cold-start scan before pairing; otherwise it can inject a
     // non-is_error placeholder for the same tool_use we are about to
     // abort, or append a second result after our scan saw it unpaired.
     // Awaiting the shared promise makes the pairing decision see a
@@ -8245,275 +7687,26 @@ export class SessionDO extends DurableObject<Env> {
       }
     }
 
-    // 1. Unpaired tool_use detection. Three flavors per the wire spec
-    //    in default-loop.ts:emitToolCallEvent:
-    //      • agent.tool_use         → result keyed by tool_use_id
-    //      • agent.custom_tool_use  → result keyed by tool_use_id
-    //      • agent.mcp_tool_use     → result keyed by mcp_tool_use_id
-    //    The pairing key for use→result is always the use's own `id`.
-    //    Wrapped in try blocks so a missing events table (very early
-    //    cold-start) doesn't short-circuit the sessions row cleanup
-    //    below — that's the contract callers depend on.
-    const usedIds = new Map<string, { type: string; thread?: string | null }>();
-    try {
-      const useCursor = sql.exec(
-        `SELECT type, data, session_thread_id FROM events
-          WHERE type IN ('agent.tool_use','agent.custom_tool_use','agent.mcp_tool_use')`,
-      );
-      for (const row of useCursor) {
-        try {
-          const d = JSON.parse(row.data as string) as { id?: string };
-          if (d.id) usedIds.set(d.id, {
-            type: row.type as string,
-            thread: row.session_thread_id as string | null,
-          });
-        } catch { /* skip malformed */ }
-      }
-    } catch { /* events table missing — skip flush, do row cleanup below */ }
-    if (usedIds.size > 0) {
-      try {
-        const resCursor = sql.exec(
-          `SELECT data FROM events
-            WHERE type IN ('agent.tool_result','agent.mcp_tool_result')`,
-        );
-        for (const row of resCursor) {
-          try {
-            const d = JSON.parse(row.data as string) as {
-              tool_use_id?: string;
-              mcp_tool_use_id?: string;
-            };
-            const id = d.tool_use_id ?? d.mcp_tool_use_id;
-            if (id) usedIds.delete(id);
-          } catch { /* skip */ }
-        }
-      } catch { /* skip */ }
-    }
-    // Calls parked on the client (custom_tool_use awaiting
-    // user.custom_tool_result, always_ask awaiting user.tool_confirmation)
-    // are unpaired BY DESIGN and survive DO restarts via persisted state.
-    // Flushing them injected a synthetic "interrupted" result next to the
-    // real one the client posts later → duplicate tool_result → provider
-    // 400 "each tool_use must have a single result" + reschedule loop.
-    for (const pending of this.state.pending_tool_calls ?? []) {
-      usedIds.delete(pending.toolCallId);
-    }
-    let flushed = 0;
-    for (const [id, meta] of usedIds) {
-      const isMcp = meta.type === "agent.mcp_tool_use";
-      const event = isMcp
-        ? {
-            type: "agent.mcp_tool_result" as const,
-            mcp_tool_use_id: id,
-            content: UNKNOWN_TOOL_RESULT_TEXT,
-            is_error: true,
-          }
-        : {
-            type: "agent.tool_result" as const,
-            tool_use_id: id,
-            content: UNKNOWN_TOOL_RESULT_TEXT,
-            is_error: true,
-          };
-      const tagged = (meta.thread
-        ? { ...event, session_thread_id: meta.thread }
-        : event) as unknown as SessionEvent;
-      try {
-        await this.runtimeAdapter.eventLog.append(tagged);
-        this.broadcastEvent(tagged);
-        flushed++;
-      } catch (err) {
-        console.warn(`[finalize-stale] failed to flush tool_use ${id}:`, err);
-      }
-    }
-
-    // 2. Force-end stale sessions rows. Skip turns currently held in
-    //    _activeTurnIds (live work in this incarnation). Order matters:
-    //    endTurn FIRST (the contract), events only on success. The
-    //    earlier shape (rescheduled → endTurn → idle) emitted a
-    //    rescheduled event even when endTurn threw, leaving Console
-    //    showing "rescheduled" with no resolution and the row still
-    //    'running'. Atomic-from-Console's-perspective: events appear
-    //    iff the row actually flipped.
-    const orphans = await this.runtimeAdapter.listOrphanTurns(this.state.session_id);
-    let ended = 0;
-    if (orphans.length > 0 || usedIds.size > 0) {
-      sdoLog("finalize.scan", {
-        session_id: this.state.session_id,
-        orphan_turns: orphans.length,
-        unpaired_tool_uses: usedIds.size,
-        pending_tool_calls: this.state.pending_tool_calls?.length ?? 0,
-      });
-    }
-    // Race window: cold-start flush is fire-and-forget from fetch();
-    // the same fetch() may concurrently route a POST /event into
-    // drainEventQueue → adapter.beginTurn (writes D1 row) →
-    // hintTurnInFlight callback (populates _activeTurnIds). If we read
-    // listOrphanTurns BETWEEN the D1 write landing and the in-memory
-    // set add, the brand-new turn looks like an orphan and we'd
-    // incorrectly emit rescheduled+idle for it (caught 2026-05-11
-    // bench scenario 08, sess-hn5kmowudx42awm0).
-    //
-    // The grace period only applies to turns that began in THIS
-    // incarnation (`turn_started_at >= _instanceStartedAt`). A turn
-    // whose marker predates this instance is from a dead incarnation by
-    // definition, even when its timestamp is only a few seconds old —
-    // exactly the mid-turn isolate-reset case. Pre-fix, the age-only
-    // check skipped such a turn; a fire-and-forget fetch() pass then
-    // never ran again and the session stayed status_running forever.
-    const FRESH_TURN_GRACE_MS = 30_000;
-    const now = Date.now();
-    let heldForFreshGrace = 0;
-    for (const o of orphans) {
-      if (this._activeTurnIds.has(o.turn_id)) {
-        sdoLog("finalize.candidate", {
-          session_id: this.state.session_id,
-          turn_id: o.turn_id,
-          decision: "skip",
-          reason: "active_turn",
-        });
-        continue;
-      }
-      const startedThisIncarnation = o.turn_started_at >= this._instanceStartedAt;
-      if (startedThisIncarnation && now - o.turn_started_at < FRESH_TURN_GRACE_MS) {
-        heldForFreshGrace++;
-        sdoLog("finalize.candidate", {
-          session_id: this.state.session_id,
-          turn_id: o.turn_id,
-          decision: "skip",
-          reason: "fresh_grace",
-          age_ms: now - o.turn_started_at,
-        });
-        continue;
-      }
-      try {
-        await this.runtimeAdapter.endTurn(this.state.session_id, o.turn_id, "idle");
-      } catch (err) {
-        console.warn(`[finalize-stale] endTurn failed for ${o.turn_id}:`, err);
-        sdoLog("finalize.candidate", {
-          session_id: this.state.session_id,
-          turn_id: o.turn_id,
-          decision: "skip",
-          reason: "end_turn_failed",
-          error: err instanceof Error ? err.message : String(err),
-        });
-        continue; // skip event emission — row is still in old state
-      }
-      ended++;
-      sdoLog("finalize.candidate", {
-        session_id: this.state.session_id,
-        turn_id: o.turn_id,
-        decision: "end",
-        reason: "orphan_turn",
-        age_ms: now - o.turn_started_at,
-      });
-      const reschedEvent = {
-        type: "session.status_rescheduled",
-        reason: "DO eviction or restart — stream lost; re-send to continue.",
-      } as unknown as SessionEvent;
-      const idleEvent = { type: "session.status_idle", stop_reason: { type: "end_turn" } } as unknown as SessionEvent;
-      // Events are best-effort post-cleanup; row is the source of truth.
-      try { await this.runtimeAdapter.eventLog.append(reschedEvent); } catch {}
-      try { this.broadcastEvent(reschedEvent); } catch {}
-      try { await this.runtimeAdapter.eventLog.append(idleEvent); } catch {}
-      try { this.broadcastEvent(idleEvent); } catch {}
-    }
-    if (heldForFreshGrace > 0) {
-      // A fetch()-driven cold-start pass is fire-and-forget; make sure a
-      // later pass exists to re-check the in-incarnation grace window. The
-      // multiplexer merges this with any heartbeat/schedule wake instead of
-      // clobbering it.
-      try {
-        await this._multiplexAlarm({
-          reason: "turn_grace_retry",
-          atMs: now + FRESH_TURN_GRACE_MS,
-        });
-      } catch { /* storage alarm unavailable — alarm() path will rearm */ }
-    }
-
-    // 3. Markerless dangling-turn fallback. The pre-fix outbox path emitted
-    //    session.status_running without writing sessions.turn_id, so a
-    //    cold alarm saw listOrphanTurns() === [] and ended nothing. The
-    //    event log is the only remaining evidence for those sessions (the
-    //    exact live incident: status_running + span.model_request_start,
-    //    all outbox rows completed). Close that shape too so a cold alarm
-    //    flips the status back to idle.
-    //
-    //    Guarded by "no live work in this incarnation" plus a 5s age and
-    //    an instance-start check: a turn that is merely starting in the
-    //    current isolate must never be mistaken for this isolate's
-    //    predecessor. D1-marked turns were already handled above.
-    let markerlessEnded = 0;
-    if (
-      // Only when no D1-marked turn was seen at all: a markerless row is
-      // one the old outbox path never stamped. If a D1 orphan existed but
-      // endTurn transiently failed, leave it to the next alarm instead of
-      // emitting a terminal idle for a row that still says running.
-      orphans.length === 0 &&
-      this._activeTurnIds.size === 0 &&
-      this._executionActiveLanes.size === 0 &&
-      this._draining.size === 0
-    ) {
-      const latest = this._latestSessionStatusEvent();
-      const startedAtMs = latest === null ? 0 : latest.ts * 1000;
-      if (
-        latest?.type === "session.status_running" &&
-        startedAtMs < this._instanceStartedAt &&
-        now - startedAtMs >= 5_000
-      ) {
-        // Best-effort row cleanup for the markerless shape. Scoped to
-        // turn_id IS NULL so it can never clobber a fresh beginTurn.
-        let rowChanged = false;
-        try {
-          const update = await this.runtimeAdapter.sql
-            .prepare(
-              `UPDATE sessions
-                  SET status='idle', turn_id=NULL, turn_started_at=NULL, updated_at=?
-                WHERE id=? AND status='running' AND turn_id IS NULL`,
-            )
-            .bind(now, this.state.session_id)
-            .run();
-          rowChanged = (update.meta?.changes ?? 0) > 0;
-        } catch (err) {
-          console.warn(`[finalize-stale] markerless row cleanup failed:`, err);
-        }
-        if (!rowChanged) {
-          // Nothing to end (a concurrent beginTurn won the race, or the
-          // row was already settled). Do not emit a terminal idle for a
-          // turn that is still live.
-          sdoLog("finalize.candidate", {
-            session_id: this.state.session_id,
-            decision: "skip",
-            reason: "markerless_row_not_running",
-            status_ts: startedAtMs,
-          });
-        } else {
-          const reschedEvent = {
-            type: "session.status_rescheduled",
-            reason: "DO eviction or restart — stream lost; re-send to continue.",
-          } as unknown as SessionEvent;
-          const idleEvent = { type: "session.status_idle", stop_reason: { type: "end_turn" } } as unknown as SessionEvent;
-          try { await this.runtimeAdapter.eventLog.append(reschedEvent); } catch {}
-          try { this.broadcastEvent(reschedEvent); } catch {}
-          try { await this.runtimeAdapter.eventLog.append(idleEvent); } catch {}
-          try { this.broadcastEvent(idleEvent); } catch {}
-          markerlessEnded = 1;
-          sdoLog("finalize.candidate", {
-            session_id: this.state.session_id,
-            decision: "end",
-            reason: "markerless_dangling_turn",
-            status_ts: startedAtMs,
-          });
-        }
-      }
-    }
-    if (flushed > 0 || ended > 0 || markerlessEnded > 0) {
-      console.log(`[finalize-stale] flushed ${flushed} tool_uses, ended ${ended + markerlessEnded} stale turns`);
-      sdoLog("finalize.done", {
-        session_id: this.state.session_id,
-        flushed_tool_uses: flushed,
-        ended_turns: ended + markerlessEnded,
-        markerless_turns: markerlessEnded,
-      });
-    }
+    await backfillStaleTurnEvents({ binding: this.env.MAIN_MCP, workspaceId: this.state.tenant_id, sessionId: this.state.session_id, history: this.openHistory(), sockets: () => this.ctx.getWebSockets() }); await finalizeStaleTurns({
+      unknownToolResultText: UNKNOWN_TOOL_RESULT_TEXT,
+      instanceStartedAt: this._instanceStartedAt,
+      now: () => Date.now(),
+      listToolUses: () => this._staleToolUses(),
+      listToolResultIds: () => this._staleToolResultIds(),
+      parkedCallIds: () => (this.state.pending_tool_calls ?? []).map((pending) => pending.toolCallId),
+      append: async (event, fence) => fence ? appendStaleTurnEvent({ binding: this.env.MAIN_MCP, workspaceId: this.state.tenant_id, sessionId: this.state.session_id, append: e => this.runtimeAdapter.eventLog.append(e), sockets: () => this.ctx.getWebSockets() }, event, fence) : this.runtimeAdapter.eventLog.append(event),
+      broadcast: (event) => { if (!event.id?.startsWith("stale:")) this.broadcastEvent(event); },
+      hasEvent: (id) => this.ctx.storage.sql.exec("SELECT 1 FROM events WHERE json_extract(data, '$.id') = ? LIMIT 1", id).toArray().length > 0,
+      listOrphanTurns: () => this.runtimeAdapter.listOrphanTurns(this.state.session_id),
+      endTurn: (turnId) => this.runtimeAdapter.endTurn(this.state.session_id, turnId, "idle"),
+      isTurnActive: (turnId) => this._activeTurnIds.has(turnId),
+      hasLiveWork: () => this._activeTurnIds.size > 0 || this._executionActiveLanes.size > 0 || this._draining.size > 0,
+      latestSessionStatus: () => this._latestSessionStatusEvent(),
+      clearMarkerlessTurn: (now) => this._clearMarkerlessTurn(now),
+      executions: async () => ({ store: await this.getExecutionStore(), workspaceId: this.state.tenant_id, sessionId: this.state.session_id }),
+      scheduleGraceRetry: (atMs) => this._multiplexAlarm({ reason: "turn_grace_retry", atMs }),
+      log: (event, fields) => sdoLog(event, { session_id: this.state.session_id, ...fields }),
+    });
 
     // After flipping any stale rows to idle, kick the queue. Without this
     // queued inputs that arrived while the previous incarnation was
@@ -8548,17 +7741,7 @@ export function agentAdvertisesSteering(agent: { metadata?: Record<string, unkno
   return agent?.metadata?.["oma.session.steering"] === "enabled";
 }
 
-/** Stdout of a CF sandbox command (`exit=N\n<stdout>`); throws on failure. */
-async function sandboxStdout(sandbox: SandboxExecutor, command: string, timeoutMs: number): Promise<string> {
-  const out = await sandbox.exec(command, timeoutMs);
-  const match = out.match(/^exit=(\d+)\n([\s\S]*)$/);
-  if (!match || match[1] !== "0") throw new Error(out.slice(0, 300));
-  return match[2]!;
+function countAgentEvents(events: readonly SessionEvent[]): number {
+  return events.filter((event) => event.type.startsWith("agent.")).length;
 }
 
-/** Binary-safe file read: SandboxExecutor.readFile is UTF-8 only, so the
- * sandbox base64-encodes and this side decodes. */
-async function readSandboxFileBytes(sandbox: SandboxExecutor, path: string, timeoutMs: number): Promise<Uint8Array> {
-  const encoded = (await sandboxStdout(sandbox, `base64 -w0 -- '${path.replace(/'/g, "'\\''")}' 2>&1`, timeoutMs)).trim();
-  return Uint8Array.from(atob(encoded), (character) => character.charCodeAt(0));
-}

@@ -3,7 +3,6 @@ import {
   resolveApplicationPort,
   type ApplicationPortSource,
 } from "../application-port-source";
-import { MANAGED_AGENTS_BETA, requireBeta } from "../beta";
 import {
   deletedVaultResponseSchema,
   vaultCreateBodySchema,
@@ -35,7 +34,6 @@ export function buildVaultRoutes(
   source: ApplicationPortSource<VaultsApplicationPort>,
 ): Hono {
   const app = new Hono();
-  app.use("*", requireBeta(MANAGED_AGENTS_BETA));
 
   app.post("/", async (c) => {
     let body: unknown;

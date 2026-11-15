@@ -1,14 +1,17 @@
 import { execFileSync } from "node:child_process";
-import { chmod, mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { parseHarborTask, type HarborTask } from "@open-managed-agents/harbor-tasks";
 import { InMemoryKvStore } from "@open-managed-agents/kv-store/adapters/in-memory";
 import { advanceHarborRun } from "../src/harbor";
 import { benchmarkToApi, collectHarborBundles, EvalBenchmarkStore } from "../src/benchmarks";
 import type { EvalSessionRuntime } from "../src/runtime";
 import type { EvalRunRecord } from "../src/types";
+
+const fixtureRoots: string[] = [];
+afterEach(async () => { await Promise.all(fixtureRoots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 
 const enc = (s: string) => new TextEncoder().encode(s);
 
@@ -210,6 +213,7 @@ describe("advanceHarborRun", () => {
 describe("harbor benchmarks", () => {
   it("imports an uploaded tar.gz, stores task files and resolves aliases at read time", async () => {
     const root = await mkdtemp(join(tmpdir(), "evals-dataset-"));
+    fixtureRoots.push(root);
     for (const name of ["alpha", "beta"]) {
       const dir = join(root, "set", name);
       await mkdir(join(dir, "tests"), { recursive: true });
@@ -223,7 +227,7 @@ describe("harbor benchmarks", () => {
       await writeFile(join(dir, "environment", "Dockerfile"), "FROM scratch\n");
     }
     const archive = join(root, "set.tar.gz");
-    execFileSync("tar", ["-czf", archive, "-C", root, "set"]);
+    execFileSync("tar", ["-czf", archive, "-C", root, "set"], { env: { ...process.env, COPYFILE_DISABLE: "1" } });
     const bytes = new Uint8Array(await readFile(archive));
     const collected = await collectHarborBundles(
       { type: "upload", file_id: "file_1" },
@@ -262,13 +266,14 @@ describe("harbor benchmarks", () => {
     const gh = "1".repeat(40);
     const hf = "2".repeat(40);
     const root = await mkdtemp(join(tmpdir(), "evals-registry-"));
+    fixtureRoots.push(root);
     const dir = join(root, "repo-sha", "tasks", "gh-task");
     await mkdir(join(dir, "tests"), { recursive: true });
     await writeFile(join(dir, "task.toml"), `[environment]\ndocker_image = "img/a:1"\n`);
     await writeFile(join(dir, "instruction.md"), "from github");
     await writeFile(join(dir, "tests", "test.sh"), "#!/bin/bash\n");
     const tarball = join(root, "gh.tar.gz");
-    execFileSync("tar", ["-czf", tarball, "-C", root, "repo-sha"]);
+    execFileSync("tar", ["-czf", tarball, "-C", root, "repo-sha"], { env: { ...process.env, COPYFILE_DISABLE: "1" } });
     const tarBytes = new Uint8Array(await readFile(tarball));
     const registry = [{ name: "mix", version: "1.0", tasks: [
       { name: "gh-task", git_url: "https://github.com/o/r.git", git_commit_id: gh, path: "tasks/gh-task" },

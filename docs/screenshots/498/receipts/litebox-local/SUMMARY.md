@@ -6,4 +6,4 @@
 - Cloud Environment create: 201 `env_DdFqMZC4y8ZRohJlf3w6z`
 - Session turn: `session_OlM-tOKEUoMmz0o9nWbIy` → idle with `agent.message` **`LITEBOX_LOCAL_OK`**
 - Guest: hostname `boxlite`, kernel `Linux boxlite 6.12.76`, init `init.krun` / `boxlite-guest`
-- Model: local fixture (OpenAI `/chat/completions` stream) for deterministic bash tool_use — not claimed as live DeepSeek
+- Model: local fixture (OpenAI `/responses` stream) for deterministic bash tool_use — not claimed as live DeepSeek

@@ -99,6 +99,38 @@ describe("ExecutionLeaseController", () => {
     expect(controller.signal.aborted).toBe(true);
   });
 
+  it("retries a timed-out renewal until the last confirmed lease actually expires", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    try {
+      let available = false;
+      const fence = { generation: 1, expiresAtMs: 100 };
+      const controller = new ExecutionLeaseController({
+        fence, heartbeatIntervalMs: 10, now: () => Date.now(),
+        leaseExpiresAt: current => current.expiresAtMs,
+        renew: async () => available
+          ? { type: "renewed" as const, fence: { generation: 1, expiresAtMs: 150 } }
+          : await new Promise<never>(() => {}),
+      });
+      const first = controller.renewNow();
+      await vi.advanceTimersByTimeAsync(10);
+      await first;
+      expect(controller.lost).toBe(false);
+      expect(controller.signal.aborted).toBe(false);
+      available = true;
+      await controller.renewNow();
+      expect(fence.expiresAtMs).toBe(150);
+      available = false;
+      vi.setSystemTime(140);
+      const expired = controller.renewNow();
+      await vi.advanceTimersByTimeAsync(10);
+      await expired;
+      expect(controller.lost).toBe(true);
+      expect(controller.signal.aborted).toBe(true);
+      await controller.close();
+    } finally { vi.useRealTimers(); }
+  });
+
   it("self-fences when a partition leaves lease renewal hanging", async () => {
     vi.useFakeTimers();
     try {

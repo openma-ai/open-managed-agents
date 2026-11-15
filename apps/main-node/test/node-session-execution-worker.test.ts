@@ -309,6 +309,20 @@ describe("NodeSessionExecutionWorker", () => {
     expect(runs[0]?.fence.ownerId).toMatch(/^node_[ab]$/u);
   });
 
+  it("reclaims a typed sandbox loss in the same worker after its existing lease expires", async () => {
+    const { SessionExecutionLostError } = await import("@open-managed-agents/session-runtime-contract/coordination");
+    runtime.run = async input => { runs.push(structuredClone(input)); if (runs.length === 1) throw new SessionExecutionLostError("sandbox_gone"); };
+    const executor = worker();
+    await executor.sessionEventsAccepted(accepted("event_loss"));
+    await executor.waitForIdle();
+    expect((await coordinator.find({ workspaceId: "workspace_01", sessionId: session.id, executionId: "event_loss" }))?.state).toBe("running");
+    now = new Date("2026-09-04T00:01:00.000Z");
+    await executor.poll();
+    await executor.waitForIdle();
+    expect(runs).toHaveLength(2);
+    expect(runs[1]?.fence.generation).toBe(2);
+    expect((await coordinator.find({ workspaceId: "workspace_01", sessionId: session.id, executionId: "event_loss" }))?.state).toBe("completed");
+  });
   it("recovers work whose previous owner lost its lease", async () => {
     await coordinator.admit({
       execution: {

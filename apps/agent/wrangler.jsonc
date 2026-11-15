@@ -3,7 +3,8 @@
   "name": "sandbox-default",
   "main": "src/index.ts",
   "compatibility_date": "2026-04-13",
-  "compatibility_flags": ["nodejs_compat"],
+  // Work webhook polling must reach same-zone public Worker routes, just as cron does.
+  "compatibility_flags": ["nodejs_compat", "enable_ctx_exports", "global_fetch_strictly_public"],
 
   // ─────────────────────────────────────────────────────────────────────
   // SELF-HOST BASELINE (sandbox/agent worker)
@@ -15,9 +16,13 @@
   "containers": [
     {
       "class_name": "Sandbox",
-      "image": "./Dockerfile.sandbox",
-      "instance_type": "standard-1",
-      "max_instances": 50
+      "name": "sandbox-default-do-v1",
+      "scheduling_policy": "durable_object",
+      "images": {
+        "sandbox": {
+          "dockerfile": "./Dockerfile.sandbox"
+        }
+      }
     }
     // Operator catalog images (SANDBOX_IMAGES, e.g. Harbor task images) add
     // one container class each. Pattern (docs/cloudflare-sandbox-images.md):
@@ -42,7 +47,7 @@
       // any worker in the account can bind the same class via `script_name`.
       // AcpProxyHarness uses this to attach to the daemon's RuntimeRoom
       // directly, no service-binding hop through main and no shared secret —
-      // see apps/agent/src/harness/acp-proxy-loop.ts.
+      // see packages/agent-harness/src/acp-proxy-loop.ts.
       { "name": "RUNTIME_ROOM", "class_name": "RuntimeRoom", "script_name": "managed-agents" }
     ]
   },
@@ -90,6 +95,7 @@
   // setup-cf.sh fills in the account id (or self-hoster sets it manually).
   "vars": {
     "MEMORY_BUCKET_NAME": "managed-agents-memory",
+    "FILES_BUCKET_NAME": "managed-agents-files",
     "WORKSPACE_BUCKET_NAME": "managed-agents-workspace",
     "BACKUP_BUCKET_NAME": "managed-agents-backups",
     "CLOUDFLARE_ACCOUNT_ID": "<set-by-setup-cf-sh>"
@@ -116,7 +122,12 @@
     {
       "tag": "v1",
       "new_sqlite_classes": ["SessionDO", "Sandbox"]
-    }
+    },
+    // Keep the historical tags that already exist on the hosted staging
+    // worker. Omitting them makes Wrangler replay v1 and Cloudflare rejects
+    // the duplicate SessionDO migration on the next deploy.
+    { "tag": "v2" },
+    { "tag": "v3" }
   ],
 
   "limits": { "cpu_ms": 300000 },
@@ -135,9 +146,13 @@
       "containers": [
         {
           "class_name": "Sandbox",
-          "image": "./Dockerfile.sandbox",
-          "instance_type": "standard-1",
-          "max_instances": 50
+          "name": "sandbox-default-do-v1-production",
+          "scheduling_policy": "durable_object",
+          "images": {
+            "sandbox": {
+              "dockerfile": "./Dockerfile.sandbox"
+            }
+          }
         }
       ],
       "durable_objects": {
@@ -165,6 +180,7 @@
       "ai": { "binding": "AI" },
       "vars": {
         "MEMORY_BUCKET_NAME": "managed-agents-memory",
+        "FILES_BUCKET_NAME": "managed-agents-files",
         "WORKSPACE_BUCKET_NAME": "managed-agents-workspace",
         "BACKUP_BUCKET_NAME": "managed-agents-backups",
         "CLOUDFLARE_ACCOUNT_ID": "44af79e51582ca20c9003eb926540242"
@@ -187,9 +203,13 @@
       "containers": [
         {
           "class_name": "Sandbox",
-          "image": "./Dockerfile.sandbox",
-          "instance_type": "standard-1",
-          "max_instances": 50
+          "name": "sandbox-default-do-v1-production",
+          "scheduling_policy": "durable_object",
+          "images": {
+            "sandbox": {
+              "dockerfile": "./Dockerfile.sandbox"
+            }
+          }
         }
       ],
       "services": [
@@ -219,6 +239,7 @@
       "ai": { "binding": "AI" },
       "vars": {
         "MEMORY_BUCKET_NAME": "managed-agents-memory-staging",
+        "FILES_BUCKET_NAME": "managed-agents-files",
         "WORKSPACE_BUCKET_NAME": "managed-agents-workspace",
         "BACKUP_BUCKET_NAME": "managed-agents-backups",
         "CLOUDFLARE_ACCOUNT_ID": "44af79e51582ca20c9003eb926540242"

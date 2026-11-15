@@ -3,10 +3,10 @@
  *
  * Wrangler binds one image to one container class, so every catalog image
  * (e.g. a Harbor task image) needs its own class exported from this worker.
- * Each must extend OmaSandbox so it keeps the backup and billing hooks of the
- * default `Sandbox`, and must be passed to withOmaOutbound: @cloudflare/containers
- * keys outbound handlers by class name, so a subclass does not inherit the
- * vault egress handler or the R2 passthrough. Add two lines per image, e.g.
+ * Each must extend OmaSandbox so it keeps the backup, billing and outbound
+ * (Vault egress, R2 mount) hooks of the default `Sandbox`; with Sandbox SDK
+ * 1.0 these are instance-level, so withOmaOutbound is an identity kept for
+ * compatibility. Add two lines per image, e.g.
  *
  *   export class SandboxFixGit extends OmaSandbox {}
  *   withOmaOutbound(SandboxFixGit);

@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { env, exports } from "cloudflare:workers";
 import { describe, it, expect } from "vitest";
-import { registerHarness, resolveHarness } from "../../apps/agent/src/harness/registry";
+import { registerHarness, resolveHarness } from "../../packages/agent-harness/src/registry";
 import { registerTestHarnesses } from "../harnesses";
 
 // ============================================================
@@ -22,8 +22,8 @@ describe("Harness registry", () => {
   });
 
   it("default harness is registered", async () => {
-    const { registerCoreHarnesses } = await import("../../apps/agent/src/harness/builtins");
-    const { PiHarness } = await import("../../apps/agent/src/harness/pi-loop");
+    const { registerCoreHarnesses } = await import("../../packages/agent-harness/src/builtins");
+    const { PiHarness } = await import("../../packages/agent-harness/src/pi-loop");
     registerCoreHarnesses();
     expect(resolveHarness("default")).toBeInstanceOf(PiHarness);
   });
@@ -55,7 +55,7 @@ describe("Tool building", () => {
 
     registerHarness(harnessName, () => ({
       async run(ctx) {
-        // The buildTools function is called inside DefaultHarness,
+        // The buildTools function is called inside the Pi host loop,
         // but we can inspect the agent config to verify tool config is passed through.
         // For a more direct test, we report the tool config.
         ctx.runtime.broadcast({
@@ -120,6 +120,24 @@ describe("Edge cases", () => {
     return exports.default.fetch(new Request(`http://localhost${path}`, init));
   }
 
+  // A 202 only admits the input; its turn drains in the SessionDO afterwards.
+  // These admission tests configure no model card, so that turn ends as a
+  // failed execution. Wait for it to settle so the DO never logs after this
+  // file is torn down ("Closing rpc while onUserConsoleLog was pending").
+  async function settled(sessionId: string, res: Response) {
+    expect(res.status).toBe(202);
+    const deadline = Date.now() + 15_000;
+    let states: string[] = [];
+    while (Date.now() < deadline) {
+      const rows = await env.MAIN_DB.prepare("SELECT state FROM managed_session_executions WHERE session_id=?")
+        .bind(sessionId).all<{ state: string }>();
+      states = rows.results.map((row) => row.state);
+      if (states.length === 1 && ["completed", "failed", "cancelled"].includes(states[0]!)) return;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new Error(`Session ${sessionId} turn did not settle: ${JSON.stringify(states)}`);
+  }
+
   async function createSession() {
     registerTestHarnesses();
     const agentRes = await api("/v1/oma/agents", {
@@ -153,6 +171,7 @@ describe("Edge cases", () => {
       }),
     });
     expect(res.status).toBe(202);
+    await settled(session.id, res);
 
     // Verify via WebSocket replay
     await new Promise((r) => setTimeout(r, 100));
@@ -184,6 +203,7 @@ describe("Edge cases", () => {
       }),
     });
     expect(res.status).toBe(202);
+    await settled(session.id, res);
   });
 
   it("handles special characters in agent name and system prompt", async () => {
@@ -216,6 +236,7 @@ describe("Edge cases", () => {
     });
     // Should accept — empty content is valid (model will handle it)
     expect(res.status).toBe(202);
+    await settled(session.id, res);
   });
 
   it("agent IDs are unique across creates", async () => {

@@ -3,7 +3,6 @@ import {
   resolveApplicationPort,
   type ApplicationPortSource,
 } from "../application-port-source";
-import { MCP_TUNNELS_BETA, requireBeta } from "../beta";
 import {
   tunnelCreateBodySchema,
   tunnelListQuerySchema,
@@ -41,7 +40,6 @@ export function buildTunnelRoutes(
   source: ApplicationPortSource<TunnelsApplicationPort>,
 ): Hono {
   const app = new Hono();
-  app.use("*", requireBeta(MCP_TUNNELS_BETA));
 
   app.post("/", async (c) => {
     const body = await requestBody(c);

@@ -92,6 +92,28 @@ interface DriverConstructor {
 }
 
 describe("DefaultNodeManagedSessionRuntimeDriver", () => {
+  it.each(["session.error", "session.status_idle"])("recovers a dead execution exactly once after %s projection failure", async failType => {
+    const persisted: Array<{ id: string; type: string }> = [];
+    const published: string[] = [];
+    let fail = true;
+    const driver = new runtimeModule.DefaultNodeManagedSessionRuntimeDriver({
+      engine: { start: async () => {}, stop: async () => {}, accept: async () => {}, archiveThread: async () => {} },
+      realtime: { publish: frame => { published.push(frame.frame.event.type); }, attach: () => () => {}, closeSession: () => {} } as SessionRealtimeHub,
+      projectionFor: () => ({ recordSessionRuntimeEvents: async input => {
+        const event = input.events[0];
+        if (fail && event.type === failType) { fail = false; throw new Error("projection offline"); }
+        if (persisted.some(e => e.id === event.id)) return { type: "event_id_collision", eventIds: [event.id] } as never;
+        persisted.push(event);
+        return { type: "recorded", session };
+      } }),
+    });
+    const execution = { id: "dead", attempt: { id: "a", ownerId: "o", generation: 1, leaseExpiresAt: "2026-01-01T00:00:00.000Z" }, attemptCount: 1, failure: "lease expired", workspaceId: "workspace_01", sessionId: "session_01", laneId: "sthr_primary" } as import("@open-managed-agents/session-runtime-contract/coordination").SessionExecution;
+    await expect(driver.finalizeDeadExecution(execution)).rejects.toThrow("projection offline");
+    await driver.finalizeDeadExecution(execution);
+    await driver.finalizeDeadExecution(execution);
+    expect(persisted.map(e => e.type)).toEqual(["session.error", "session.status_idle"]);
+    expect(published).toEqual(["session.error", "session.status_idle"]);
+  });
   function startFailureDriver(
     start: (input: runtimeModule.StartNodeManagedSessionRuntime) => Promise<void>,
     accepted: string[] = [],
@@ -135,6 +157,14 @@ describe("DefaultNodeManagedSessionRuntimeDriver", () => {
     }));
     return { accept, events, projectionCalls, driver };
   }
+
+  it("never persists an empty startup session.error and includes its error cause", async () => {
+    const { accept, events } = startFailureDriver(async () => { throw new Error("", { cause: new TypeError("socket closed") }); });
+    await expect(accept()).rejects.toThrow();
+    const errors = events().filter((event) => event.type === "session.error") as Array<{ error: { message: string } }>;
+    expect(errors.length).toBe(3);
+    for (const { error } of errors) expect(error.message).toBe("sandbox.start: Error: (empty message); caused by TypeError: socket closed");
+  });
 
   it("retries sandbox startup like Claude Managed Agents, then reports exhausted retries and goes idle", async () => {
     let starts = 0;
@@ -1450,4 +1480,27 @@ describe("DefaultNodeManagedSessionRuntimeDriver", () => {
     });
     await iteratorB.return?.();
   });
+});
+
+it("reclaimed Node attempt persists interrupted tools before reloading canonical context", async () => {
+  const events: any[] = [{ id: "tool_lost", type: "agent.tool_use", name: "bash", input: {}, processedAt: "2026-01-01T00:00:00Z" }];
+  let accepted: any;
+  const engine = new runtimeModule.ApplicationBackedNodeManagedSessionRuntimeEngine({
+    historyFor: () => ({ loadSessionRuntimeHistory: async () => ({ type: "loaded", initialEvents: [], events: [...events] }) }) as never,
+    runner: { start: async () => {}, stop: async () => {}, archiveThread: async () => {}, accept: async input => { accepted = input; } },
+  });
+  const { decodeRuntimeProducedSessionEvent } = await import("@open-managed-agents/managed-agents-adapters-runtime");
+  await engine.start({ workspaceId: "w", sessionId: "s", session, environment, initialEvents: [] } as never, async frame => {
+    const event = decodeRuntimeProducedSessionEvent(frame);
+    expect(event).not.toBeNull(); events.push(event);
+  });
+  await engine.accept({ workspaceId: "w", sessionId: "s", session, environment, events: [{ id: "input", type: "user.message", content: [] }],
+    executionFence: { ...executionFence, generation: 2 } } as never);
+  expect(accepted.historyEvents).toMatchObject([
+    { id: "tool_lost" },
+    { type: "session.warning", source: "tool_outcome_unknown", details: { outcome: "dispatched_unknown", toolUseId: "tool_lost", retryRequestId: "retry:tool_lost" } },
+    { id: "retry:tool_lost", type: "agent.tool_use", name: "bash", input: {}, evaluatedPermission: "ask" },
+    { type: "agent.tool_result", toolUseId: "tool_lost", isError: true },
+    { type: "session.warning", source: "execution_resumed", details: { attempt: 2, reason: "lease_lost" } },
+  ]);
 });

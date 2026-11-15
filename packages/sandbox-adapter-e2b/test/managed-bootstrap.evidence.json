@@ -1,0 +1,67 @@
+{
+  "baseline": "9ebff6579db5a2f94fbc71c21caf082f70fc9d76",
+  "sdk": "e2b@2.63.0",
+  "templateImage": "node:24.18.0-bookworm-slim",
+  "cloud": [
+    {
+      "alias": "oma-v2e2b-bootstrap-1794283458543",
+      "templateId": "ph5q1r1i8ai5ktysbzi3",
+      "buildId": "8ae45c14-5725-4dc0-acdc-436b3355c08b",
+      "sandboxId": "il8io8k1afgcg88uqatbk",
+      "launcherSha256": "57eae1ef44bf03833cf77605e9936e56b3d7e2252a95718ac8b39d3cb5add1c2",
+      "result": "PASS",
+      "sandboxCleanup": "PASS",
+      "templateCleanup": "retained"
+    },
+    {
+      "alias": "oma-v2e2b-bootstrap-1794283560797",
+      "templateId": "u3twiej3mt2yrg0rn1fj",
+      "buildId": "06055583-741c-4c40-87f2-c2888de3db44",
+      "sandboxId": "ib2ku1uqsrl6z2ikkbnw7",
+      "launcherSha256": "f70503ccaabababb32bbedc1edd754632ec3aa8d50be30e9a5326088af907def",
+      "startedAt": "2026-11-10T04:06:00.797Z",
+      "result": "PASS",
+      "observed": {
+        "env": {
+          "ONLY": "yes"
+        },
+        "uid": 1002,
+        "cwd": "/workspace"
+      },
+      "argv": "literal quote, command substitution, newline preserved",
+      "privateDirectory": "EACCES",
+      "statusKill": "PASS",
+      "sandboxCleanup": "PASS",
+      "templateCleanup": "retained"
+    }
+  ],
+  "local": {
+    "tests": "74 PASS / 1 existing cloud certification SKIP",
+    "typecheck": "PASS",
+    "sdkShellCounterexample": {
+      "cloud": false,
+      "result": "FAIL (reproduced)",
+      "shell": "/bin/bash -l -c",
+      "hookExecutedBeforeEnvI": true,
+      "firstScriptRun": "assertions printed then timed out (SDK captured-transport timer); explicit script cleanup exit added"
+    }
+  },
+  "cookbook": {
+    "sha": "a3ed410bea09dd94d0f51d6463de3621a06bf101",
+    "url": "https://github.com/e2b-dev/e2b-cookbook/tree/a3ed410bea09dd94d0f51d6463de3621a06bf101/examples/anthropic-managed-agents/javascript/src",
+    "read": [
+      "template.ts",
+      "sandbox-worker.ts",
+      "webhook-runtime.ts"
+    ],
+    "note": "Initially wrong e2b-dev/cookbook and e2b-dev/examples URLs returned 404; correct repo resolved from official docs and all three pinned files read."
+  },
+  "boundaries": [
+    "No control-plane worker endpoint/harness/ACP end-to-end certified by these tests",
+    "No additional package dependency or root/lockfile change",
+    "Requires trusted root-owned template; agents must not receive root/Files API credentials",
+    "No retry after ambiguous dispatch; owner must destroy sandbox",
+    "Native launcher caps lifetime management handles at 128; recycle sandbox",
+    "Template base is version-tagged, not digest-pinned; pin production image and install platform worker/harness at build time"
+  ]
+}

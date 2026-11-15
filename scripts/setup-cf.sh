@@ -1,349 +1,268 @@
 #!/usr/bin/env bash
-# scripts/setup-cf.sh
-#
-# Interactive setup wizard for a fresh CF self-host deploy. One command,
-# ~5 minutes (network-bound on the Anthropic key + wrangler API calls).
-#
-# What it does
-# ────────────
-#   1. Preflight: wrangler login, jq + node, prompt for Anthropic key
-#   2. Create resources (idempotent — re-running is safe):
-#      - 2 D1 DBs (openma-auth, openma-integrations)
-#      - 1 KV namespace (CONFIG_KV)
-#      - 4 R2 buckets (files, workspace, memory, backups)
-#   3. Patch top-level wrangler.jsonc files with the captured IDs
-#   4. Set required secrets (auto-generated where possible)
-#   5. Apply migrations (one consolidated file per D1)
-#   6. Wire R2 → memory-events queue notification
-#   7. Deploy main + agent + integrations workers
-#
-# Usage
-# ─────
-#   ./scripts/setup-cf.sh                 # interactive
-#   ./scripts/setup-cf.sh --no-deploy     # provision but don't deploy
-#   ./scripts/setup-cf.sh --skip-secrets  # if you already set them
-#
-# Re-runnable: detects existing resources and reuses their IDs. Re-prompts
-# for secrets only if you pass --reset-secrets.
-
+# Cloudflare self-host setup. Provisions remote resources and deploys public Workers.
+# Requires pnpm install, Wrangler login, jq, openssl, and Docker for agent builds.
 set -euo pipefail
-
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT_DIR"
-
-# ── flag parsing ────────────────────────────────────────────────────────
 DO_DEPLOY=1
 SKIP_SECRETS=0
 RESET_SECRETS=0
+YES=0
 for arg in "$@"; do
   case "$arg" in
-    --no-deploy)     DO_DEPLOY=0 ;;
-    --skip-secrets)  SKIP_SECRETS=1 ;;
+    --yes) YES=1 ;;
+    --no-deploy) DO_DEPLOY=0 ;;
+    --skip-secrets) SKIP_SECRETS=1 ;;
     --reset-secrets) RESET_SECRETS=1 ;;
     --help|-h)
-      sed -n '2,30p' "$0"
-      exit 0
-      ;;
-    *)
-      echo "Unknown flag: $arg"
-      exit 1
-      ;;
+      printf '%s\n' 'Usage: pnpm setup:cloudflare [--yes] [--no-deploy] [--skip-secrets] [--reset-secrets]' \
+        '--yes: non-interactive provisioning/deployment; configure workspace Model Cards in Console after login; model keys are never uploaded.' \
+        '--no-deploy: still creates remote resources, patches local configs, applies migrations and sets secrets. NOT a dry-run.' \
+        '--skip-secrets: operator takes responsibility for all required Worker secrets.' \
+        '--reset-secrets: DANGER: replaces encryption/auth secrets; existing encrypted data may become unreadable. Requires separate interactive confirmation; --yes cannot authorize it.'         'CLOUDFLARE_ACCOUNT_ID is required when more than one account is available.'
+      exit 0 ;;
+    *) echo "Unknown flag: $arg" >&2; exit 1 ;;
   esac
 done
-
-# ── tiny helpers ───────────────────────────────────────────────────────
-say()  { printf "\n\033[1;36m▶ %s\033[0m\n" "$*"; }
-warn() { printf "\033[1;33m  ⚠ %s\033[0m\n" "$*"; }
-die()  { printf "\033[1;31m  ✖ %s\033[0m\n" "$*"; exit 1; }
-ok()   { printf "  ✓ %s\n" "$*"; }
-
-require_cmd() {
-  command -v "$1" >/dev/null 2>&1 || die "$1 not found. Install it and try again."
-}
-
-# Parse a JSONC file's top-level fields via jsonc-parser (already in repo
-# devDeps). Output exact JSON.
-read_jsonc() {
-  local path="$1" key="$2"
-  node -e "
-    const {parse} = require('jsonc-parser');
-    const fs = require('fs');
-    const cfg = parse(fs.readFileSync('$path', 'utf8'));
-    const v = cfg['$key'];
-    process.stdout.write(JSON.stringify(v));
-  "
-}
-
-# Update a top-level field in a JSONC file, preserving formatting + comments
-# via jsonc-parser's modify() + applyEdits(). Used to splice IDs in without
-# wrecking the human-edited structure.
-patch_jsonc() {
-  local path="$1" json_pointer="$2" new_value="$3"
-  node -e "
-    const {modify, applyEdits} = require('jsonc-parser');
-    const fs = require('fs');
-    const text = fs.readFileSync('$path', 'utf8');
-    const path_arr = $json_pointer;
-    const value = $new_value;
-    const edits = modify(text, path_arr, value, { formattingOptions: { tabSize: 2, insertSpaces: true } });
-    fs.writeFileSync('$path', applyEdits(text, edits));
-  "
-}
-
-# ── 0. preflight ────────────────────────────────────────────────────────
-say "0. Preflight"
-
-require_cmd npx
-require_cmd jq
-require_cmd node
-require_cmd openssl
-
-if ! npx wrangler whoami 2>&1 | grep -q "logged in"; then
-  die "wrangler is not logged in. Run: npx wrangler login"
+say() { printf '\n▶ %s\n' "$*"; }
+ok() { printf '  ✓ %s\n' "$*"; }
+die() { printf '  ✖ %s\n' "$*" >&2; exit 1; }
+require_cmd() { command -v "$1" >/dev/null 2>&1 || die "$1 not found. Install it and try again."; }
+if [ "$RESET_SECRETS" = 1 ]; then
+  echo 'DANGER: replacing PLATFORM_ROOT_SECRET can make existing vault/model credentials impossible to decrypt; auth sessions/API keys will also change.' >&2
+  [ "$YES" = 0 ] && [ -t 0 ] || die '--reset-secrets requires a separate interactive confirmation, not --yes.'
+  [ "$SKIP_SECRETS" = 0 ] || die '--reset-secrets conflicts with --skip-secrets.'
+  read -r -p 'Type RESET ENCRYPTION ROOT to continue: ' confirmation
+  [ "$confirmation" = 'RESET ENCRYPTION ROOT' ] || die 'Reset cancelled.'
 fi
-ok "wrangler logged in as $(npx wrangler whoami 2>&1 | grep -oE '[^ ]+@[^ ]+' | head -1)"
+if [ "$YES" = 0 ]; then
+  [ -t 0 ] || die 'No interactive terminal. Use --yes to authorize remote provisioning/deployment (not a dry-run).'
+  read -r -p 'Create/reuse remote resources, run migrations, and deploy public Workers? [y/N] ' confirmation
+  case "$confirmation" in y|Y|yes) ;; *) die 'Setup cancelled.' ;; esac
 
-# Anthropic key — required.
-if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
-  ok "ANTHROPIC_API_KEY from env"
+fi
+if [ -n "${ANTHROPIC_API_KEY:-}" ]; then echo 'ANTHROPIC_API_KEY is not uploaded by setup and does not create a workspace Model Card.'; fi
+say '0. Preflight'
+for command in node npx pnpm jq openssl; do require_cmd "$command"; done
+[ -d node_modules ] || die 'Missing installed dependencies. Run pnpm install first.'
+node -e "require('jsonc-parser'); require.resolve('wrangler/package.json')" >/dev/null 2>&1 || die 'Missing installed dependencies. Run pnpm install first.'
+if [ "$DO_DEPLOY" = 1 ]; then
+  require_cmd docker
+  docker info >/dev/null 2>&1 || die 'Docker daemon is unavailable; start Docker before deploying the agent container.'
+fi
+wrangler() { CI=true npx --no-install wrangler "$@"; }
+WHOAMI=$(wrangler whoami 2>&1) || die "Wrangler authentication failed. Run npx wrangler login. $WHOAMI"
+# Do not select an arbitrary first account from a multi-account login.
+ACCOUNTS=$(printf '%s\n' "$WHOAMI" | grep -oE '[a-f0-9]{32}' | sort -u || true)
+if [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+  [[ "$CLOUDFLARE_ACCOUNT_ID" =~ ^[a-f0-9]{32}$ ]] || die 'Invalid CLOUDFLARE_ACCOUNT_ID.'
+  ACCOUNT_ID="$CLOUDFLARE_ACCOUNT_ID"
 else
-  read -rsp "  Anthropic API key (sk-ant-...): " ANTHROPIC_API_KEY
-  echo
-  [ -n "$ANTHROPIC_API_KEY" ] || die "ANTHROPIC_API_KEY is required"
+  [ "$(printf '%s\n' "$ACCOUNTS" | grep -c .)" = 1 ] || die 'Missing or multiple Cloudflare accounts. Set CLOUDFLARE_ACCOUNT_ID explicitly.'
+  ACCOUNT_ID="$ACCOUNTS"
 fi
-export ANTHROPIC_API_KEY
-
-# ── 1. create resources ─────────────────────────────────────────────────
-say "1. Provision Cloudflare resources (idempotent)"
-
-create_d1() {
-  local name="$1"
-  # Try create; if it already exists, look up the id via list.
-  local out
-  if out=$(npx wrangler d1 create "$name" 2>&1); then
-    local id
-    id=$(echo "$out" | grep -oE '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}' | head -1)
-    [ -n "$id" ] || die "couldn't extract id from `wrangler d1 create $name` output"
-    echo "$id"
-  else
-    # Already exists path
-    local id
-    id=$(npx wrangler d1 list --json 2>/dev/null | jq -r --arg n "$name" '.[] | select(.name == $n) | .uuid' | head -1)
-    [ -n "$id" ] && [ "$id" != "null" ] || die "d1 $name doesn't exist and create failed: $out"
-    echo "$id"
-  fi
-}
-
-create_kv() {
-  local binding="$1"
-  local out
-  if out=$(npx wrangler kv namespace create "$binding" 2>&1); then
-    local id
-    id=$(echo "$out" | grep -oE '"id": "[a-f0-9]+"' | grep -oE '[a-f0-9]{32}' | head -1)
-    [ -n "$id" ] || die "couldn't extract KV id from create output"
-    echo "$id"
-  else
-    local id
-    id=$(npx wrangler kv namespace list --json 2>/dev/null | jq -r --arg t "$binding" '.[] | select(.title | endswith($t)) | .id' | head -1)
-    [ -n "$id" ] && [ "$id" != "null" ] || die "KV namespace $binding doesn't exist and create failed: $out"
-    echo "$id"
-  fi
-}
-
-create_r2() {
-  local name="$1"
-  npx wrangler r2 bucket create "$name" 2>/dev/null \
-    || npx wrangler r2 bucket info "$name" >/dev/null 2>&1 \
-    || die "r2 bucket $name doesn't exist and create failed"
-  ok "r2 bucket $name"
-}
-
-AUTH_DB_ID=$(create_d1 "openma-auth")
-ok "D1 openma-auth → $AUTH_DB_ID"
-INTEGRATIONS_DB_ID=$(create_d1 "openma-integrations")
-ok "D1 openma-integrations → $INTEGRATIONS_DB_ID"
-
-CONFIG_KV_ID=$(create_kv "CONFIG_KV")
-ok "KV CONFIG_KV → $CONFIG_KV_ID"
-
-create_r2 "managed-agents-files"
-create_r2 "managed-agents-workspace"
-create_r2 "managed-agents-memory"
-create_r2 "managed-agents-backups"
-
-ACCOUNT_ID=$(npx wrangler whoami 2>&1 | grep -oE '\b[a-f0-9]{32}\b' | head -1)
-[ -n "$ACCOUNT_ID" ] || die "couldn't extract Cloudflare account id from `wrangler whoami`"
+export CLOUDFLARE_ACCOUNT_ID="$ACCOUNT_ID"
 ok "Cloudflare account → $ACCOUNT_ID"
-
-# ── 2. patch wrangler.jsonc files ───────────────────────────────────────
-say "2. Patch wrangler.jsonc files with resource IDs"
-
-# Find array index of a binding entry under top-level d1_databases or kv_namespaces.
-# Returns the index, or -1 if not found.
-jsonc_array_index_by_binding() {
-  local path="$1" array_key="$2" binding="$3"
-  node -e "
-    const {parse} = require('jsonc-parser');
-    const fs = require('fs');
-    const cfg = parse(fs.readFileSync('$path', 'utf8'));
-    const arr = cfg['$array_key'] || [];
-    const idx = arr.findIndex(x => x.binding === '$binding');
-    process.stdout.write(String(idx));
-  "
+CONFIGS=(apps/main/wrangler.jsonc apps/agent/wrangler.jsonc apps/integrations/wrangler.jsonc)
+# Parse and edit actual JSONC, retaining comments and environment overlays.
+patch_jsonc() {
+  node - "$1" "$2" "$3" <<'NODE'
+const fs = require('fs');
+const {modify, applyEdits} = require('jsonc-parser');
+const [file, path, value] = process.argv.slice(2);
+fs.writeFileSync(file, applyEdits(fs.readFileSync(file,'utf8'), modify(fs.readFileSync(file,'utf8'), JSON.parse(path), JSON.parse(value), {formattingOptions:{tabSize:2,insertSpaces:true}})));
+NODE
 }
-
-# Patch a top-level binding's database_id (D1) or id (KV).
-patch_d1() {
-  local path="$1" binding="$2" id="$3"
+patch_binding() {
   local idx
-  idx=$(jsonc_array_index_by_binding "$path" "d1_databases" "$binding")
-  [ "$idx" != "-1" ] || { warn "no $binding D1 binding in $path top-level — skip"; return; }
-  patch_jsonc "$path" "[\"d1_databases\", $idx, \"database_id\"]" "\"$id\""
-  ok "$path :: d1_databases[$idx=$binding].database_id = $id"
+  idx=$(node - "$1" "$2" "$3" <<'NODE'
+const fs=require('fs'); const {parse}=require('jsonc-parser');
+const [file, array, binding]=process.argv.slice(2);
+const entries=parse(fs.readFileSync(file,'utf8'))[array] || [];
+const indexes=entries.flatMap((x,i)=>x.binding===binding?[i]:[]);
+if(indexes.length!==1) { console.error('Expected exactly one '+binding+' in '+file); process.exit(1); }
+console.log(indexes[0]);
+NODE
+  ) || return 1
+  patch_jsonc "$1" "[\"$2\",$idx,\"$4\"]" "\"$5\""
 }
-
-patch_kv() {
-  local path="$1" binding="$2" id="$3"
-  local idx
-  idx=$(jsonc_array_index_by_binding "$path" "kv_namespaces" "$binding")
-  [ "$idx" != "-1" ] || { warn "no $binding KV in $path top-level — skip"; return; }
-  patch_jsonc "$path" "[\"kv_namespaces\", $idx, \"id\"]" "\"$id\""
-  ok "$path :: kv_namespaces[$idx=$binding].id = $id"
-}
-
-patch_var() {
-  local path="$1" key="$2" value="$3"
-  patch_jsonc "$path" "[\"vars\", \"$key\"]" "\"$value\""
-  ok "$path :: vars.$key = $value"
-}
-
-# apps/main: AUTH_DB + INTEGRATIONS_DB + CONFIG_KV + INTEGRATIONS_ORIGIN
-patch_d1 apps/main/wrangler.jsonc AUTH_DB         "$AUTH_DB_ID"
-patch_d1 apps/main/wrangler.jsonc INTEGRATIONS_DB "$INTEGRATIONS_DB_ID"
-patch_kv apps/main/wrangler.jsonc CONFIG_KV       "$CONFIG_KV_ID"
-# Default INTEGRATIONS_ORIGIN to the integrations workers.dev URL — user
-# can override later if they bring a custom domain.
-patch_var apps/main/wrangler.jsonc INTEGRATIONS_ORIGIN \
-  "https://managed-agents-integrations.${ACCOUNT_ID:0:8}.workers.dev"
-
-# apps/agent: AUTH_DB + CONFIG_KV + CLOUDFLARE_ACCOUNT_ID
-patch_d1 apps/agent/wrangler.jsonc AUTH_DB   "$AUTH_DB_ID"
-patch_kv apps/agent/wrangler.jsonc CONFIG_KV "$CONFIG_KV_ID"
-patch_var apps/agent/wrangler.jsonc CLOUDFLARE_ACCOUNT_ID "$ACCOUNT_ID"
-
-# apps/integrations: AUTH_DB + INTEGRATIONS_DB + GATEWAY_ORIGIN
-patch_d1 apps/integrations/wrangler.jsonc AUTH_DB         "$AUTH_DB_ID"
-patch_d1 apps/integrations/wrangler.jsonc INTEGRATIONS_DB "$INTEGRATIONS_DB_ID"
-patch_var apps/integrations/wrangler.jsonc GATEWAY_ORIGIN \
-  "https://managed-agents-integrations.${ACCOUNT_ID:0:8}.workers.dev"
-
-# ── 3. apply migrations ─────────────────────────────────────────────────
-say "3. Apply D1 migrations"
-
-apply_migrations() {
-  local binding="$1" config="$2"
-  local migration_output
-  echo "  → $binding (from $config)"
-  if ! migration_output=$(npx wrangler d1 migrations apply "$binding" --remote --config "$config" 2>&1); then
-    printf '%s\n' "$migration_output" >&2
-    return 1
-  fi
-  printf '%s\n' "$migration_output" | grep -E '(Applied|No migrations)' || true
-}
-
-apply_migrations "MAIN_DB"         "apps/main/wrangler.jsonc"
-apply_migrations "INTEGRATIONS_DB" "apps/integrations/wrangler.jsonc"
-# ROUTER_DB is the same physical DB as AUTH_DB in single-D1 mode (the
-# code falls back via env.ROUTER_DB ?? env.AUTH_DB). The router tables
-# (tenant_shard, shard_pool, memory_store_tenant) are also in the AUTH_DB
-# consolidated migration as a back-compat carry-over, so we don't apply
-# migrations-router/ in single-D1 mode. For multi-shard prod, the
-# operator runs `wrangler d1 migrations apply openma-router` separately.
-
-# ── 4. set secrets ──────────────────────────────────────────────────────
-if [ "$SKIP_SECRETS" = "0" ]; then
-  say "4. Set required Worker secrets"
-
-  set_secret() {
-    local name="$1" value="$2" config="$3"
-    if [ "$RESET_SECRETS" = "0" ]; then
-      # Skip if already set (best-effort: wrangler secret list shows names only).
-      if npx wrangler secret list --config "$config" 2>/dev/null | jq -e ".[] | select(.name == \"$name\")" >/dev/null 2>&1; then
-        ok "$config :: $name (already set, skipping; pass --reset-secrets to overwrite)"
-        return
+patch_var() { patch_jsonc "$1" "[\"vars\",\"$2\"]" "\"$3\""; }
+SECRET_LISTS=()
+MISSING_WORKERS=()
+# A failed list is NOT proof of an empty secret set. Only Wrangler's explicit
+# worker-not-found diagnostic may initialize a fresh worker (verified in CLI source).
+if [ "$SKIP_SECRETS" = 0 ] || [ "$DO_DEPLOY" = 1 ]; then
+  for i in 0 1 2; do
+    cfg="${CONFIGS[$i]}"
+    if listing=$(wrangler secret list --config "$cfg" 2>&1); then
+      printf '%s' "$listing" | jq -e 'type == "array" and all(.[]; .name | type == "string")' >/dev/null || die "Invalid secret list for $cfg"
+      SECRET_LISTS[$i]="$listing"
+      MISSING_WORKERS[$i]=0
+      if [ "$DO_DEPLOY" = 1 ]; then
+        worker_name=$(node -e "console.log(require('jsonc-parser').parse(require('fs').readFileSync(process.argv[1],'utf8')).name)" "$cfg")
+        if status=$(wrangler deployments status --config "$cfg" --json 2>&1); then
+          :
+        elif [[ "$status" == *"The Worker $worker_name has no deployments."* ]]; then
+          MISSING_WORKERS[$i]=1
+        else
+          die "Cannot inspect deployment status for $cfg; refusing bootstrap: $status"
+        fi
       fi
+    elif [[ "$listing" == *'If this is a new Worker, run `wrangler deploy` first to create it.'* ]] && [[ "$listing" == *'not found.'* ]]; then
+      SECRET_LISTS[$i]='[]'
+      MISSING_WORKERS[$i]=1
+    else
+      die "secret list failed for $cfg; refusing to overwrite secrets: $listing"
     fi
-    echo "$value" | npx wrangler secret put "$name" --config "$config" >/dev/null
-    ok "$config :: $name"
-  }
-
-  # Required everywhere — same value across all 3 workers
-  PLATFORM_ROOT_SECRET=$(openssl rand -base64 32)
-  INTEGRATIONS_INTERNAL_SECRET=$(openssl rand -hex 32)
-  BETTER_AUTH_SECRET=$(openssl rand -hex 32)
-  API_KEY=$(openssl rand -hex 16)
-
-  for cfg in apps/main/wrangler.jsonc apps/agent/wrangler.jsonc apps/integrations/wrangler.jsonc; do
-    set_secret PLATFORM_ROOT_SECRET         "$PLATFORM_ROOT_SECRET"         "$cfg"
-    set_secret INTEGRATIONS_INTERNAL_SECRET "$INTEGRATIONS_INTERNAL_SECRET" "$cfg"
-    set_secret ANTHROPIC_API_KEY            "$ANTHROPIC_API_KEY"            "$cfg"
   done
-
-  # main-only
-  set_secret BETTER_AUTH_SECRET "$BETTER_AUTH_SECRET" apps/main/wrangler.jsonc
-  set_secret API_KEY            "$API_KEY"            apps/main/wrangler.jsonc
 fi
-
-# ── 5. R2 → queue notification ──────────────────────────────────────────
-say "5. Wire R2 memory bucket → memory-events queue"
-
-# This requires the queue itself to exist — wrangler creates it lazily on
-# first deploy of the consumer. So if we're deploying, do this AFTER deploy.
-# If --no-deploy, skip and leave a note.
-if [ "$DO_DEPLOY" = "0" ]; then
-  warn "skipping R2 notification (queue doesn't exist until first deploy)"
-  warn "after deploying, run:"
-  warn "  npx wrangler r2 bucket notification create managed-agents-memory \\"
-  warn "    --event-type object-create object-delete \\"
-  warn "    --queue managed-agents-memory-events"
+has_secret() { printf '%s' "${SECRET_LISTS[$1]}" | jq -e --arg name "$2" 'any(.[]; .name == $name)' >/dev/null; }
+# Plan shared values before ANY writes. Existing values cannot be read back.
+if [ "$SKIP_SECRETS" = 0 ]; then
+  for name in PLATFORM_ROOT_SECRET INTEGRATIONS_INTERNAL_SECRET; do
+    count=0
+    for i in 0 1 2; do if has_secret "$i" "$name"; then count=$((count+1)); fi; done
+    if [ "$RESET_SECRETS" = 0 ] && [ "$count" -gt 0 ] && [ "$count" -lt 3 ] && [ -z "${!name:-}" ]; then
+      die "$name is partially configured; existing values cannot be read back. Export the SAME original value to fill missing copies, or recover it from your secret manager. Do not rotate the encryption root to repair a partial setup."
+    fi
+  done
+  for name in PLATFORM_ROOT_SECRET INTEGRATIONS_INTERNAL_SECRET BETTER_AUTH_SECRET API_KEY; do
+    if [ -z "${!name:-}" ]; then printf -v "$name" '%s' "$(openssl rand -hex 32)"; fi
+  done
 fi
-
-# ── 6. deploy ───────────────────────────────────────────────────────────
-if [ "$DO_DEPLOY" = "1" ]; then
-  say "6. Deploy workers (main, agent, integrations)"
-
-  echo "  → integrations (depended on by main + agent)"
-  npx wrangler deploy --config apps/integrations/wrangler.jsonc 2>&1 | tail -3
-
-  echo "  → agent (sandbox)"
-  npx wrangler deploy --config apps/agent/wrangler.jsonc 2>&1 | tail -3
-
-  echo "  → main"
-  npx wrangler deploy --config apps/main/wrangler.jsonc 2>&1 | tail -3
-
-  # Now that the queue consumer exists, wire the R2 → queue subscription
-  say "5b. Wire R2 → queue (post-deploy)"
-  npx wrangler r2 bucket notification create managed-agents-memory \
-    --event-type object-create object-delete \
-    --queue managed-agents-memory-events 2>&1 | tail -3 || warn "R2 notification setup failed — wire manually"
+say '1. Provision Cloudflare resources'
+unique_id() {
+  local ids="$1" label="$2"
+  [ "$(printf '%s\n' "$ids" | grep -c .)" = 1 ] || die "Missing or ambiguous/multiple $label resources; select/rename resources manually."
+  printf '%s\n' "$ids"
+}
+create_d1() {
+  local out ids
+  if out=$(wrangler d1 create "$1" --update-config=false 2>&1); then
+    ids=$(printf '%s\n' "$out" | grep -oE '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}' | sort -u || true)
+  else
+    ids=$(wrangler d1 list --json | jq -r --arg n "$1" '.[] | select(.name == $n) | .uuid') || return 1
+  fi
+  unique_id "$ids" "D1 $1"
+}
+create_kv() {
+  local out ids
+  if out=$(wrangler kv namespace create CONFIG_KV --update-config=false 2>&1); then
+    ids=$(printf '%s\n' "$out" | grep -oE '"id"[[:space:]]*:[[:space:]]*"[a-f0-9]{32}"' | grep -oE '[a-f0-9]{32}' | sort -u || true)
+  else
+    # namespace list already emits JSON; it has no --json option.
+    ids=$(wrangler kv namespace list | jq -r '.[] | select(.title == "CONFIG_KV") | .id') || return 1
+  fi
+  unique_id "$ids" 'KV CONFIG_KV'
+}
+AUTH_DB_ID=$(create_d1 openma-auth)
+INTEGRATIONS_DB_ID=$(create_d1 openma-integrations)
+CONFIG_KV_ID=$(create_kv)
+for bucket in managed-agents-files managed-agents-workspace managed-agents-memory managed-agents-backups; do
+  wrangler r2 bucket create "$bucket" || wrangler r2 bucket info "$bucket" || die "Cannot create/reuse R2 bucket $bucket"
+done
+# queues list has --page but no JSON option in this Wrangler version.
+# Parse its table, page to exhaustion, and reject duplicate exact-name matches.
+QUEUE_NAMES=''
+page=1
+while :; do
+  listing=$(wrangler queues list --page "$page" 2>&1) || die "Queue query failed: $listing"
+  rows=$(printf '%s
+' "$listing" | node -e '
+    let text=""; process.stdin.on("data",c=>text+=c).on("end",()=>{
+      text=text.replace(/\x1b\[[0-9;]*m/g, "");
+      for(const line of text.split("\n")) {
+        const trimmed=line.trim();
+        if(!trimmed || /^[┌┬┐├┼┤└┴┘─]+$/.test(trimmed) || /^⛅.*wrangler/.test(trimmed) || /^[-─]+$/.test(trimmed)) continue;
+        // Wrangler prints this metadata for a non-default auth profile.
+        if(/^Active profile: [a-zA-Z0-9_-]+$/.test(trimmed)) continue;
+        const cells=line.split("│").map(x=>x.trim());
+        if(cells.length>=4 && cells[1]==="id" && cells[2]==="name") continue;
+        if(cells.length>=4 && /^[a-f0-9]{32}$/.test(cells[1]) && /^[a-zA-Z0-9_-]+$/.test(cells[2])) { console.log(cells[2]); continue; }
+        console.error("Unrecognized Queue list output; refusing resource selection."); process.exit(1);
+      }
+    });') || die 'Cannot parse Queue query output safely.'
+  [ -n "$rows" ] || break
+  QUEUE_NAMES="$QUEUE_NAMES
+$rows"
+  page=$((page+1))
+done
+for queue in managed-agents-memory-events managed-agents-memory-events-dlq; do
+  count=$(printf '%s\n' "$QUEUE_NAMES" | awk -v name="$queue" '$0 == name { n++ } END { print n+0 }')
+  [ "$count" -le 1 ] || die "Ambiguous/multiple queue resources named $queue."
+  if [ "$count" = 0 ]; then wrangler queues create "$queue" || die "Queue creation failed: $queue"; fi
+done
+say '2. Patch top-level self-host bindings'
+for cfg in "${CONFIGS[@]}"; do patch_binding "$cfg" d1_databases MAIN_DB database_id "$AUTH_DB_ID"; done
+for cfg in apps/main/wrangler.jsonc apps/integrations/wrangler.jsonc; do patch_binding "$cfg" d1_databases INTEGRATIONS_DB database_id "$INTEGRATIONS_DB_ID"; done
+for cfg in apps/main/wrangler.jsonc apps/agent/wrangler.jsonc; do patch_binding "$cfg" kv_namespaces CONFIG_KV id "$CONFIG_KV_ID"; done
+patch_var apps/agent/wrangler.jsonc CLOUDFLARE_ACCOUNT_ID "$ACCOUNT_ID"
+say '3. Apply remote D1 migrations'
+wrangler d1 migrations apply MAIN_DB --remote --config apps/main/wrangler.jsonc
+wrangler d1 migrations apply INTEGRATIONS_DB --remote --config apps/integrations/wrangler.jsonc
+if [ "$SKIP_SECRETS" = 0 ]; then
+  say '4. Set missing secrets (preserve existing values)'
+  set_secret() {
+    local i="$1" name="$2" value="$3"
+    if [ "$RESET_SECRETS" = 0 ] && has_secret "$i" "$name"; then ok "$name already set in ${CONFIGS[$i]} (preserved)"; return; fi
+    printf '%s' "$value" | wrangler secret put "$name" --config "${CONFIGS[$i]}"
+  }
+  for i in 0 1 2; do
+    set_secret "$i" PLATFORM_ROOT_SECRET "$PLATFORM_ROOT_SECRET"
+    set_secret "$i" INTEGRATIONS_INTERNAL_SECRET "$INTEGRATIONS_INTERNAL_SECRET"
+  done
+  set_secret 0 BETTER_AUTH_SECRET "$BETTER_AUTH_SECRET"
+  set_secret 0 API_KEY "$API_KEY"
 fi
-
-# ── done ────────────────────────────────────────────────────────────────
-say "Done."
-
-cat <<EOF
-
-Next steps:
-  - Open the main worker URL (printed above) in your browser
-  - Sign up an account; the first user becomes their tenant's owner
-  - To enable Slack/GitHub/Linear OAuth, set those secrets:
-      npx wrangler secret put LINEAR_CLIENT_ID --config apps/integrations/wrangler.jsonc
-      npx wrangler secret put GITHUB_APP_ID    --config apps/integrations/wrangler.jsonc
-      npx wrangler secret put SLACK_CLIENT_ID  --config apps/integrations/wrangler.jsonc
-    See apps/docs/src/content/docs/self-host/oauth-apps.mdx
-  - To redeploy after code changes:
-      npx wrangler deploy --config apps/main/wrangler.jsonc
-  - To scale to multi-shard in the future: see operations.mdx (env.production).
-
-EOF
+TEMP_CONFIGS=()
+cleanup() { if [ "${#TEMP_CONFIGS[@]}" -gt 0 ]; then rm -f "${TEMP_CONFIGS[@]}"; fi; }
+trap cleanup EXIT
+if [ "$DO_DEPLOY" = 1 ]; then
+  say '5. Build Console and deploy Workers'
+  pnpm build:console
+  deploy_worker() {
+    local receipt urls
+    if ! receipt=$(wrangler deploy --config "$1" 2>&1); then printf '%s\n' "$receipt" >&2; return 1; fi
+    printf '%s\n' "$receipt" >&2
+    urls=$(printf '%s\n' "$receipt" | grep -oE 'https://[a-zA-Z0-9.-]+.workers.dev' | sort -u || true)
+    unique_id "$urls" 'deployment URL (workers.dev must be enabled)'
+  }
+  # Temporary configs live beside their originals so relative entrypoints,
+  # migrations, assets and Dockerfile paths retain their meaning. Do not strip
+  # live bindings on reruns. Main exports RuntimeRoom/McpProxyRpc before agent.
+  bootstrap() {
+    local temp
+    temp=$(mktemp "apps/$1/.wrangler.setup.XXXXXX")
+    TEMP_CONFIGS+=("$temp" "$temp.jsonc")
+    mv "$temp" "$temp.jsonc"
+    temp="$temp.jsonc"
+    cp "apps/$1/wrangler.jsonc" "$temp"
+    patch_jsonc "$temp" '["services"]' '[]'
+    if [ "$1" = integrations ]; then patch_jsonc "$temp" '["triggers"]' '{"crons":[]}'; fi
+    BOOTSTRAP_URL=$(deploy_worker "$temp")
+  }
+  # Recover an interrupted integrations bootstrap without replacing its live
+  # config with another stripped bootstrap. Establish main's exports first.
+  if [ "${MISSING_WORKERS[2]}" = 0 ] && [ "${MISSING_WORKERS[0]}" = 1 ]; then
+    bootstrap main
+    MISSING_WORKERS[0]=0
+  fi
+  if [ "${MISSING_WORKERS[2]}" = 1 ]; then bootstrap integrations; INTEGRATIONS_URL="$BOOTSTRAP_URL"; else INTEGRATIONS_URL=$(deploy_worker apps/integrations/wrangler.jsonc); fi
+  patch_var apps/main/wrangler.jsonc INTEGRATIONS_ORIGIN "$INTEGRATIONS_URL"
+  patch_var apps/integrations/wrangler.jsonc GATEWAY_ORIGIN "$INTEGRATIONS_URL"
+  if [ "${MISSING_WORKERS[0]}" = 1 ]; then bootstrap main; fi
+  deploy_worker apps/agent/wrangler.jsonc >/dev/null
+  MAIN_URL=$(deploy_worker apps/main/wrangler.jsonc)
+  deploy_worker apps/integrations/wrangler.jsonc >/dev/null
+  say '6. Wire R2 memory notifications'
+  wrangler r2 bucket notification create managed-agents-memory --event-type object-create object-delete --queue managed-agents-memory-events
+  say 'Done. Deployment commands succeeded.'
+  printf 'Console: %s
+' "$MAIN_URL"
+  echo 'Workspace model is not configured by setup. Register/login → your own workspace → Console Model Card → select it on an agent → first real task.'
+  echo 'Not yet verified: /health, signup/login, and a real model task. Open Console, sign up, configure a Model Card (e.g. your compatible provider), select it on an agent, and run a first task.'
+else
+  say 'Provisioning complete; Workers were NOT deployed.'
+  echo 'Origins and R2 notifications require deployment. Run setup again without --no-deploy to build/deploy and capture actual URLs.'
+fi

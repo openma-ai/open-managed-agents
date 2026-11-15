@@ -8,8 +8,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { serve } from "@hono/node-server";
-import { registerHarness } from "@open-managed-agents/agent/harness/registry";
-import type { HarnessContext } from "@open-managed-agents/agent/harness/interface";
+import {
+  registerHarness, type HarnessContext,
+} from "@open-managed-agents/agent-harness";
 import type { UserMessageEvent } from "@open-managed-agents/shared";
 import { createScriptedMcpServer } from "../../../test/fakes/scripted-mcp-server";
 import { seedAgent } from "./seed-agent";

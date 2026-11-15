@@ -108,7 +108,7 @@ HTTP 面完整覆盖不代表下面能力已由当前 Node runtime 实现。创�
 ## 补齐路线：原生能力优先，ACP 共用
 
 原生 default harness 已有 subagent：
-[tools.ts](../apps/agent/src/harness/tools.ts) 注册 `call_agent_*` 和
+[tools.ts](../packages/agent-harness/src/tools.ts) 注册 `call_agent_*` 和
 `general_subagent`；[SessionDO.runSubAgent](../apps/agent/src/runtime/session-do.ts)
 创建持久线程、独立消息上下文和中断控制，子代理共享 sandbox，可选择 default
 或其他 harness。本轮 Node Managed Session 已向 `buildTools` 传入

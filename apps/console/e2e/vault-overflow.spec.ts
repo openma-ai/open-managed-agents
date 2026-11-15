@@ -69,9 +69,9 @@ test("Vault columns contain long text and horizontally scroll without overlappin
 
 test("shared DataTable text plays while custom controls remain stationary", async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto("/?data-table");
-  const table = page.getByTestId("data-body-table");
-  const name = table.getByTitle("A deliberately long shared table label that must stay inside its cell");
+  await openVault(page);
+  const table = page.getByRole("table");
+  const name = table.getByTitle(longName);
   const text = name.locator("span");
   await expect(name).toHaveAttribute("data-overflow", "true");
   await name.focus();
@@ -93,16 +93,15 @@ test("shared DataTable text plays while custom controls remain stationary", asyn
   await page.mouse.move(0, 0);
   await name.evaluate((node) => (node as HTMLElement).blur());
   await expect(text).toHaveCSS("transform", "none");
-  const short = table.getByTitle("Short");
+  const short = table.getByTitle("Short name");
   await expect(short).toHaveAttribute("data-overflow", "false");
   await short.hover();
   await expect(short.locator("span")).toHaveCSS("transform", "none");
-  const inspect = table.getByRole("button", { name: "Inspect" }).first();
-  expect(await inspect.evaluate((node) => node.closest(".console-overflow-text"))).toBeNull();
-  await inspect.click();
-  await expect(page.getByRole("status")).toHaveText("Inspected: 1");
-  await table.getByRole("checkbox").first().check();
-  await expect(table.getByRole("checkbox").first()).toBeChecked();
+  const row = table.locator("tbody tr").first();
+  const actions = row.getByRole("button");
+  await expect(row.getByRole("button", { name: "Edit" })).toBeVisible();
+  await expect(row.getByRole("button", { name: "Delete" })).toBeVisible();
+  expect(await actions.first().evaluate((node) => node.closest(".console-overflow-text"))).toBeNull();
   await page.emulateMedia({ reducedMotion: "reduce" });
   await name.hover(); await name.focus();
   expect(await text.evaluate((node) => node.getAnimations().length)).toBe(0);

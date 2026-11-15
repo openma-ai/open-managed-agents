@@ -314,7 +314,9 @@ describe("EnvironmentsApplicationService", () => {
     expect(await service.updateEnvironment({ environmentId: "env_placement", openma: { runtime: { runtimeId: "rt_1", placement: "sandbox" } } }))
       .toMatchObject({ type: "updated", environment: { openma: { runtime: { placement: "sandbox" } } } });
     for (const placement of ["sandbox", "host"] as const) {
-      for (const directories of [[], [{ directory_id: "dir_1" }], null]) {
+      // Raw malformed JSON (including null) is covered by the API contract suite.
+      // Here even well-typed directory mappings must be rejected by the application.
+      for (const directories of [[], [{ hostPath: "/srv/project", mountPath: "/workspace" }]]) {
         const openma = { runtime: { runtimeId: "rt_1", placement, directories } };
         expect(await service.createEnvironment({ name: "bad", config: { type: "self_hosted" }, openma }))
           .toMatchObject({ type: "invalid_request", message: expect.stringContaining("directories") });

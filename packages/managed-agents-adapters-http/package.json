@@ -14,7 +14,8 @@
     "@open-managed-agents/managed-credential-resolver": "workspace:*",
     "@open-managed-agents/oma-api": "workspace:*",
     "@open-managed-agents/oma-models": "workspace:*",
-    "hono": "4.12.12"
+    "hono": "4.12.12",
+    "zod": "4.3.6"
   },
   "devDependencies": {
     "vitest": "^5.0.5"

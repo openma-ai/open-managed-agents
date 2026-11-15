@@ -20,7 +20,7 @@ n=24 采样证明「永久角色 Session」跑法会让 Supervisor 主线程上�
 (1) Node 原生委派；(2) Feishu Gateway 骨架；(3) 四张表 + Memory 确认写入通道。
 
 研究结论：Node 与 CF **共享同一套 harness**（`apps/main-node/src/index.ts:58-62` import
-`@open-managed-agents/agent/harness/*`），harness 已认识 `call_agent_*`（`apps/agent/src/harness/default-loop.ts:61-74,169-181`）。
+`@open-managed-agents/agent/harness/*`），Pi host loop 已认识 `call_agent_*`。
 但 v1 评审确认：工具是在 `buildTools` 阶段（早于 `buildHarnessContext`）捕获 executor 的，所以接线点、
 中断链路、Memory 契约、WS 生命周期都需要显式设计——不能照搬 CF。
 
@@ -181,7 +181,7 @@ DEFAULT 0`**（非空、零起步），turn 结束累加。**累加必须用 DB 
 | 1 每次委派生成唯一子线程 | §3.4-1 | 本 SDS |
 | 2 独立子线程历史 | §3.4-5 | 本 SDS |
 | 3 `parent_thread_id` 结构血缘 | §5.1 `session_threads` + api-types 同步 | 本 SDS |
-| 4 `parent_event_id` 事件因果 | harness 已发 default-loop.ts:61/169 | 已就绪 |
+| 4 `parent_event_id` 事件因果 | Pi host loop 已发出配对事件 | 已就绪 |
 | 5 同级专家并行 | §3.1 | 已就绪 |
 | 6 子线程级中断/状态/用量 | §3.6（中断父级传播，定向 deferred）+ §3.7（用量）| 本 SDS |
 | 7 Supervisor 事件级生命周期 | §4 provider 驱动 + §5.2 | 本 SDS |
@@ -466,7 +466,7 @@ provider 建 Supervisor Session 时，`POST /v1/sessions/:id/memory_stores`（`a
 
 ### 7.1 单元
 
-- **`delegateToAgent` 闭包**（§3.4）：stub loadAgent + mock DefaultHarness → 断言：返回子 agent 文本；
+- **`delegateToAgent` 闭包**（§3.4）：stub loadAgent + mock PiHarness → 断言：返回子 agent 文本；
   threadId 形如 `sthr_*`；`session_threads` 插行（复合 PK + parent 正确）；**子 tools 不含 `call_agent_*`**
   （callable_agents 已清空）；**子 env 无 delegateToAgent**；抛错返回 `"Sub-agent error: …"`。
 - **buildTools 接线**（§3.2）：断言 Supervisor 的 `call_agent_*` 工具 execute 能调到 session 级闭包（非 unavailable）。

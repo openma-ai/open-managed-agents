@@ -34,6 +34,23 @@ describe("durable Session input idempotency", () => {
     expect(f.dispatched).toHaveLength(1);
     expect(f.log.size).toBe(1);
   });
+  it("does not rerun unknown dispatch effects when accepted input is retried", async () => {
+    const f = fixture();
+    let executions = 0;
+    f.dependencies.dispatch.sessionEventsAccepted = async () => {
+      executions++;
+      throw new Error("connection lost after dispatch; effect unknown");
+    };
+    const command = { sessionId: "session", idempotencyKey: "unknown-effect", events: [
+      { type: "user.message" as const, content: [{ type: "text" as const, text: "once" }] },
+    ] };
+    await expect(f.service().sendSessionEvents(command)).rejects.toThrow("effect unknown");
+    expect(await f.service().sendSessionEvents(command)).toMatchObject({ type: "accepted" });
+    expect(executions).toBe(1);
+    expect(f.log.size).toBe(1);
+    expect([...f.log.values()][0].processedAt).toBeNull();
+  });
+
   it("serializes concurrent retries and rejects reusing a key with a changed batch", async () => {
     const f = fixture();
     const command: any = { sessionId:"session", idempotencyKey:"key", events:[{type:"user.message",content:[{type:"text",text:"once"}]}] };

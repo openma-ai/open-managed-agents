@@ -48,7 +48,7 @@ describe("Managed Agents API — Sessions route bundle", () => {
       },
     }));
 
-    expect((await api.request("/v1/sessions/session_01/outputs")).status).toBe(400);
+    expect((await api.request("/v1/sessions/session_01/outputs")).status).toBe(200);
     const managedHeaders = {
       headers: { "anthropic-beta": "managed-agents-2026-04-01" },
     };

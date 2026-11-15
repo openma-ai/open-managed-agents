@@ -862,7 +862,7 @@ const commands: Cmd[] = [
   {
     group: "Agents", match: ["agents", "create"],
     usage: "oma agents create <name> [--model <id>] [--inline-only|--subagent <id[:version]>|--multiagent <JSON>]", desc: "Create agent (multiagent JSON preserves nulls and self/pinned references)",
-    http: "POST   /v1/agents {name, model, system, tools, skills?, mcp_servers?, multiagent?, _oma?:{runtime_binding,harness? (default Pi; ai-sdk deprecated),...}}",
+    http: "POST   /v1/agents {name, model, system, tools, skills?, mcp_servers?, multiagent?, _oma?:{runtime_binding,harness? (default Pi),...}}",
     async run(config, args) {
       const { body, runtimeId, acpAgentId } = parseAgentWrite(args, false);
       const useAcpProxy = !!(runtimeId && acpAgentId);

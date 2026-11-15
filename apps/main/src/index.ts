@@ -1,3 +1,8 @@
+import { cfMemoryContent } from "./lib/cf-memory-content";
+import { withPublishedSessionFiles } from "@open-managed-agents/files-store";
+import { createR2SessionOutputSource } from "./lib/r2-session-output-source";
+import { sessionOutputsPrefix, guessSessionOutputMime } from "@open-managed-agents/shared";
+import { handleWorkPhysicalObservation, WORK_PHYSICAL_OBSERVATION_ROUTE } from "../../agent/src/runtime/work-physical-observation";
 import { normalizeOpenAIAgentsErrorResponse } from '@open-managed-agents/openai-agents-api';
 import { buildOpenAIAgentsProtocolApi, OpenAIAgentsProtocolError } from "@open-managed-agents/openai-agents-api";
 import { createResourcesHandler, createArtifactsHandler, createSessionsHandler, createManagedSessionMapping, createSandboxOptionalSessionMapping, resolveSessionSandboxMode, createOpenAIArtifactPublisher, outputPathsFromManifest, readManagedSessionMappingMetadata } from "@open-managed-agents/openai-agents-compat";
@@ -7,10 +12,7 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { WorkerEntrypoint, env as workerEnv } from "cloudflare:workers";
 import type { Env } from "@open-managed-agents/shared";
-import {
-  bindAccessLossHooks,
-  mcpRequestBodyText,
-} from "@open-managed-agents/mcp-access-loss";
+import { resolveAuthEmailPolicy } from "./auth-config";
 import {
   buildCfTenantDbProvider,
   servicesMiddleware,
@@ -137,7 +139,14 @@ import {
 } from "@open-managed-agents/managed-agents-adapters-sql";
 import { BlobFileContentStore } from "@open-managed-agents/managed-agents-adapters-blob";
 import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
-import { SqlRuntimeResourceFencePort } from "@open-managed-agents/runtime-resource-fence-sql";
+import { authenticateSandboxEgress, authenticateSandboxEgressSha256, issueSandboxToken, sandboxHarnessPlacement, sandboxTokenScopeFor, type SessionExecutionAttemptRef } from "@open-managed-agents/sandbox-gateway";
+import { cfAcpExecutionChannels, cfAcpExecutionChannelsResult } from "./lib/cf-acp-execution-capability";
+import type { ManagedAcpExecutionChannels, ManagedAcpExecutionChannelsRequest, ManagedAcpExecutionChannelsResult } from "@open-managed-agents/shared";
+import { cfSandboxTokenStore } from "./lib/cf-sandbox-token-store";
+import { issueCfSandboxTokenResult } from "./lib/cf-sandbox-token-rpc";
+import type { SandboxTokenIssueRequest, SandboxTokenIssueResult } from "@open-managed-agents/shared";
+import { isSessionExecutionFenceActive } from "@open-managed-agents/session-runtime/execution-lease";
+import { createSqlSessionExecutionLeases } from "@open-managed-agents/session-runtime-sql/execution-lease";
 import {
   createCfShardPoolService,
   createCfTenantShardDirectoryService,
@@ -212,13 +221,13 @@ import integrationsRoutes from "./routes/integrations";
 import { runtimesRoutes, runtimeDaemonRoutes, authenticateRuntimeToken } from "./routes/runtimes";
 import statsRoutes from "./routes/stats";
 import inferenceProxyRoutes from "./routes/inference-proxy";
-import { createCloudflareAccessLossRuntime } from "./lib/mcp-access-loss";
-import mcpProxyRoutes, {
-  createManagedCredentialResolver,
-  resolveProxyTargetByTenant,
-  resolveOutboundCredentialByHost,
-  forwardWithRefresh,
-} from "./routes/mcp-proxy";
+import mcpProxyRoutes, { cfMcpProxyPorts } from "./routes/mcp-proxy";
+import { createManagedCredentialResolver } from "./lib/managed-credential-resolver";
+import {
+  createMcpProxyBinding,
+  forwardMcpProxyRequest,
+  type McpProxyPorts,
+} from "@open-managed-agents/http-routes/proxy";
 import { createBuiltinCapDeviceFlow } from "@open-managed-agents/oma-cap-adapter";
 import {
   resolveGithubCredentials,
@@ -287,8 +296,9 @@ app.on(["GET", "POST"], "/auth/*", async (c) => {
 // Auth info endpoint (public — tells the frontend which providers are enabled
 // and surfaces the Turnstile site key so the Login page can render the widget).
 app.get("/auth-info", (c) => {
+  const policy = resolveAuthEmailPolicy(c.env);
   const providers = listAuthProviders({
-    emailOtp: true,
+    emailOtp: policy.emailAvailable,
     googleClientId: c.env.GOOGLE_CLIENT_ID,
     googleClientSecret: c.env.GOOGLE_CLIENT_SECRET,
     githubClientId: c.env.GITHUB_CLIENT_ID,
@@ -296,6 +306,8 @@ app.get("/auth-info", (c) => {
   });
   return c.json({
     providers,
+    require_email_verification: policy.requireEmailVerification,
+    password_reset: policy.emailAvailable,
     turnstile_site_key: c.env.TURNSTILE_SITE_KEY ?? null,
   });
 });
@@ -304,26 +316,86 @@ app.get("/auth-info", (c) => {
 // callback states fall through to normal Console authentication below.
 app.use("/v1/oma/oauth/callback", buildMcpOAuthCliCallback((context) => managedMcpOAuthCliFor((context as AppCtx).env)));
 
-// Session-scoped credential relay authenticates its own opaque pass, never ambient API credentials.
+// Session-scoped credential relay authenticates the sandbox token
+// (Basic <sessionId>:<token>, scope all or egress), never ambient API credentials.
 app.route("/v1/oma/egress", buildCredentialEgressRoutes(async context => {
   const env = (context as AppCtx).env;
   if (!env.PLATFORM_ROOT_SECRET) throw new Error("Credential relay is not configured");
-  const { createCredentialEgressRelay, createEgressRelayPasses } = await import("@open-managed-agents/managed-credential-resolver");
+  const { createCredentialEgressRelay } = await import("@open-managed-agents/managed-credential-resolver");
+  const store = cfSandboxTokenStore(env);
   return createCredentialEgressRelay({
-    passes: createEgressRelayPasses(env.PLATFORM_ROOT_SECRET, Date.now),
-    findSession: async claims => {
-      const db = await buildCfTenantDbProvider(env).resolve(claims.workspaceId);
-      return new SqlSessionSource(new CfD1SqlClient(db)).find(claims);
-    },
+    authenticate: authorization => authenticateSandboxEgress(store, authorization),
     credentials: {
       outboundTarget: async (scope, hostname) => createManagedCredentialResolver(env, await buildCfTenantDbProvider(env).resolve(scope.workspaceId)).outboundTarget(scope, hostname),
       forward: async (workspaceId, target, send) => createManagedCredentialResolver(env, await buildCfTenantDbProvider(env).resolve(workspaceId)).forward(workspaceId, target, send),
+      sandboxEgress: async (scope, hostname) => createManagedCredentialResolver(env, await buildCfTenantDbProvider(env).resolve(scope.workspaceId)).sandboxEgress(scope, hostname),
     },
     send: request => fetch(request),
+    log: { warn: (fields, message) => logWarn(fields, message) },
   });
 }));
 
+// Sandbox-side Work discovery precedes workspace auth. It reuses the typed
+// channel authority and never treats a Work/admin bearer as model capability.
+app.post("/v1/oma/sessions/:sessionId/execution-channels", async c => {
+  const token = /^Bearer (\S+)$/i.exec(c.req.header("authorization") ?? "")?.[1] ?? "";
+  const { cfWorkAcpExecutionChannelsResult } = await import("./lib/cf-acp-execution-capability");
+  const result = await cfWorkAcpExecutionChannelsResult(c.env, c.req.param("sessionId"), token);
+  if (result.type === "ready") return c.json(result);
+  const status = result.code === "token_rejected" || result.code === "invalid_request" ? 401
+    : result.code === "session_not_found" || result.code === "archived" ? 404
+    : result.code === "model_unavailable" ? 409 : 503;
+  return c.json(result, status);
+});
+
+for (const action of ["startup-boundary", "startup-failed"]) {
+  app.post("/v1/oma/sessions/:sessionId/" + action, async c => {
+    const { cfWorkStartupFailureRoutes } = await import("./lib/cf-work-startup-failure");
+    const route = cfWorkStartupFailureRoutes(c.env);
+    const url = new URL(c.req.url);
+    url.pathname = "/" + encodeURIComponent(c.req.param("sessionId") ?? "") + "/" + action;
+    return route.fetch(new Request(url, c.req.raw));
+  });
+}
+
+app.post("/v1/oma/sessions/:sessionId/work-bootstrap", async c => {
+  const { cfWorkBootstrapRoutes } = await import("./lib/cf-work-bootstrap");
+  const url = new URL(c.req.url);
+  url.pathname = "/" + encodeURIComponent(c.req.param("sessionId") ?? "") + "/work-bootstrap";
+  return cfWorkBootstrapRoutes(c.env).fetch(new Request(url, c.req.raw));
+});
+
+for (const action of ["work-recovery", "work-checkpoint", "work-finalize", "work-publish", "work-failed"]) {
+  app.post("/v1/oma/sessions/:sessionId/" + action, async c => {
+    const { cfWorkFinalizationRoutes } = await import("./lib/cf-work-finalization");
+    const url = new URL(c.req.url);
+    url.pathname = "/" + encodeURIComponent(c.req.param("sessionId") ?? "") + "/" + action;
+    return cfWorkFinalizationRoutes(c.env).fetch(new Request(url, c.req.raw));
+  });
+}
+
+for (const action of ["inputs-read", "inputs-consume"]) {
+  app.post("/v1/oma/sessions/:sessionId/" + action, async c => {
+    const { cfWorkInputRoutes } = await import("./lib/cf-work-inputs");
+    const url = new URL(c.req.url);
+    url.pathname = "/" + encodeURIComponent(c.req.param("sessionId") ?? "") + "/" + action;
+    return cfWorkInputRoutes(c.env).fetch(new Request(url, c.req.raw));
+  });
+}
+
+// Core-owned custom MCP transport, authenticated independently before general
+// workspace auth. The Work sandbox token is checked by the Core authority;
+// the general API-key/cookie middleware must not reject it first.
+app.all("/v1/oma/sessions/:sessionId/custom-tools/:turnId/mcp", async c => {
+  const { cfCoreCustomToolsRoutes } = await import("./lib/cf-core-custom-tools");
+  const url = new URL(c.req.url);
+  url.pathname = `/${encodeURIComponent(c.req.param("sessionId") ?? "")}/custom-tools/${encodeURIComponent(c.req.param("turnId") ?? "")}/mcp`;
+  return cfCoreCustomToolsRoutes(c.env).fetch(new Request(url, c.req.raw));
+});
+
 // API routes (require authentication)
+// Observation authenticates independently, before cookie auth can self-heal.
+app.all(WORK_PHYSICAL_OBSERVATION_ROUTE, c => handleWorkPhysicalObservation(c.req.raw, c.env));
 app.use("/v1/*", authMiddleware);
 app.use("/v1/*", rateLimitMiddleware);
 // Resolve the per-tenant D1 database for this request. Phase 1: returns the
@@ -480,10 +552,16 @@ const managedFilesRoutes = buildManagedFileRoutes((context) => {
   if (blobs === null) {
     throw new Error("FILES_BUCKET binding is required for managed Files");
   }
-  return managedFilesApplicationFor({
-    workspaceId: request.tenant_id,
-    tenantDb: request.tenantDb,
-    blobs,
+  const files = managedFilesApplicationFor({ workspaceId: request.tenant_id, tenantDb: request.tenantDb, blobs });
+  const bucket = (workerEnv as unknown as Env).FILES_BUCKET;
+  if (!bucket) return files;
+  return withPublishedSessionFiles(files, { workspaceId: request.tenant_id, service: request.services.files,
+    outputs: createR2SessionOutputSource(bucket),
+    async read(sessionId, filename) {
+      const object = await bucket.get(sessionOutputsPrefix(request.tenant_id, sessionId) + filename);
+      return object ? { metadata: { filename, mimeType: object.httpMetadata?.contentType ?? guessSessionOutputMime(filename),
+        sizeBytes: object.size, createdAt: object.uploaded.toISOString() }, content: new Uint8Array(await object.arrayBuffer()) } : null;
+    },
   });
 });
 
@@ -511,6 +589,7 @@ function managedMemoriesApplicationFor(ctx: AppCtx) {
   return managedMemoriesApplication(
     ctx.var.tenant_id,
     ctx.var.tenantDb,
+    ctx.env.MEMORY_BUCKET,
     ctx.var.user_id,
   );
 }
@@ -518,12 +597,14 @@ function managedMemoriesApplicationFor(ctx: AppCtx) {
 function managedMemoriesApplication(
   workspaceId: string,
   tenantDb: D1Database,
+  bucket: Env["MEMORY_BUCKET"],
   userId?: string,
 ) {
   const client = new CfD1SqlClient(tenantDb);
   return createCloudflareManagedAgentsApp({
     workspaceId,
     sql: client,
+    memoryContent: cfMemoryContent(bucket),
   }, {
     features: {
       preset: "none",
@@ -919,6 +1000,7 @@ function managedSessionsCompositionFor(ctx: AppCtx): SqlManagedSessionsCompositi
   const services = (ctx.var as unknown as { services: { kv: KvStore } }).services;
   return new SqlManagedSessionsComposition({
     client,
+    workInputs: { sourcePositionsValidated: true, dialect: "sqlite" },
     // Rate limit + daily cap + optional usage-meter port, evaluated by the shared
     // Sessions application before any Session row or work is persisted.
     admission: cfSessionCreateAdmission(ctx.env, services.kv),
@@ -941,7 +1023,7 @@ function managedSessionsCompositionFor(ctx: AppCtx): SqlManagedSessionsCompositi
       },
     }),
     runtime,
-    eventDispatch: new EnvironmentAwareSessionEventDispatchRouter({ runtime }),
+    eventDispatch: new EnvironmentAwareSessionEventDispatchRouter({ runtime, selfHostedWork }),
     eventStream: new EnvironmentAwareSessionEventStreamRouter({
       environments,
       runtime,
@@ -1014,12 +1096,12 @@ registerCfEvalDeps(async (env, tenantId, request) => {
   };
 });
 
-async function managedMcpSources(env: Env, workspaceId: string) {
-  const tenantDb = await buildCfTenantDbProvider(env).resolve(workspaceId);
-  return {
-    sessionSource: new SqlSessionSource(new CfD1SqlClient(tenantDb)),
-    credentialSource: createManagedCredentialResolver(env, tenantDb),
-  };
+async function mcpProxyPortsFor(env: Env, workspaceId: string): Promise<McpProxyPorts> {
+  return cfMcpProxyPorts(
+    env,
+    await buildCfTenantDbProvider(env).resolve(workspaceId),
+    await getCfServicesForTenant(env, workspaceId),
+  );
 }
 
 const managedSessionsRoutes = new Hono<{
@@ -1067,6 +1149,7 @@ const managedRuntimeIngressRoutes = new Hono<{
   const ctx = c as unknown as AppCtx;
   const composition = managedSessionsCompositionFor(ctx);
   const result = await ingestEnvironmentWorkRuntimeEvents({
+    dialect: "sqlite",
     claim: {
       workspaceId: ctx.var.tenant_id,
       environmentId: credential.environmentId,
@@ -1301,6 +1384,7 @@ function managedDreamsApplicationFor(ctx: AppCtx) {
   return createCloudflareManagedAgentsApp({
     workspaceId,
     sql: client,
+    memoryContent: cfMemoryContent(ctx.env.MEMORY_BUCKET),
   }, {
     features: {
       preset: "none",
@@ -1719,33 +1803,15 @@ export default {
 export { RuntimeRoom } from "./runtime-room";
 
 /** True while `fence` still owns its running execution in tenant D1. Main
- * revalidates this before every fenced mutation requested by a SessionDO. */
+ * revalidates this before every fenced mutation requested by a SessionDO.
+ * The shared check (design §0.0 rule 10), scoped to the calling Session. */
 async function cfExecutionFenceActive(
   client: CfD1SqlClient,
   scope: { tenantId: string; sessionId: string },
   fence: import("@open-managed-agents/session-runtime-contract/coordination").SessionExecutionFence,
 ): Promise<boolean> {
-  if (
-    fence.workspaceId !== scope.tenantId
-    || fence.sessionId !== scope.sessionId
-    || !Number.isSafeInteger(fence.generation)
-    || fence.generation < 1
-  ) return false;
-  const active = await client.prepare(
-    `SELECT 1 AS active FROM managed_session_executions
-      WHERE workspace_id = ? AND id = ? AND session_id = ?
-        AND state = 'running' AND attempt_id = ? AND owner_id = ?
-        AND generation = ? AND lease_expires_at_ms > ?`,
-  ).bind(
-    fence.workspaceId,
-    fence.executionId,
-    fence.sessionId,
-    fence.attemptId,
-    fence.ownerId,
-    fence.generation,
-    Date.now(),
-  ).first<{ active: number }>();
-  return active !== null;
+  if (fence.workspaceId !== scope.tenantId || fence.sessionId !== scope.sessionId) return false;
+  return isSessionExecutionFenceActive(createSqlSessionExecutionLeases(client), fence);
 }
 
 /**
@@ -1772,8 +1838,8 @@ async function cfExecutionFenceActive(
  * Local-runtime path (claude-agent-acp daemon) keeps using the public
  * /v1/oma/mcp-proxy/<sid>/<server> HTTP endpoint with apiKey auth — the
  * daemon doesn't have a service binding, so it has to authenticate the
- * old way. Both paths converge on the same `resolveProxyTargetByTenant` +
- * `forwardToUpstream` helpers in routes/mcp-proxy.ts.
+ * old way. Both paths run the same gateway, `@open-managed-agents/http-routes/proxy`
+ * (composed for Cloudflare in routes/mcp-proxy.ts).
  */
 export class McpProxyRpc extends WorkerEntrypoint<Env> {
   async resolveManagedSessionInputs(opts: {
@@ -1829,8 +1895,9 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
 
   /**
    * CLI placeholder environment (cap spec `bootstrap.env`) for a v1 managed
-   * Session's sandbox, from the session's managed `cap_cli` credentials.
-   * Placeholders only; real tokens stay here and are injected at egress.
+   * Session's sandbox, from the session's managed `environment_variable` and
+   * `cap_cli` credentials. Per-Session placeholders only; real values stay
+   * here and are substituted at egress (design §0.1, §8.4).
    * `not_found` means the session is not a managed one.
    */
   async resolveManagedCapCliEnvironment(opts: {
@@ -1931,7 +1998,7 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
       if (this.env.MEMORY_BUCKET === undefined) {
         throw new Error("MEMORY_BUCKET binding is required for Managed Memory snapshots");
       }
-      const memories = managedMemoriesApplication(opts.tenantId, tenantDb)
+      const memories = managedMemoriesApplication(opts.tenantId, tenantDb, this.env.MEMORY_BUCKET)
         .port(managedAgentsPortTokens.memories);
       const snapshots = new ManagedMemorySnapshotMaterializer(memories, {
         getText: async (key) => {
@@ -1983,7 +2050,7 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
     }
     const tenantDb = await buildCfTenantDbProvider(this.env).resolve(opts.tenantId);
     const client = new CfD1SqlClient(tenantDb);
-    const memories = managedMemoriesApplication(opts.tenantId, tenantDb)
+    const memories = managedMemoriesApplication(opts.tenantId, tenantDb, this.env.MEMORY_BUCKET)
       .port(managedAgentsPortTokens.memories);
     const bucket = this.env.MEMORY_BUCKET;
     return synchronizeManagedSessionMemoryWorkspaces(
@@ -2016,6 +2083,41 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
         isFenceActive: (fence) => cfExecutionFenceActive(client, opts, fence),
       },
     );
+  }
+
+  /** ACP model / MCP channels for one SessionDO execution (design §0.6),
+   * over that execution's sandbox token. */
+  async managedAcpExecutionChannels(opts: ManagedAcpExecutionChannelsRequest & { resultFormat: "typed" }): Promise<ManagedAcpExecutionChannelsResult>;
+  async managedAcpExecutionChannels(opts: ManagedAcpExecutionChannelsRequest): Promise<ManagedAcpExecutionChannels>;
+  async managedAcpExecutionChannels(opts: ManagedAcpExecutionChannelsRequest & { resultFormat?: "typed" }): Promise<ManagedAcpExecutionChannelsResult | ManagedAcpExecutionChannels> {
+    return opts.resultFormat === "typed" ? await cfAcpExecutionChannelsResult(this.env, opts) : await cfAcpExecutionChannels(this.env, opts);
+  }
+
+  /** A sandbox token (#561) for the SessionDO's current execution attempt,
+   * appended to the attempt. SessionDO asks once per attempt and shares it
+   * (attemptSandboxTokens); a relay re-delivery asks again. `harness` is the
+   * agent's harness name: it fixes the scope (sandboxHarnessPlacement). */
+  async issueSandboxToken(opts: SandboxTokenIssueRequest & { resultFormat: "typed" }): Promise<SandboxTokenIssueResult>;
+  async issueSandboxToken(opts: SandboxTokenIssueRequest): Promise<string>;
+  async issueSandboxToken(opts: SandboxTokenIssueRequest & { resultFormat?: "typed" }): Promise<string | SandboxTokenIssueResult> {
+    if (opts.resultFormat === "typed") {
+      return await issueCfSandboxTokenResult({
+        store: cfSandboxTokenStore(this.env),
+        legacySession: async (input) => {
+          const services = await getCfServicesForTenant(this.env, input.tenantId);
+          const session = await services.sessions.get({ tenantId: input.tenantId, sessionId: input.sessionId });
+          return session === null ? null : { archivedAt: session.archived_at };
+        },
+        legacyFenceActive: async (input) => isSessionExecutionFenceActive(createSqlSessionExecutionLeases(new CfD1SqlClient(await buildCfTenantDbProvider(this.env).resolve(input.tenantId))), input.attempt),
+        report: (error) => console.error("sandbox_token_authority_unavailable", error),
+      }, opts);
+    }
+    if (opts.attempt.workspaceId !== opts.tenantId || opts.attempt.sessionId !== opts.sessionId) {
+      throw new Error("Sandbox token fence does not name this Session");
+    }
+    return issueSandboxToken(cfSandboxTokenStore(this.env), opts.attempt, {
+      scope: sandboxTokenScopeFor(sandboxHarnessPlacement(opts.harness)),
+    });
   }
 
   async resolveManagedSkillVersion(opts: {
@@ -2067,6 +2169,18 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
     return { type: "published" };
   }
 
+  async managedSessionCanonicalEvents(opts: { workspaceId: string; sessionId: string }): Promise<import("@open-managed-agents/shared").SessionEvent[]> {
+    const db = await buildCfTenantDbProvider(this.env).resolve(opts.workspaceId);
+    const history = await new SqlSessionRuntimeHistorySource(new CfD1SqlClient(db)).load(opts);
+    if (history === null) return [];
+    const { encodeRuntimeHistoryEvent } = await import("@open-managed-agents/managed-agents-adapters-runtime");
+    // Only consumed facts are runtime context. Unconsumed/cancelled queue
+    // inputs remain in the canonical outbox and are never promoted by recovery.
+    return (history.orderedEvents?.map(row => row.event) ?? history.events)
+      .filter(event => event.processedAt != null)
+      .map(event => encodeRuntimeHistoryEvent(event) as import("@open-managed-agents/shared").SessionEvent);
+  }
+
   async managedSessionEventProduced(opts: {
     workspaceId: string;
     sessionId: string;
@@ -2076,6 +2190,7 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
     | { type: "recorded" }
     | { type: "ignored" }
     | { type: "not_found" }
+    | { type: "execution_fence_lost" }
     | { type: "version_conflict" }
   > {
     let raw: unknown;
@@ -2090,7 +2205,7 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
       opts.workspaceId,
     );
     const persistence = new SqlSessionRuntimeProjectionPersistence(
-      new CfD1SqlClient(tenantDb),
+      new CfD1SqlClient(tenantDb), { dialect: "sqlite" },
     );
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const result = await new SessionRuntimeProjectionApplicationService({
@@ -2105,7 +2220,7 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
       });
       if (result.type === "recorded") return { type: "recorded" };
       if (result.type === "not_found") return { type: "not_found" };
-      if (result.type === "execution_fence_lost") return { type: "version_conflict" };
+      if (result.type === "execution_fence_lost") return { type: "execution_fence_lost" };
       // Shared keep-first semantics: the first recorded body stands and the
       // replay is a no-op (persistence already logged the collision).
       if (result.type === "event_id_collision") return { type: "ignored" };
@@ -2147,48 +2262,15 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
     headers: Record<string, string>;
     body: string;
   }> {
-    const services = await getCfServicesForTenant(this.env, opts.tenantId);
-    const { sessionSource, credentialSource } = await managedMcpSources(
-      this.env,
-      opts.tenantId,
-    );
-    const target = await resolveProxyTargetByTenant(
-      this.env,
-      services,
-      opts.tenantId,
-      opts.sessionId,
-      opts.serverName,
-      sessionSource,
-      credentialSource,
-    );
-    if (!target) {
-      return {
-        status: 403,
-        headers: { "content-type": "application/json" },
-        body: '{"error":"forbidden"}',
-      };
-    }
-    const inboundHeaders = new Headers(opts.headers);
-    const tenantDb = await buildCfTenantDbProvider(this.env).resolve(opts.tenantId);
-    const accessLossHooks = await bindAccessLossHooks(
-      createCloudflareAccessLossRuntime(this.env, tenantDb),
-      {
-        workspaceId: opts.tenantId,
-        sessionId: opts.sessionId,
-        serverName: opts.serverName,
-        requestBody: opts.body,
-      },
-    );
-    const res = await forwardWithRefresh(
-      services,
-      opts.tenantId,
-      target,
-      opts.method,
-      inboundHeaders,
-      opts.body,
-      { sessionId: opts.sessionId, serverName: opts.serverName, callerKind: "rpc-mcp" },
-      accessLossHooks,
-    );
+    const res = await forwardMcpProxyRequest(await mcpProxyPortsFor(this.env, opts.tenantId), {
+      workspaceId: opts.tenantId,
+      sessionId: opts.sessionId,
+      serverName: opts.serverName,
+      method: opts.method,
+      headers: new Headers(opts.headers),
+      body: async () => opts.body,
+      callerKind: "rpc-mcp",
+    });
     const respHeaders: Record<string, string> = {};
     res.headers.forEach((v, k) => {
       respHeaders[k] = v;
@@ -2207,13 +2289,11 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
    *   - `x-oma-tenant`
    *   - `x-oma-session`
    *   - `x-oma-mcp-server`
-   * We resolve the vault credential by `serverName` (mirrors the legacy
-   * `mcpForward` path so inline `authorization_token` still works),
-   * strip the metadata, replace the `authorization` header with the
-   * upstream bearer, and forward to the URL the agent's transport
-   * already knew (request URL is the upstream URL). Body / response
-   * status / response headers (including rotated `Mcp-Session-Id`)
-   * stream through unchanged.
+   * The shared gateway resolves the Vault credential by `serverName`
+   * (inline `authorization_token` still works), withholds the metadata and
+   * the caller's own credentials, injects the upstream bearer, and forwards.
+   * Body / response status / response headers (including rotated
+   * `Mcp-Session-Id`) stream through unchanged.
    *
    * Vault credentials remain main-only — agent worker only sees the
    * Response. The official SDK transport handles Streamable-HTTP session
@@ -2222,116 +2302,37 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
    * preceded this dropped session ids and broke session-ful servers
    * (Notion's tools/list never returned, hanging the whole turn).
    *
-   * 401-refresh-and-retry: handled by `forwardWithRefresh` (shared with
-   * the legacy mcpForward + HTTP /v1/oma/mcp-proxy paths). When the first
-   * upstream response is 401 AND the resolved credential carries
-   * `mcp_oauth` refresh metadata (refresh_token + token_endpoint), we
-   * hit the token_endpoint, persist the rotated tokens back to D1, and
-   * retry the upstream call once with the fresh bearer. Request body
-   * is buffered up-front so the retry can replay it.
+   * A 401 from a refreshable credential is refreshed and retried once, with
+   * the request body buffered up front so the retry can replay it.
    */
   async fetch(request: Request): Promise<Response> {
-    const tenantId = request.headers.get("x-oma-tenant");
-    const sessionId = request.headers.get("x-oma-session");
-    const serverName = request.headers.get("x-oma-mcp-server");
-    if (!tenantId || !sessionId || !serverName) {
-      return new Response(
-        '{"error":"missing x-oma-tenant / x-oma-session / x-oma-mcp-server header"}',
-        { status: 400, headers: { "content-type": "application/json" } },
-      );
-    }
-    const services = await getCfServicesForTenant(this.env, tenantId);
-    const { sessionSource, credentialSource } = await managedMcpSources(
-      this.env,
-      tenantId,
-    );
-    const agentId = request.headers.get("x-oma-agent-id");
-    const agentVersion = request.headers.get("x-oma-agent-version");
-    if ((agentId === null) !== (agentVersion === null) || (agentVersion !== null && (!/^\d+$/.test(agentVersion) || Number(agentVersion) < 1))) {
-      return Response.json({ error: "forbidden" }, { status: 403 });
-    }
-    const target = await resolveProxyTargetByTenant(
-      this.env,
-      services,
-      tenantId,
-      sessionId,
-      serverName,
-      sessionSource,
-      credentialSource,
-      agentId !== null && agentVersion !== null ? { id: agentId, version: Number(agentVersion) } : undefined,
-    );
-    if (!target) {
-      return new Response('{"error":"forbidden"}', {
-        status: 403,
-        headers: { "content-type": "application/json" },
-      });
-    }
-    // Strip routing metadata before forwarding upstream. Everything else
-    // (Mcp-Session-Id, content-type, accept, …) flows through.
-    // forwardWithRefresh injects/replaces Authorization itself.
-    const inboundHeaders = new Headers(request.headers);
-    inboundHeaders.delete("x-oma-tenant");
-    inboundHeaders.delete("x-oma-session");
-    inboundHeaders.delete("x-oma-mcp-server");
-    // Buffer body so forwardWithRefresh can replay on a 401-then-refresh
-    // retry. MCP request bodies are JSON-RPC envelopes — sub-KB in
-    // practice — so the buffering cost is negligible. Response body is
-    // unaffected and still streams back.
-    const body = ["GET", "HEAD"].includes(request.method)
-      ? null
-      : await request.arrayBuffer();
-    const tenantDb = await buildCfTenantDbProvider(this.env).resolve(tenantId);
-    const accessLossHooks = await bindAccessLossHooks(
-      createCloudflareAccessLossRuntime(this.env, tenantDb),
-      {
-        workspaceId: tenantId,
-        sessionId,
-        serverName,
-        requestBody: mcpRequestBodyText(body),
-      },
-    );
-    return forwardWithRefresh(
-      services,
-      tenantId,
-      target,
-      request.method,
-      inboundHeaders,
-      body,
-      { sessionId, serverName, callerKind: "rpc-mcp" },
-      accessLossHooks,
-    );
+    return createMcpProxyBinding((workspaceId) => mcpProxyPortsFor(this.env, workspaceId)).fetch(request);
   }
 
   /** Native outbound adapter transport for the shared HTTPS relay core.
-   * Only requests and responses cross this boundary, never Vault tokens. */
-  async credentialEgress(scope: {
-    tenantId: string; sessionId: string;
-    runtimeFence?: { environmentId: string; workId: string; ownerId: string; generation: number; token: string };
-  }, action: "resolve" | "forward", request: Request): Promise<Response> {
-    const { createCredentialEgressRelay, createEgressRelayPasses } = await import("@open-managed-agents/managed-credential-resolver");
+   * The binding's sandbox token (its digest: binding params are stored) is
+   * the authority, checked like the E2B / Node relay's (#561): 401 once the
+   * token is not current, 503 when it cannot be checked. Only requests and
+   * responses cross this boundary, never Vault tokens. */
+  async credentialEgress(scope: { tenantId: string; sessionId: string; tokenSha256?: string }, action: "resolve" | "forward", request: Request): Promise<Response> {
+    const { createCredentialEgressCore, credentialEgressDenied } = await import("@open-managed-agents/managed-credential-resolver");
     if (!this.env.PLATFORM_ROOT_SECRET) return new Response("Credential relay unavailable", { status: 503 });
-    const fence = scope.runtimeFence === undefined ? null : {
-      workspaceId: scope.tenantId, sessionId: scope.sessionId, ...scope.runtimeFence, expiresAt: new Date(0).toISOString(),
-    };
-    const fences = new SqlRuntimeResourceFencePort(new CfD1SqlClient(this.env.MAIN_DB));
-    if (fence !== null && !await fences.isCurrent(fence)) return new Response("Credential relay denied", { status: 403 });
+    const store = cfSandboxTokenStore(this.env);
+    const authorize = () => authenticateSandboxEgressSha256(store, { workspaceId: scope.tenantId, sessionId: scope.sessionId, tokenSha256: scope.tokenSha256 });
+    const denied = (decision: Exclude<Awaited<ReturnType<typeof authorize>>, { type: "accepted" }>) =>
+      decision.type === "unavailable" ? new Response("Credential relay unavailable", { status: 503 }) : credentialEgressDenied(401);
+    const first = await authorize();
+    if (first.type !== "accepted") return denied(first);
     const db = await buildCfTenantDbProvider(this.env).resolve(scope.tenantId);
-    const passes = createEgressRelayPasses(this.env.PLATFORM_ROOT_SECRET, Date.now);
-    const relay = createCredentialEgressRelay({
-      passes, credentials: createManagedCredentialResolver(this.env, db),
-      findSession: async claims => {
-        if (fence !== null && !await fences.isCurrent(fence)) return null;
-        return new SqlSessionSource(new CfD1SqlClient(db)).find(claims);
-      },
-      send: req => fetch(req),
-    });
-    return relay.handle(action, new Request(`https://credential-relay.invalid/v1/oma/egress/${action}`, {
-      method: "POST", headers: {
-        authorization: `Bearer ${await passes.issue({ workspaceId: scope.tenantId, sessionId: scope.sessionId, ttlMs: 60000 })}`,
-        "x-oma-egress-target": request.url, "x-oma-egress-method": request.method,
-        "x-oma-egress-headers": JSON.stringify(Object.fromEntries(request.headers)),
-      }, body: action === "forward" && !["GET", "HEAD"].includes(request.method) ? await request.arrayBuffer() : null,
-    }));
+    const body = action === "forward" && !["GET", "HEAD"].includes(request.method) ? await request.arrayBuffer() : null;
+    // Re-check after buffering, immediately before injecting.
+    const decision = await authorize();
+    if (decision.type !== "accepted") return denied(decision);
+    const core = createCredentialEgressCore({ credentials: createManagedCredentialResolver(this.env, db), send: req => fetch(req), log: { warn: (fields, message) => logWarn(fields, message) } });
+    const egressScope = { workspaceId: scope.tenantId, sessionId: scope.sessionId, vaultIds: decision.scope.vaultIds };
+    return action === "resolve"
+      ? core.resolve(egressScope, request.url)
+      : core.forward(egressScope, { target: request.url, method: request.method, headers: request.headers, body });
   }
 
   /**
@@ -2353,32 +2354,15 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
     sessionId: string;
     hostname: string;
     pathname: string;
-    runtimeFence?: {
-      environmentId: string;
-      workId: string;
-      ownerId: string;
-      generation: number;
-      token: string;
-    };
+    /** The outbound binding's sandbox token digest (credentialEgress). */
+    tokenSha256?: string;
   }): Promise<{ scheme: "Basic" | "Bearer"; token: string; slug: string } | null> {
-    const fence = opts.runtimeFence === undefined
-      ? null
-      : {
-          workspaceId: opts.tenantId,
-          environmentId: opts.runtimeFence.environmentId,
-          sessionId: opts.sessionId,
-          workId: opts.runtimeFence.workId,
-          ownerId: opts.runtimeFence.ownerId,
-          generation: opts.runtimeFence.generation,
-          token: opts.runtimeFence.token,
-          expiresAt: new Date(0).toISOString(),
-        };
-    const runtimeFences = fence === null
-      ? null
-      : new SqlRuntimeResourceFencePort(new CfD1SqlClient(this.env.MAIN_DB));
-    if (fence !== null && !await runtimeFences!.isCurrent(fence)) {
-      throw new Error("stale runtime credential-egress fence");
-    }
+    // Only for a current sandbox token (design §0.0 rule 10, #561); a token
+    // that cannot be checked fails the lookup (the handler answers 502).
+    const authorize = () => authenticateSandboxEgressSha256(cfSandboxTokenStore(this.env), { workspaceId: opts.tenantId, sessionId: opts.sessionId, tokenSha256: opts.tokenSha256 });
+    const decision = await authorize();
+    if (decision.type === "unavailable") throw new Error("sandbox token could not be checked");
+    if (decision.type === "rejected") return null;
     const tenantDb = await buildCfTenantDbProvider(this.env).resolve(opts.tenantId);
     const client = new CfD1SqlClient(tenantDb);
     const sessionSource = new SqlSessionSource(client);
@@ -2410,9 +2394,7 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
             pathname: opts.pathname,
           },
         );
-    if (fence !== null && !await runtimeFences!.isCurrent(fence)) {
-      throw new Error("stale runtime credential-egress fence");
-    }
+    if ((await authorize()).type !== "accepted") return null;
     return credential;
   }
 

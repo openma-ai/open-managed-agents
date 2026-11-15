@@ -72,7 +72,12 @@ export function openmaToGuiEvent(openma: OpenMAEvent): Event {
   const text = typeof data.text === "string" ? data.text : undefined;
 
   const gui: Event = toGuiEvent(stripCmaFields({
-    type: openma.type,
+    // Common intentionally wraps extension events as vendor.event. Restore
+    // only our existing thread lifecycle names for the Console selector; all
+    // other vendor events keep their canonical wrapper.
+    type: openma.type === "vendor.event" && typeof data.name === "string"
+      && ["session.thread_created", "session.thread_status_running", "session.thread_status_idle", "session.thread_status_terminated"].includes(data.name)
+      ? data.name : openma.type,
     id: openma.event_id,
     event_id: openma.event_id,
     session_id: openma.session_id,

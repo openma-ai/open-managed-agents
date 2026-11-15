@@ -3,7 +3,6 @@ import {
   resolveApplicationPort,
   type ApplicationPortSource,
 } from "../application-port-source";
-import { AGENT_MEMORY_BETA, requireBeta } from "../beta";
 import {
   deletedMemoryStoreResponseSchema,
   memoryStoreCreateBodySchema,
@@ -35,7 +34,6 @@ export function buildMemoryStoreRoutes(
   source: ApplicationPortSource<MemoryStoresApplicationPort>,
 ): Hono {
   const app = new Hono();
-  app.use("*", requireBeta(AGENT_MEMORY_BETA));
 
   app.post("/", async (c) => {
     let body: unknown;

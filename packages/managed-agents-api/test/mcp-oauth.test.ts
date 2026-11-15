@@ -12,6 +12,7 @@ function harness() {
   const credentials = new CredentialsApplicationService({
     workspaceId: "ws_1", store,
     vaults: { find: async ({ vaultId }) => vaultId === "vlt_1" ? { id: vaultId, archivedAt: null, createdAt: "", displayName: "v", metadata: {}, updatedAt: "" } : null },
+    cliCatalog: { has: () => false },
     validation: { validate: async () => { throw new Error("unused"); } },
     clock: { now: () => new Date("2026-09-01T00:00:00.000Z") },
     ids: { nextCredentialId: () => `cred_${++ids}` },

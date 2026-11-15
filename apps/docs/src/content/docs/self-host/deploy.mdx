@@ -1,26 +1,29 @@
 ---
 title: Deploy
-description: One command takes you from clone to a working CF deployment in ~5 minutes.
+description: Provision and deploy a self-hosted Cloudflare stack with the existing setup command.
 ---
 
-import { Steps, Tabs, TabItem, Aside, LinkCard } from '@astrojs/starlight/components';
+import { Steps, Aside, LinkCard } from '@astrojs/starlight/components';
 
-`scripts/setup-cf.sh` is an interactive wizard that provisions every Cloudflare resource, patches the wrangler files, sets secrets, applies migrations, and deploys the three workers. Plan on ~5 minutes hands-on, plus a few minutes of network-bound waits.
+The [deployment wizard](https://openma.ai/deploy) generates a clone/install/setup command for Cloudflare. It runs the same `pnpm setup:cloudflare` entry point described below; it is not a separate hosted installer. The script provisions remote resources, edits local Wrangler configs, applies migrations, sets secrets, builds Console, and deploys three public Workers. Cloudflare permissions, enabled services, network and container build times affect completion.
 
 ## Prerequisites
 
-- Node 22+, `pnpm` 10+
-- A Cloudflare account on the **Workers Paid** plan ($5/mo — required for Durable Objects + R2)
-- `wrangler` logged in (`npx wrangler login`)
-- An Anthropic API key (or OpenAI / compatible provider via a model card later)
+- **Node 24.x and pnpm 11.0.8**, matching the repository's `engines` and `packageManager` fields.
+- Bash, `jq`, and `openssl` on your PATH.
+- **Docker installed and its daemon running**: the agent Worker configuration builds a sandbox Dockerfile.
+- A Cloudflare account with Workers Paid and access to the services used by the checked-in configuration: D1, KV, R2, Queues, Durable Objects, Containers, Workers AI, Analytics Engine and Email Sending. Account permissions and service availability must be checked in your account; the script does not validate plan entitlements in advance.
+- Repository dependencies installed with `pnpm install`, and Wrangler authenticated with `npx wrangler login` (or a suitably scoped API token).
 
-You do **not** need a custom domain to start — workers default to `*.workers.dev` URLs.
+A custom domain is not required. Keep `workers.dev` enabled: setup captures actual deployment URLs rather than deriving them from an account ID.
 
-## Three commands
+**A model key is not required to deploy.** The default is to configure a Model Card in Console after login (for example, a compatible MiniMax endpoint with its provider credentials). Quick setup never asks for or uploads model keys, even if `ANTHROPIC_API_KEY` exists in the environment. Existing Worker model secrets are left untouched; they do not imply that a workspace Model Card has been created. Never paste credentials into the public deployment wizard or commit them to Git.
+
+## Clone → setup → Console
 
 <Steps>
 
-1. **Clone, install, login.**
+1. **Install and authenticate.**
 
    ```bash
    git clone https://github.com/openma-ai/open-managed-agents.git
@@ -29,118 +32,93 @@ You do **not** need a custom domain to start — workers default to `*.workers.d
    npx wrangler login
    ```
 
-2. **Run the setup wizard.**
+   If your login has multiple Cloudflare accounts, select one explicitly:
 
    ```bash
-   ./scripts/setup-cf.sh
+   export CLOUDFLARE_ACCOUNT_ID=your_32_character_account_id
    ```
 
-   The wizard:
+2. **Run the existing setup command.**
 
-   1. Creates 2 D1 databases (`openma-auth`, `openma-integrations`)
-   2. Creates 1 KV namespace (`CONFIG_KV`)
-   3. Creates 4 R2 buckets (`managed-agents-files`, `-workspace`, `-memory`, `-backups`)
-   4. Splices the captured IDs into `apps/{main,agent,integrations}/wrangler.jsonc` (preserving comments)
-   5. Sets secrets — auto-generates `BETTER_AUTH_SECRET`, `API_KEY`, `INTEGRATIONS_INTERNAL_SECRET`, `PLATFORM_ROOT_SECRET`; prompts for `ANTHROPIC_API_KEY`
-   6. Applies migrations (one consolidated file per D1)
-   7. Deploys main + agent + integrations
-   8. Wires the R2 → memory-events queue notification
+   ```bash
+   pnpm setup:cloudflare
+   ```
 
-   It's idempotent: rerunning detects existing resources via `wrangler d1/kv list` and reuses their IDs. Secrets are skipped if already set unless you pass `--reset-secrets`.
+   Confirm remote provisioning/public deployment. There is no model-key prompt: first register/login, then create a Model Card inside your own workspace.
 
-3. **Open the Console.**
+   For automation, authorize the same actions explicitly:
 
-   The main worker prints its `*.workers.dev` URL on deploy. Sign up — your first user becomes the owner of a fresh tenant. Everything works against the *.workers.dev URLs out of the box.
+   ```bash
+   pnpm setup:cloudflare --yes
+   ```
+
+   No input terminal without `--yes` fails with instructions rather than waiting for secrets on stdin. Automation also leaves workspace model configuration to Console after login.
+
+   Setup:
+   - Creates/reuses two D1 databases (`openma-auth` and `openma-integrations`), one KV namespace (`CONFIG_KV`), four R2 buckets (files, workspace, memory, backups), and both queues (`managed-agents-memory-events` and its `-dlq`) before deploying consumers.
+   - Patches the top-level `MAIN_DB`, `INTEGRATIONS_DB` and `CONFIG_KV` bindings, preserving JSONC comments and hosted environment overlays.
+   - Applies remote D1 migrations and preserves existing secrets by default.
+   - Builds Console and uses temporary sibling configs to break service-binding cycles on new Workers. Main exports the cross-Worker DO/RPC interfaces before the agent deploys; final deployments restore the configured services.
+   - Captures the integrations URL from Wrangler's receipt and writes `INTEGRATIONS_ORIGIN` / `GATEWAY_ORIGIN`, then wires memory-bucket events to the queue.
+
+3. **Verify the deployment, then sign in and configure a model.**
+
+   Use the printed **Console URL**. These are separate checks:
+   1. **Deployment commands succeeded:** all build/deploy/notification commands exited successfully. This does not prove login or model execution.
+   2. **Health:** request `<Console URL>/health` and check the response.
+   3. **Registration/login:** register with email and password and verify a session in the browser. Registration creates the user's own workspace with owner membership, not a deployment-wide administrator. OAuth is optional. Keep cookies host-scoped on `workers.dev`; do not copy a hosted `AUTH_COOKIE_DOMAIN` into your self-host config.
+   4. **First real model task:** create a Model Card with your provider's endpoint/model/credentials, select it on an agent, and run a real session. Provider connectivity and billing are not tested by setup.
+
+   <Aside type="caution" title="CF email verification is a separate requirement">
+     The intended quick path is ordinary email/password registration without SMTP or verification codes, followed by your own workspace and a Console Model Card. CF auth now defaults to no email verification when `SEND_EMAIL` is absent, and preserves verification by default when it is present. `AUTH_REQUIRE_EMAIL_VERIFY=0` or `1` explicitly selects the policy; `1` without a sender is a configuration error. Public auth-info exposes verification/password-reset capabilities to Console. This has not been validated in a real deployed browser session. The top-level configuration currently includes `SEND_EMAIL`, which counts as an enabled sender and retains verification by default. Setup does not remove this binding or infer whether an existing operator intended to enable mail. Its default sender uses the hosted project's domain, which your account may not be authorized to send from. Do not assume login works from a successful deploy. Explicitly enabled verification must remain enabled; setup does not disable auth, registration, or an existing verification policy. Without a configured mail sender, do not rely on email password recovery. Workspace owner/admin/member roles and invitation links are existing features, not deployment-wide administrator accounts.
+   </Aside>
 
 </Steps>
 
+## Reruns and recovery
+
+Resource lookup refuses ambiguous same-name matches instead of choosing the first. Check the account selection and resolve duplicate resources manually. Existing Worker secret values cannot be read back from Cloudflare.
+
+- A failed secret-list or deployment-status request stops setup; it is not treated as an empty Worker.
+- Existing secrets are preserved. If a shared secret exists on only some Workers, setup refuses to generate a different value for the rest. Recover and export the **same original** `PLATFORM_ROOT_SECRET` or `INTEGRATIONS_INTERNAL_SECRET` from your secret manager, then rerun to fill missing copies. Setup cannot verify that an exported value matches an unreadable existing value.
+- Keep generated/shared values in your own secure recovery process. Setup does not print or save the generated root secret; if a partial secret write fails and you have no original value, stop and plan recovery rather than resetting a populated deployment.
+- `--reset-secrets` replaces encryption/auth material and can make stored credentials unreadable. It requires a separate typed interactive confirmation; `--yes` is not reset authorization.
+- `--skip-secrets` leaves secret correctness to the operator; it does not prove that required secrets are present or consistent.
+- `--no-deploy` **is not a dry-run**: it still creates remote resources, modifies local configs, applies migrations and sets secrets. It skips Console build/deployment and R2 notification wiring; run setup again without that flag to finish.
+
+Failures stop the current phase without announcing completion. Already-created resources, migrations or bootstrap deployments are not rolled back. A bootstrap Worker may temporarily lack service bindings until a successful rerun. Inspect the failing command and do not send production traffic until final deployment and verification are complete.
+
 ## Optional follow-ups
 
-### Custom domain
+### Advanced workspace-bound model automation
 
-If you have a domain on this Cloudflare account, set up routes in each `apps/*/wrangler.jsonc`:
+After registration/login, the existing `scripts/bootstrap-model-card.mjs` can automate model-card creation with an **explicit API key for the intended workspace**. It queries `/me` to determine that credential's tenant before creating a card. Quick setup does not invoke it, select a default workspace, or assign a model to the first person who registers. Console is the recommended quick path.
 
-```jsonc
-"routes": [
-  { "pattern": "app.yourdomain.com", "custom_domain": true }
-]
-```
+### Custom domains
 
-Then redeploy:
-
-```bash
-npx wrangler deploy --config apps/main/wrangler.jsonc
-npx wrangler deploy --config apps/agent/wrangler.jsonc
-npx wrangler deploy --config apps/integrations/wrangler.jsonc
-```
-
-DNS records auto-create on first deploy with a custom domain (cert provisioning ~1 min).
+Configure routes in the relevant `apps/*/wrangler.jsonc`. Update `INTEGRATIONS_ORIGIN` and `GATEWAY_ORIGIN` to your chosen public integrations origin and redeploy the affected Workers. Verify redirects and cookies on the actual Console origin. Setup's automatic URL discovery targets `workers.dev`, not custom-domain selection.
 
 ### Slack / GitHub / Linear OAuth
 
-Skip if you only want bare agent functionality. To enable them:
+Console email/password sign-in does not require these integrations. Configure provider secrets only when enabling an integration; see [OAuth Apps](/self-host/oauth-apps/).
+
+### Redeploy code changes
 
 ```bash
-# Per provider — see the dashboard maze in oauth-apps.mdx
-npx wrangler secret put LINEAR_CLIENT_ID --config apps/integrations/wrangler.jsonc
-npx wrangler secret put LINEAR_CLIENT_SECRET --config apps/integrations/wrangler.jsonc
-# ... and so on for GITHUB_*, SLACK_*
-```
-
-Then redeploy `apps/integrations/`.
-
-See [OAuth Apps](/self-host/oauth-apps/) for the per-provider walkthrough.
-
-### Staging environment
-
-The wrangler files include `env.staging` overlays preconfigured against openma.ai's staging DB IDs. To use these for **your** staging deployment, you'd need to create a parallel set of staging DBs and patch those IDs in. Most self-hosters don't need this — `--env staging` is primarily for openma.ai itself.
-
-```bash
-npx wrangler deploy --config apps/main/wrangler.jsonc --env staging
-```
-
-### Multi-shard scaling
-
-The default deployment is single-D1: every tenant lives in one `openma-auth` D1. Code auto-detects this via the absence of `AUTH_DB_01` binding and skips the shard router entirely. If you need horizontal scaling later (10K+ tenants), the multi-shard mode lives in `env.production` overlay — see [Operations → Multi-shard](/self-host/operations/#multi-shard).
-
-## Redeploy after code changes
-
-```bash
-npx wrangler deploy --config apps/main/wrangler.jsonc
-npx wrangler deploy --config apps/agent/wrangler.jsonc
+pnpm build:console
 npx wrangler deploy --config apps/integrations/wrangler.jsonc
+npx wrangler deploy --config apps/agent/wrangler.jsonc
+npx wrangler deploy --config apps/main/wrangler.jsonc
 ```
 
-You can run any subset — e.g. iterate on agent code with just `apps/agent` redeploys.
+This assumes an already initialized stack with valid origins and service targets. For a fresh account or interrupted setup, use `pnpm setup:cloudflare` rather than deploying placeholder configs directly.
 
-## Troubleshooting
+### Staging and multi-shard
 
-<Aside type="tip" title="Idempotent setup">
-  `scripts/setup-cf.sh` is safe to rerun. If it failed partway, run it again — it picks up where it left off.
-</Aside>
-
-<Aside type="caution" title="`<set-by-setup-cf-sh>` placeholders">
-  The wrangler files ship with `<set-by-setup-cf-sh>` placeholders. The setup wizard fills them in. If you skip the wizard and try to `wrangler deploy` directly, deploys will fail until you replace the placeholders manually.
-</Aside>
-
-<Aside type="caution" title="Workers Paid plan required">
-  Free-tier accounts can't bind Durable Objects or R2 buckets. The setup wizard fails fast with a clear error in this case.
-</Aside>
+Setup only patches the top-level self-host configuration. Hosted `env.staging` / `env.production` overlays contain project-specific IDs and must not be used unchanged for your account. See [Operations](/self-host/operations/) for custom deployment and multi-shard administration.
 
 ## Where to go next
 
-<LinkCard
-  title="OAuth Apps"
-  href="/self-host/oauth-apps/"
-  description="Register Linear, GitHub, Slack apps step-by-step."
-/>
-<LinkCard
-  title="Operations"
-  href="/self-host/operations/"
-  description="Custom domains, observability, multi-shard scaling, troubleshooting."
-/>
-<LinkCard
-  title="Configuration reference"
-  href="/reference/configuration/"
-  description="Full list of env vars, bindings, schemas."
-/>
+<LinkCard title="OAuth Apps" href="/self-host/oauth-apps/" description="Register optional integration apps." />
+<LinkCard title="Operations" href="/self-host/operations/" description="Domains, observability and deployment operations." />
+<LinkCard title="Configuration reference" href="/reference/configuration/" description="Environment variables, bindings and schemas." />

@@ -18,13 +18,16 @@ export interface PostgresDatabaseOptions {
 export async function openPostgresDatabase(options: PostgresDatabaseOptions): Promise<NodeDatabase> {
   const { url } = options;
   const sql = await createPostgresSqlClient(url);
-  const db = drizzle(postgres(url));
+  const driver = postgres(url);
+  const db = drizzle(driver);
+  let stopped:Promise<void>|undefined;
   const u = new URL(url);
   return {
     dialect: "postgres",
     sql,
     drizzle: db as unknown as OmaDb<Record<string, unknown>>,
     description: `postgres ${u.hostname}:${u.port || 5432}${u.pathname}`,
+    stop:()=>stopped??=(async()=>{await driver.end();await sql.close();})(),
     applyMigrations: async (migrationsFolder) => {
       await migrate(db, { migrationsFolder });
     },

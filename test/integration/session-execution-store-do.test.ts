@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { env, exports } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, afterEach } from "vitest";
 import {
   ensureSessionExecutionCoordinatorSchema,
   SqlSessionExecutionStore,
@@ -22,7 +22,7 @@ it('broadcasts each consumed input once when canonical and local-only rows share
   await runInDurableObject(freshDoStub(), async (instance) => {
     instance.ensureSchema();
     const sessionId = crypto.randomUUID();
-    instance._state = { tenant_id: 'default', session_id: sessionId };
+    instance.setState({ ...instance.state, tenant_id: 'default', session_id: sessionId });
     const sql = new CfD1SqlClient(env.MAIN_DB);
     const inputs = ['canonical', 'local-only'].map(id => ({
       id, type: 'user.message', content: [{ type: 'text', text: id }],
@@ -46,9 +46,24 @@ it('broadcasts each consumed input once when canonical and local-only rows share
   });
 });
 
+const ownedStubs: DurableObjectStub[] = [];
+afterEach(async () => {
+  for (const stub of ownedStubs.splice(0)) {
+    await runInDurableObject(stub, async (room, state) => {
+      await room._recoveryPromise;
+      await room._recoveryRun;
+      await room._finalizePromise;
+      await Promise.all(room._maintenanceRuns.values());
+      await state.storage.deleteAlarm();
+    });
+  }
+});
+
 function freshDoStub(fixtureId = `case_${++fixtureSerial}`) {
   const id = `execution_store_${fixtureRunId}_${fixtureId}`;
-  return env.SESSION_DO.get(env.SESSION_DO.idFromName(id));
+  const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(id));
+  ownedStubs.push(stub);
+  return stub;
 }
 
 describe("SessionExecutionStorePort on Durable Object SQLite", () => {
@@ -146,11 +161,11 @@ it('SessionDO crash after takeSteeringInputs commits cannot leave S completed bu
     }
     const claimed = await store.claim({ workspaceId, sessionId, ownerId: 'dead-do', attemptId: 'a', claimedAt: at(2), leaseTtlMs: 30_000 });
     expect(claimed.type).toBe('claimed');
-    instance._state = { tenant_id: workspaceId, session_id: sessionId };
+    instance.setState({ ...instance.state, tenant_id: workspaceId, session_id: sessionId });
     instance._executionStore = store;
     instance._executionStoreReady = Promise.resolve();
     instance._executionFences.set('sthr_primary', claimed.fence);
-    instance.processedClock = { nowIso: () => at(3) };
+    instance.processedClock.nowIso = () => at(3);
     instance.broadcastEvent = () => {};
     instance.consumeAcceptedInputs = async () => { throw new Error('injected crash before re-emit'); };
     await expect(instance.takeSteeringInputs('sthr_primary')).rejects.toThrow('injected crash');

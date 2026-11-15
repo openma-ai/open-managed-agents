@@ -48,6 +48,16 @@ export interface BearerTokenRequest {
   path: string;
 }
 
+/** The sandbox token check (@open-managed-agents/sandbox-gateway
+ * authenticateSandboxTokenRequest), seen structurally: `absent` = the request
+ * carries no sandbox token; `rejected` = 401; `unavailable` = could not be
+ * checked (database error) = 503, never 401. */
+export type SandboxTokenAuthDecision =
+  | { type: "absent" }
+  | { type: "accepted"; resolution: ApiKeyResolution; transport: "bearer" | "x-api-key" | "basic" }
+  | { type: "rejected" }
+  | { type: "unavailable"; error: unknown };
+
 export interface AuthMiddlewareDeps {
   /** True bypasses auth entirely; tenant_id="default". */
   disabled: boolean;
@@ -60,6 +70,9 @@ export interface AuthMiddlewareDeps {
   resolveBearerToken?(
     request: BearerTokenRequest,
   ): Promise<ApiKeyResolution | null>;
+  /** Sandbox token (bearer / x-api-key / Basic), checked before any other
+   * credential. Throwing = unavailable (503). */
+  resolveSandboxToken?(request: { headers: Headers; method: string; path: string }): Promise<SandboxTokenAuthDecision>;
   /** Look up the user's default tenant (first membership by created_at). */
   defaultTenantForUser(userId: string): Promise<string | null>;
   /** Validate (user, tenant) membership — used for x-active-tenant. */
@@ -124,18 +137,29 @@ function authorizationFailure(path: string, message: string) {
   return { error: message };
 }
 
+/** Thrown by a resolver that could not check (database error): 503. */
+class CredentialCheckUnavailable extends Error {}
+
 async function resolvePresentedApiCredential(
   deps: AuthMiddlewareDeps,
   input: BearerTokenRequest & { transport: "bearer" | "x-api-key" },
 ): Promise<ApiKeyResolution | null> {
-  const scoped = deps.resolveBearerToken === undefined
-    ? null
-    : await deps.resolveBearerToken({
-        token: input.token,
-        method: input.method,
-        path: input.path,
-      });
+  let scoped: ApiKeyResolution | null = null;
+  if (deps.resolveBearerToken !== undefined) {
+    try {
+      scoped = await deps.resolveBearerToken({ token: input.token, method: input.method, path: input.path });
+    } catch (error) {
+      throw new CredentialCheckUnavailable(error instanceof Error ? error.message : "credential check failed");
+    }
+  }
   return scoped ?? await deps.resolveApiKey(input.token);
+}
+
+function unavailable() {
+  return new Response(JSON.stringify({ error: "Credential could not be checked" }), {
+    status: 503,
+    headers: { "content-type": "application/json", "retry-after": "1" },
+  });
 }
 
 async function applyResolvedCredential(
@@ -190,6 +214,26 @@ export function createAuthMiddleware(deps: AuthMiddlewareDeps) {
       return next();
     }
 
+    // 0. Sandbox token: its own Session/route check; never falls back to
+    // other credentials once presented.
+    if (deps.resolveSandboxToken !== undefined) {
+      let sandbox: SandboxTokenAuthDecision;
+      try {
+        sandbox = await deps.resolveSandboxToken({ headers: c.req.raw.headers, method: c.req.method, path: c.req.path });
+      } catch {
+        return unavailable();
+      }
+      if (sandbox.type === "unavailable") return unavailable();
+      if (sandbox.type === "rejected") return c.json(authenticationFailure(c.req.path, "Invalid sandbox token"), 401);
+      if (sandbox.type === "accepted") {
+        // The token's route check (sandboxTokenAllows) already scoped it.
+        c.set("tenant_id", sandbox.resolution.tenantId);
+        if (sandbox.resolution.credential !== undefined) c.set("auth_credential", sandbox.resolution.credential);
+        return next();
+      }
+    }
+
+    try {
     if (isHostedInferenceProxyPath(c.req.path)) {
       const presented = extractHostedInferenceProxyToken(c.req.raw.headers);
       if (presented.status === "missing") {
@@ -244,6 +288,11 @@ export function createAuthMiddleware(deps: AuthMiddlewareDeps) {
       const denied = await applyResolvedCredential(deps, c, resolved, "bearer");
       if (denied) return denied;
       return next();
+    }
+
+    } catch (error) {
+      if (error instanceof CredentialCheckUnavailable) return unavailable();
+      throw error;
     }
 
     // 3. Cookie session

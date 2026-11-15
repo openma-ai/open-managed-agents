@@ -22,7 +22,7 @@ describe("shared provider credential egress adapter", () => {
     const adapter: NonNullable<ProviderManagedRuntimeOptions<typeof runtime>["credentialEgress"]> = installer.createSandboxCredentialEgress({
       resolve: async input => {
         expect(input.scope).toEqual(scope); expect(input.fence).toEqual(fence);
-        return { vaultIds: ["vault"], relay: { endpoint: "https://control.example", pass: "" }, issuePass: async () => "session-pass", placeholders: async () => ({ GITHUB_TOKEN: "__cap_managed__" }) };
+        return { vaultIds: ["vault"], relay: { endpoint: "https://control.example" }, issueToken: async () => "session-token", placeholders: async () => ({ GITHUB_TOKEN: "__cap_managed__" }) };
       },
       revoke: async () => { expect(await runtime.exec('printf "%s" "$GITHUB_TOKEN"')).toContain("__cap_managed__"); revoked = true; },
     });

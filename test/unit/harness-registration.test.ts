@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import "../test-worker";
 import { registerTestHarnesses } from "../harnesses";
-import { registerHarness, resolveHarness } from "../../apps/agent/src/harness/registry";
+import { registerHarness, resolveHarness } from "../../packages/agent-harness/src/registry";
 
 // Import the actual combined worker in workerd, not a copied registration list.
 describe("CF shared test harness registration", () => {

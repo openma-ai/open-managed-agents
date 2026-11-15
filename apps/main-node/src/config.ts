@@ -1,3 +1,4 @@
+import { DEFAULT_SESSION_EXECUTION_LEASE_TTL_MS } from "@open-managed-agents/session-runtime";
 // The only place the Node control plane reads environment variables.
 //
 // loadNodeConfig(env) turns the flat string bag into typed data once, applies
@@ -123,6 +124,9 @@ export function loadNodeConfig(env: NodeEnvironment): NodeConfig {
     };
   };
   const memoryS3 = s3("MEMORY_S3");
+  const memoryS3Selected = Object.entries(env).some(([key, value]) => key.startsWith("MEMORY_S3_") && Boolean(value?.trim()));
+  if (memoryS3 === null && memoryS3Selected) problems.push("Incomplete MEMORY_S3_* configuration; local storage fallback is forbidden");
+  if (memoryS3 === null && !env.MEMORY_BLOB_DIR?.trim()) problems.push("Memory storage requires complete MEMORY_S3_* or an explicit MEMORY_BLOB_DIR");
   const memory: NodeConfig["blobs"]["memory"] = memoryS3 === null
     ? { kind: "localfs", dir: env.MEMORY_BLOB_DIR ?? "./data/memory-blobs" }
     : { ...memoryS3, pollIntervalMs: Math.max(5_000, integer("MEMORY_S3_POLL_INTERVAL_SEC", 30) * 1000) };
@@ -198,6 +202,7 @@ export function loadNodeConfig(env: NodeEnvironment): NodeConfig {
     execution: {
       ownerId: env.OMA_SESSION_EXECUTION_OWNER_ID ?? `node:${process.pid}:${nanoid()}`,
       concurrency: integer("OMA_SESSION_EXECUTION_CONCURRENCY", 8, { min: 1 }),
+      leaseTtlMs: integer("OMA_SESSION_EXECUTION_LEASE_TTL_MS", DEFAULT_SESSION_EXECUTION_LEASE_TTL_MS, { min: 3 }),
     },
     workspace: {
       strategy: workspaceStrategy === "checkpoint_restore" ? "checkpoint_restore" : "ephemeral",

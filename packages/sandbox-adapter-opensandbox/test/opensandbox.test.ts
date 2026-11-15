@@ -199,12 +199,9 @@ describe("OpenSandbox official SDK adapter", () => {
     expect(checkpoint).toEqual({ provider: "opensandbox", checkpointId: "sb-1", sourceRuntimeId: "sb-1", kind: "memory", scope: "runtime" });
     const pauseAt = server.calls.findIndex(call => call.method === "POST" && call.url.pathname === "/v1/sandboxes/sb-1/pause");
     const extendAt = server.calls.findIndex(call => call.url.pathname === "/v1/sandboxes/sb-1/renew-expiration");
-    expect(extendAt).toBeGreaterThanOrEqual(0);
-    expect(pauseAt).toBeGreaterThan(extendAt);
-    const extended = Date.parse((server.calls[extendAt]!.body as { expiresAt: string }).expiresAt) - Date.now();
-    // Hot pause: renewed to the normal active window, not a long retention TTL.
-    expect(extended).toBeGreaterThan(1_700_000);
-    expect(extended).toBeLessThanOrEqual(1_800_000);
+    // A.10: idle suspend must not renew the provider lease.
+    expect(extendAt).toBe(-1);
+    expect(pauseAt).toBeGreaterThanOrEqual(0);
     server.state = "Paused";
     expect(await sandbox.status()).toBe("suspended");
     server.override = call => {
@@ -352,8 +349,9 @@ describe("OpenSandbox official SDK adapter", () => {
     await expect(sandbox.suspend({ kind: "filesystem" })).rejects.toThrow(/^OpenSandbox request failed \(HTTP 409\)$/);
     server.calls.length = 0;
     server.override = call => call.url.pathname.endsWith("/renew-expiration") ? new Response("provider-secret", { status: 409 }) : undefined;
-    await expect(sandbox.suspend({ kind: "filesystem" })).rejects.toThrow(/^OpenSandbox request failed \(HTTP 409\)$/);
-    expect(server.calls.some(call => call.url.pathname.endsWith("/pause"))).toBe(false);
+    await expect(sandbox.suspend({ kind: "filesystem" })).resolves.toMatchObject({ scope: "runtime" });
+    expect(server.calls.some(call => call.url.pathname.endsWith("/renew-expiration"))).toBe(false);
+    expect(server.calls.some(call => call.url.pathname.endsWith("/pause"))).toBe(true);
   });
 
   it("waits for the fast source data plane after a snapshot becomes Ready", async () => {

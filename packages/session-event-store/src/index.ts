@@ -10,6 +10,10 @@ export interface AppendSessionEvents {
   expectedRevision: number;
   events: SentSessionEvent[];
   nextSession: Session;
+  /** Existing canonical inputs updated atomically under this same revision. */
+  replaceEvents?: SentSessionEvent[];
+  /** Runtime wakeup/outbox facts; omitted means the newly appended events. */
+  executionEvents?: SentSessionEvent[];
 }
 
 export type AppendSessionEventsResult =

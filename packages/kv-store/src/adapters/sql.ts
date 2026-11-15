@@ -79,6 +79,18 @@ export class SqlKvStore implements KvStore {
     return row.value;
   }
 
+  /** Exact-document SQL CAS, the same conditional-update pattern as OAuth flows. */
+  async compareAndSwap(key: string, expected: string | null, value: string | null): Promise<boolean> {
+    const where = and(eq(kv_entries.tenant_id, this.opts.tenantId), eq(kv_entries.key, key), eq(kv_entries.value, expected ?? ""));
+    if (expected === null && value === null) return (await this.get(key)) === null;
+    const query = expected === null
+      ? this.db.insert(kv_entries).values({ tenant_id: this.opts.tenantId, key, value: value!, expires_at: null }).onConflictDoNothing().returning({ key: kv_entries.key })
+      : value === null
+        ? this.db.delete(kv_entries).where(where).returning({ key: kv_entries.key })
+        : this.db.update(kv_entries).set({ value, expires_at: null }).where(where).returning({ key: kv_entries.key });
+    return (await getAll<{ key: string }>(query)).length === 1;
+  }
+
   async put(key: string, value: string, opts?: KvPutOptions): Promise<void> {
     let expiresAt: number | null = null;
     if (opts?.expirationTtl !== undefined) {

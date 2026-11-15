@@ -42,6 +42,9 @@ export type SandboxSdkResolver = (adapterModulePath: string, packageName: string
 
 const resolveFromAdapter: SandboxSdkResolver = (adapterModulePath, packageName) => {
   const fromMainNode = createRequire(import.meta.url);
+  // E2B is imported by main-node and injected into createE2BSandboxFactory,
+  // rather than imported by the adapter. Check that exact install context.
+  if (packageName === "e2b") return fromMainNode.resolve(packageName);
   // pnpm nests dependencies per package, so resolving from this file would miss
   // an SDK that lives in the adapter's own node_modules (or is a devDependency
   // of it, as `@boxlite-ai/boxlite` and `@alibaba-group/opensandbox` are).

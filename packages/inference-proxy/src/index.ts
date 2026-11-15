@@ -288,17 +288,14 @@ export function planHostedInferenceRequest(
   // tunnel. Batch/files/fine-tuning and other nested-model endpoints are not
   // supported until their complete model semantics can be enforced.
   const gemini = /^(v1(?:beta)?\/models\/)[^/:?#]+:(generateContent|streamGenerateContent|countTokens)$/.exec(path);
-  const jsonModelEndpoint = /^(?:v1\/)?(?:messages(?:\/count_tokens)?|chat\/completions|responses)$/.test(path);
+  const jsonModelEndpoint = /^(?:v1\/)?(?:messages(?:\/count_tokens)?|responses)$/.test(path);
   const modelList = /^(?:v1\/)?models$/.test(path) && input.method.toUpperCase() === "GET";
   if (!(input.method.toUpperCase() === "POST" && (gemini || jsonModelEndpoint)) && !modelList) {
     return Response.json({ error: "inference_endpoint_unsupported" }, { status: 400 });
   }
   const protocol: InferenceWireProtocol | null = gemini ? "gemini"
     : /^(?:v1\/)?messages(?:\/count_tokens)?$/.test(path) ? "anthropic-messages"
-    : /^(?:v1\/)?chat\/completions$/.test(path) ? "openai-chat"
     : /^(?:v1\/)?responses$/.test(path) ? "openai-responses" : parsed.protocol;
-  // OpenAI chat and responses share a prefix; other prefixes must match the
-  // endpoint semantics. A legacy unprefixed route is checked the same way.
   if (parsed.protocol && protocol && parsed.protocol !== protocol
     && !(parsed.protocol.startsWith("openai-") && protocol.startsWith("openai-"))) {
     return Response.json({ error: "inference_protocol_unsupported", protocol }, { status: 409 });

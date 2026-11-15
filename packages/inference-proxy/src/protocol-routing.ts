@@ -6,7 +6,6 @@ export interface ParsedHostedInferenceSubPath {
 }
 
 const PROTOCOL_PREFIXES: Array<{ protocol: InferenceWireProtocol; prefix: string }> = [
-  { protocol: "openai-chat", prefix: "openai/v1/" },
   { protocol: "openai-responses", prefix: "openai/v1/" },
   { protocol: "anthropic-messages", prefix: "anthropic/" },
   { protocol: "gemini", prefix: "gemini/" },
@@ -42,7 +41,7 @@ export function resolveProtocolUpstreamUrl(
   const base = endpoint.upstreamBaseUrl.replace(/\/$/, "");
   const relative = relativeSubPath.replace(/^\//, "");
   if (!relative) return base;
-  if (endpoint.protocol === "openai-chat" || endpoint.protocol === "openai-responses") {
+  if (endpoint.protocol === "openai-responses") {
     let path = relative;
     if (!base.endsWith("/v1") && path.length > 0 && !path.startsWith("v1/")) {
       path = `v1/${path}`;

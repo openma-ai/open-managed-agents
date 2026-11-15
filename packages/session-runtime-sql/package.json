@@ -7,7 +7,8 @@
     ".": "./src/index.ts",
     "./coordination": "./src/coordination.ts",
     "./context": "./src/context.ts",
-    "./history": "./src/history.ts"
+    "./history": "./src/history.ts",
+    "./execution-lease": "./src/execution-lease.ts"
   },
   "scripts": {
     "test": "vitest run --config vitest.config.ts",
@@ -15,6 +16,7 @@
   },
   "dependencies": {
     "@open-managed-agents/domain": "workspace:*",
+    "@open-managed-agents/session-runtime": "workspace:*",
     "@open-managed-agents/session-runtime-contract": "workspace:*",
     "@open-managed-agents/sql-client": "workspace:*",
     "effect": "3.22.1"

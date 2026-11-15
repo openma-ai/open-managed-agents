@@ -1,65 +1,166 @@
 import { describe, expect, it } from "vitest";
 import type { Environment, Session } from "@open-managed-agents/managed-agents-application";
-import type { SessionExecution, SessionExecutionFence } from "@open-managed-agents/session-runtime-contract";
 import { createNodeManagedAcpCapabilities } from "../../../packages/control-plane-node/src/lib/node-managed-acp-capability";
-import { createNodeSecrets } from "../../../packages/control-plane-node/src/secrets";
+import { createBetterSqlite3SqlClient } from "@open-managed-agents/sql-client";
+import { ensureSessionExecutionCoordinatorSchema, SqlSessionExecutionCoordinator } from "@open-managed-agents/session-runtime-sql/coordination";
+import { createSqlSandboxTokenStore } from "../../../packages/sandbox-gateway-sql/src/index";
+import { seedSandboxGatewaySessionRows } from "../../../packages/sandbox-gateway/test/gateway-store-conformance";
+import { gatedSql, sandboxTokenStoreConformance, type SandboxTokenStoreTestHarness } from "../../../packages/sandbox-gateway/test/sandbox-token-store-conformance";
+import { sandboxTokenRaceConformance } from "../../../packages/sandbox-gateway/test/sandbox-token-race-conformance";
 
-function fixture() {
-  let now = new Date("2026-10-23T08:00:00Z");
-  const session: Session = { id: "session", environmentId: "env", agent: { id: "agent", version: 7, name: "pinned", model: { id: "workspace-model" }, mcpServers: [], tools: [], skills: [], system: null, description: null, multiagent: null }, archivedAt: null, budget: null, createdAt: now.toISOString(), updatedAt: now.toISOString(), metadata: {}, outcomeEvaluations: [], resources: [], stats: {}, status: "running", title: null, usage: {}, vaultIds: [] };
-  const environment: Environment = { id: "env", config: { type: "self_hosted" }, archivedAt: null, createdAt: now.toISOString(), updatedAt: now.toISOString(), name: "test", description: null, metadata: {} };
-  const execution: SessionExecution = { id: "exec", workspaceId: "tenant", sessionId: "session", laneId: "primary", admittedAt: now.toISOString(), events: [], state: "running", attempt: { id: "attempt", ownerId: "owner", generation: 2, claimedAt: now.toISOString(), leaseExpiresAt: "2026-10-23T08:01:00Z" }, attemptCount: 2, maxAttempts: 3, deadlineAt: "2026-10-24T00:00:00Z", interruptRequestedAt: null, settledAt: null, heldAfterExhaustedAt: null, failure: null, revision: 2 };
-  const fence: SessionExecutionFence = { executionId: "exec", workspaceId: "tenant", sessionId: "session", attemptId: "attempt", ownerId: "owner", generation: 2, expiresAt: "2026-10-23T08:01:00Z" };
-  const deps = { crypto: createNodeSecrets("test-only-root").cipherFor("managed.node-acp.execution-token"), gatewayBaseUrl: "https://service.test", now: () => now, findExecution: async ({ workspaceId, executionId }: { workspaceId: string; executionId: string }) => workspaceId === "tenant" && executionId === "exec" ? execution : null, findSession: async ({ workspaceId, sessionId }: { workspaceId: string; sessionId: string }) => workspaceId === "tenant" && sessionId === "session" ? session : null };
-  const capabilities = createNodeManagedAcpCapabilities(deps);
-  return { capabilities, deps, execution, session, fence, input: { workspaceId: "tenant", session: structuredClone(session), environment, executionFence: fence }, advance: () => { now = new Date("2026-10-23T08:02:00Z"); } };
+async function database() {
+  const sql = await createBetterSqlite3SqlClient(":memory:");
+  await ensureSessionExecutionCoordinatorSchema(sql);
+  await sql.exec(`CREATE TABLE managed_sessions (
+      workspace_id text NOT NULL, id text NOT NULL, document text NOT NULL, revision integer NOT NULL,
+      agent_id text NOT NULL, agent_version integer NOT NULL, environment_id text NOT NULL, status text NOT NULL,
+      created_at integer NOT NULL, updated_at integer NOT NULL, archived_at integer, PRIMARY KEY (workspace_id, id));
+    CREATE TABLE managed_environments (
+      workspace_id text NOT NULL, id text NOT NULL, document text NOT NULL, revision integer NOT NULL,
+      created_at integer NOT NULL, updated_at integer NOT NULL, archived_at integer, PRIMARY KEY (workspace_id, id));`);
+  return sql;
 }
 
-describe("Node execution-scoped ACP capability", () => {
-  it("authorizes only the exact session proxy routes", async () => {
-    const f = fixture(); const { sessionsToken: token } = await f.capabilities.issue(f.input);
-    for (const path of ["/v1/oma/mcp-proxy/session/maxcompute", "/v1/oma/inference-proxy/session/anthropic/v1/messages"]) expect(await f.capabilities.authenticate({ token, path, method: "POST" })).toMatchObject({ workspaceId: "tenant", sessionId: "session", generation: 2 });
-    for (const path of ["/v1/oma/mcp-proxy/other/maxcompute", "/v1/oma/inference-proxy/other/v1/messages", "/v1/agents", "/v1/sessions/session/events", "/v1/environments/env/work/exec/heartbeat", "/v1/oma/sessions/session/runtime-events"]) expect(await f.capabilities.authenticate({ token, path, method: "POST" })).toBeNull();
-    expect(await f.capabilities.authenticate({ token: token + "tampered", path: "/v1/oma/mcp-proxy/session/maxcompute", method: "POST" })).toBeNull();
+/** The Node capability exactly as node-managed.ts wires it, on better-sqlite3. */
+async function fixture(harness: string | null = "acp-sandbox") {
+  const sql = await database();
+  const executions = new SqlSessionExecutionCoordinator(sql);
+  const now = new Date();
+  const capabilities = createNodeManagedAcpCapabilities({
+    gatewayBaseUrl: "https://service.test", now: () => new Date(),
+    tokens: createSqlSandboxTokenStore(sql),
   });
-  it.each(["completed", "cancelled", "generation", "claim", "lease", "archived", "malformed-lease"] as const)("revokes the bearer when %s", async reason => {
-    const f = fixture(); const { sessionsToken: token } = await f.capabilities.issue(f.input);
-    if (reason === "completed" || reason === "cancelled") f.execution.state = reason;
-    if (reason === "generation") f.execution.attempt!.generation++;
-    if (reason === "claim") f.execution.attempt!.claimedAt = "2026-10-23T08:00:01Z";
-    if (reason === "lease") f.advance();
-    if (reason === "archived") f.session.archivedAt = "2026-10-23T08:00:01Z";
-    if (reason === "malformed-lease") f.execution.attempt!.leaseExpiresAt = "invalid";
-    expect(await f.capabilities.authenticate({ token, method: "POST", path: "/v1/oma/mcp-proxy/session/maxcompute" })).toBeNull();
+  await seedSandboxGatewaySessionRows(sql, "tenant", { id: "session", environmentId: "env", vaultIds: [], agent: { id: "agent", version: 7 }, archivedAt: null });
+  await executions.admit({ execution: { id: "exec", workspaceId: "tenant", sessionId: "session", admittedAt: now.toISOString(), events: [{ id: "evt", type: "user.message", content: [], processedAt: now.toISOString() }] } });
+  const claimed = await executions.claim({ workspaceId: "tenant", sessionId: "session", ownerId: "owner", attemptId: "attempt", claimedAt: now.toISOString(), leaseTtlMs: 60_000 });
+  if (claimed.type !== "claimed") throw new Error("expected a claim");
+  const session = {
+    id: "session", environmentId: "env", vaultIds: [], resources: [],
+    agent: { id: "agent", version: 7, name: "pinned", ...(harness === null ? {} : { openma: { harness } }) },
+  } as unknown as Session;
+  const environment = { id: "env" } as Environment;
+  return { sql, executions, capabilities, fence: claimed.fence, input: { workspaceId: "tenant", session, environment, executionFence: claimed.fence } };
+}
+const call = (capabilities: Awaited<ReturnType<typeof fixture>>["capabilities"], path: string, headers: Record<string, string>) =>
+  capabilities.authenticateToken({ headers: new Headers(headers), method: "POST", path });
+
+describe("Node sandbox token (ACP channels and egress), real SQLite", () => {
+  it("in-sandbox harness: the ACP token (scope all) opens the Session's proxy routes only", async () => {
+    const f = await fixture("acp-sandbox");
+    const { sessionsToken: token } = await f.capabilities.issue(f.input);
+    expect(token).toMatch(/^oma_sbx_/u);
+    for (const path of ["/v1/oma/mcp-proxy/session/maxcompute", "/v1/oma/inference-proxy/session/anthropic/v1/messages"]) {
+      expect(await call(f.capabilities, path, { authorization: `Bearer ${token}` })).toMatchObject({ type: "accepted", resolution: { tenantId: "tenant", credential: { sessionId: "session", generation: 1 } } });
+    }
+    for (const path of ["/v1/oma/mcp-proxy/other/maxcompute", "/v1/agents", "/v1/sessions/session/events", "/v1/environments/env/work/exec/heartbeat", "/v1/oma/sessions/session/runtime-events"]) {
+      expect((await call(f.capabilities, path, { authorization: `Bearer ${token}` })).type).toBe("rejected");
+    }
+    // The egress forwarder of the same attempt gets the same scope.
+    const relay = await f.capabilities.issueEgress(f.fence, "acp-sandbox");
+    expect((await call(f.capabilities, "/v1/oma/mcp-proxy/session/x", { authorization: `Bearer ${relay}` })).type).toBe("accepted");
   });
-  it.each(["workspace", "session", "agent-version", "owner", "attempt", "generation", "expired-fence", "environment"] as const)("rejects issuing for a mismatched %s", async reason => {
-    const f = fixture();
-    if (reason === "workspace") f.input.workspaceId = "other";
-    if (reason === "session") f.input.session.id = "other";
-    if (reason === "agent-version") f.input.session.agent.version++;
-    if (reason === "owner") f.fence.ownerId = "other";
-    if (reason === "attempt") f.fence.attemptId = "other";
-    if (reason === "generation") f.fence.generation++;
-    if (reason === "expired-fence") f.fence.expiresAt = "2026-10-23T07:59:00Z";
-    if (reason === "environment") f.input.environment.id = "other";
-    await expect(f.capabilities.issue(f.input)).rejects.toThrow();
+
+  it("outside harness: the forwarder token (scope egress) is refused on every API channel, and the attempt can never receive an all token", async () => {
+    const f = await fixture(null);
+    const relay = await f.capabilities.issueEgress(f.fence, null, "box-1");
+    for (const path of ["/v1/oma/mcp-proxy/session/x", "/v1/oma/inference-proxy/session/anthropic/v1/messages"]) {
+      expect((await call(f.capabilities, path, { authorization: `Bearer ${relay}` })).type).toBe("rejected");
+    }
+    await expect(f.capabilities.issueEgress(f.fence, "acp-sandbox", "replacement")).rejects.toThrow(/scope/);
   });
-  it.each([
-    ["missing", /Session session was not found/],
-    ["archived", /Session session is archived and cannot receive new events/],
-    ["environment", /requires the Session environment/],
-    ["agent", /requires the pinned Session agent/],
-  ] as const)("names the %s Session failure instead of a generic agent mismatch", async (reason, message) => {
-    const f = fixture();
-    if (reason === "missing") f.deps.findSession = async () => null;
-    if (reason === "archived") f.session.archivedAt = "2026-10-23T08:00:01Z";
-    if (reason === "environment") f.session.environmentId = "other";
-    if (reason === "agent") f.session.agent.version++;
-    await expect(createNodeManagedAcpCapabilities(f.deps).issue(f.input)).rejects.toThrow(message);
+
+  it("reuses the root attempt holder for a child without minting a child token or elevating egress scope", async () => {
+    const f = await fixture("acp-sandbox");
+    const child = { ...f.input.session, agent: { ...f.input.session.agent, id: "child", version: 2 } };
+    const reused = await f.capabilities.issue({ ...f.input, session: child, executionSession: f.input.session });
+    const root = await f.capabilities.issue(f.input);
+    expect(reused.sessionsToken).toBe(root.sessionsToken);
+    expect(await f.capabilities.issueEgress(f.fence, "acp-sandbox", "same-box")).toBe(root.sessionsToken);
+    const row = await f.sql.prepare("SELECT sandbox_token_hashes FROM managed_session_executions WHERE id = ?").bind(f.fence.executionId).first<{sandbox_token_hashes:string}>();
+    expect(JSON.parse(row!.sandbox_token_hashes)).toHaveLength(1);
+    await expect(f.capabilities.issue({ ...f.input, session: { ...child, id: "other" }, executionSession: f.input.session })).rejects.toThrow(/Session/);
+    const outside = await fixture(null);
+    const relay = await outside.capabilities.issueEgress(outside.fence, null, "same-box");
+    const channels = await outside.capabilities.issue({ ...outside.input, session: child, executionSession: outside.input.session });
+    expect(channels.sessionsToken).toBe(relay);
+    expect((await call(outside.capabilities, "/v1/oma/mcp-proxy/session/x", {authorization: "Bearer " + channels.sessionsToken})).type).toBe("rejected");
   });
-  it.each(["crypto", "url", "fence"])("reports missing %s without minting a bearer", async missing => {
-    const f = fixture();
-    const caps = createNodeManagedAcpCapabilities({ ...f.deps, ...(missing === "crypto" ? { crypto: null } : {}), ...(missing === "url" ? { gatewayBaseUrl: undefined } : {}) });
-    await expect(caps.issue({ ...f.input, ...(missing === "fence" ? { executionFence: undefined } : {}) })).rejects.toThrow(/PLATFORM_ROOT_SECRET|PUBLIC_BASE_URL|Execution fence/);
+
+  it("refuses to issue for a mismatched Session, a stale fence, or no fence", async () => {
+    const f = await fixture();
+    await expect(f.capabilities.issue({ ...f.input, workspaceId: "other" })).rejects.toThrow(/does not name this Session/);
+    await expect(f.capabilities.issue({ ...f.input, executionFence: { ...f.fence, attemptId: "other" } })).rejects.toThrow(/stale/);
+    await expect(f.capabilities.issue({ ...f.input, executionFence: undefined })).rejects.toThrow(/fence/);
+    await expect(f.capabilities.issue({ ...f.input, environment: { id: "other" } as Environment })).rejects.toThrow(/Session environment/);
+  });
+
+  // One execution, one token (design §0.0 rule 10): the in-sandbox harness
+  // (model / MCP channels) and the egress relay of one attempt hold the same
+  // string, and the attempt row holds one hash, whichever asks first.
+  for (const order of ["harness first", "relay first"] as const) {
+    it(`acp-sandbox: one attempt holds one token hash, shared by the harness and the relay (${order})`, async () => {
+      const f = await fixture("acp-sandbox");
+      const harness = () => f.capabilities.issue(f.input).then((channels) => channels.sessionsToken);
+      const relay = () => f.capabilities.issueEgress(f.fence, "acp-sandbox");
+      const [first, second] = order === "harness first" ? [await harness(), await relay()] : [await relay(), await harness()];
+      const row = await f.sql.prepare("SELECT sandbox_token_hashes FROM managed_session_executions WHERE workspace_id = ? AND id = ?")
+        .bind("tenant", f.fence.executionId).first<{ sandbox_token_hashes: string }>();
+      expect(JSON.parse(row!.sandbox_token_hashes)).toHaveLength(1);
+      expect(second).toBe(first);
+    });
+  }
+
+  it("a replacement sandbox in the same attempt rotates and revokes the old token", async () => {
+    const f = await fixture("acp-sandbox");
+    const { sessionsToken: harness } = await f.capabilities.issue(f.input);
+    expect(await f.capabilities.issueEgress(f.fence, "acp-sandbox", "box-1")).toBe(harness);
+    expect(await f.capabilities.issueEgress(f.fence, "acp-sandbox", "box-1")).toBe(harness);
+    const redelivered = await f.capabilities.issueEgress(f.fence, "acp-sandbox", "box-2");
+    expect(redelivered).not.toBe(harness);
+    expect((await call(f.capabilities, "/v1/oma/mcp-proxy/session/x", { authorization: `Bearer ${harness}` })).type).toBe("rejected");
+    expect((await call(f.capabilities, "/v1/oma/mcp-proxy/session/x", { authorization: `Bearer ${redelivered}` })).type).toBe("accepted");
+    // The harness channels of the attempt now get the re-signed one.
+    expect((await f.capabilities.issue(f.input)).sessionsToken).toBe(redelivered);
+  });
+
+  it("a rebuilt host holder rotates instead of leaving two valid tokens", async () => {
+    const f = await fixture();
+    const old = await f.capabilities.issueEgress(f.fence, "acp-sandbox", "box-1");
+    const rebuilt = createNodeManagedAcpCapabilities({ gatewayBaseUrl: "https://service.test", now: () => new Date(), tokens: createSqlSandboxTokenStore(f.sql) });
+    const fresh = await rebuilt.issueEgress(f.fence, "acp-sandbox", "box-1");
+    expect(fresh).not.toBe(old);
+    expect((await call(rebuilt, "/v1/oma/mcp-proxy/session/x", { authorization: `Bearer ${old}` })).type).toBe("rejected");
+    expect((await call(rebuilt, "/v1/oma/mcp-proxy/session/x", { authorization: `Bearer ${fresh}` })).type).toBe("accepted");
+    const row = await f.sql.prepare("SELECT sandbox_token_hashes FROM managed_session_executions WHERE id = ?").bind(f.fence.executionId).first<{ sandbox_token_hashes: string }>();
+    expect(JSON.parse(row!.sandbox_token_hashes)).toHaveLength(1);
+  });
+
+  it("dies with the attempt", async () => {
+    const f = await fixture();
+    const { sessionsToken: token } = await f.capabilities.issue(f.input);
+    await f.executions.settle({ fence: f.fence, settledAt: new Date().toISOString(), outcome: "completed" });
+    expect((await call(f.capabilities, "/v1/oma/mcp-proxy/session/x", { authorization: `Bearer ${token}` })).type).toBe("rejected");
   });
 });
+
+const sqliteTokenHarness: SandboxTokenStoreTestHarness = {
+  async withStore(fixtureId, run) {
+    const raw = await database();
+    const { sql, gate } = gatedSql(raw);
+    const workspaceId = `ws_${fixtureId}`;
+    return run({
+      workspaceId, gate, raw,
+      store: createSqlSandboxTokenStore(sql),
+      executions: new SqlSessionExecutionCoordinator(raw),
+      seedSession: (session) => seedSandboxGatewaySessionRows(raw, workspaceId, session),
+      setTokenColumn: async (executionId, value) => {
+        await raw.prepare("UPDATE managed_session_executions SET sandbox_token_hashes = ? WHERE workspace_id = ? AND id = ?").bind(value, workspaceId, executionId).run();
+      },
+      archive: async (sessionId, atMs) => {
+        await raw.prepare("UPDATE managed_sessions SET archived_at = ? WHERE workspace_id = ? AND id = ?").bind(atMs, workspaceId, sessionId).run();
+      },
+    });
+  },
+};
+sandboxTokenStoreConformance("sandbox-gateway-sql (Node better-sqlite3)", sqliteTokenHarness);
+sandboxTokenRaceConformance("sandbox-gateway-sql (Node better-sqlite3)", sqliteTokenHarness);

@@ -1,0 +1,29 @@
+{
+  "reviewedCommit": "25fc837191ebf21d2bee6f16409acc98c0210195",
+  "reviewEvidence": "node_modules/.review-attribution/e2b-bootstrap-25fc8371/ (read-only, unchanged)",
+  "oldResult": "FAIL; previous 74/1 and cloud evidence do not certify the revised implementation",
+  "fixes": {
+    "identity": "trusted management UID 0, ordinary SDK exec/files/ACP oma-worker; template-local common Spawner wrapper uses root-private Python native helper to drop supplementary groups/all UIDs/GIDs, capability bounding set and no_new_privs before replacement-env exec; agent cannot regain root",
+    "replay": "successful start ids retained in bounded 128-entry ownership map; duplicate rejected before spawn; no overwrite",
+    "processGroup": "waitid WNOWAIT observes without reaping leader; retained zombie pins PID/PGID; group SIGKILL before reaping; TERM escalates; cleaned tombstone prevents recycled-PGID signals"
+  },
+  "local": {
+    "linuxImage": "oma-v2e2b-work-source:aebf83ce (existing local own image, --network none, --rm, source/common mounts read-only)",
+    "python": "3.12.16",
+    "node": "24.22.2",
+    "common": "0.13.1 actual published NodeSpawner",
+    "linuxTests": "6 PASS; same-UID leak, duplicate spawn, reaped leader and surviving descendant failures observed RED before fixes",
+    "platformNormalization": "Node image independently injects UV_USE_IO_URING=0 even under env -i; only that known platform value normalized",
+    "macOSVitest": "70 PASS / 5 SKIP (4 Linux-native cases + 1 existing cloud certification)",
+    "typecheck": "PASS",
+    "diffCheck": "PASS"
+  },
+  "cloud": "NOT RUN for review fix; old templates remain obsolete, v2 readiness rejects them",
+  "remaining": [
+    "Mandatory worker composition injection: isolateE2BAgentSpawner(new NodeSpawner()) into common local ACP runtime; default same-root local spawner is unsafe. Existing Node/harness caller is outside ownership and was not modified.",
+    "Production preinstalled worker code and dependencies must be root-owned and outside agent-writable /workspace; root management command must be trusted.",
+    "Only held process groups are managed. Descendants deliberately creating another session/process group require stronger containment and are outside this process-group contract; sandbox destroy is final resource boundary.",
+    "Linux waitid/WNOWAIT required; macOS native launcher deliberately unsupported.",
+    "No canonical pipeline/actual Work-to-agent business end-to-end or new true-cloud certification claimed."
+  ]
+}

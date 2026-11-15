@@ -43,6 +43,15 @@ export class InMemoryBlobStore implements BlobStore {
     body: BlobBody,
     opts?: BlobPutOptions,
   ): Promise<BlobMetadata | null> {
+    const bytes = await bodyToBytes(body);
+    const etag = await sha256Hex(bytes);
+    const metadata: BlobMetadata = {
+      etag,
+      size: bytes.byteLength,
+      httpMetadata: opts?.httpMetadata ? { ...opts.httpMetadata } : undefined,
+      customMetadata: opts?.customMetadata ? { ...opts.customMetadata } : undefined,
+    };
+    // Body reads and hashing can yield; compare at the atomic map commit.
     if (opts?.precondition?.type === "ifNoneMatch" && this.map.has(key)) {
       return null;
     }
@@ -52,14 +61,6 @@ export class InMemoryBlobStore implements BlobStore {
         return null;
       }
     }
-    const bytes = await bodyToBytes(body);
-    const etag = await sha256Hex(bytes);
-    const metadata: BlobMetadata = {
-      etag,
-      size: bytes.byteLength,
-      httpMetadata: opts?.httpMetadata ? { ...opts.httpMetadata } : undefined,
-      customMetadata: opts?.customMetadata ? { ...opts.customMetadata } : undefined,
-    };
     this.map.set(key, { bytes, metadata });
     return cloneMetadata(metadata);
   }

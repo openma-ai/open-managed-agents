@@ -1,6 +1,6 @@
-// The Cloudflare MCP proxy surfaces managed credential store failures.
+// Cloudflare outbound credential matching surfaces managed credential store failures.
 import { describe, expect, it } from "vitest";
-import { resolveOutboundCredentialByHost } from "../../apps/main/src/routes/mcp-proxy";
+import { resolveOutboundCredentialByHost } from "../../apps/main/src/lib/outbound-credential";
 import { managedResolver } from "./helpers/managed-resolver";
 
 describe("managed credential store failures", () => {

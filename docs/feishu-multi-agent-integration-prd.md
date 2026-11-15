@@ -304,8 +304,8 @@
 
 ### FR-6 Harness
 
-- Node Runtime 必须尊重 `agent.harness` 配置，不再固定使用 DefaultHarness。
-- 首期可使用 DefaultHarness 上线，但保留可注册自定义 `ops-supervisor` Harness 的能力。
+- Node Runtime 必须尊重 `agent.harness` 配置，不再固定使用某个 host loop。
+- 首期使用 PiHarness，同时保留可注册自定义 `ops-supervisor` Harness 的能力。
 - `ops-supervisor` Harness 后续可负责角色选择、并行策略、上下文裁剪和结论校验。
 - 未知 Harness 必须在配置保存或 Session 创建阶段失败，不得静默回退。
 
@@ -564,7 +564,7 @@ flowchart TD
 
 ### Known Blockers
 
-- Node 当前固定使用 DefaultHarness，需要实现 Harness 注册和选择。
+- Node 当前固定使用 host loop，需要实现 Harness 注册和选择。
 - Node `/v1/skills` 当前为空 Stub，需要实现完整 Skill 路由和 Runtime。
 - Node `buildTools` 当前未注入多 Agent 委派执行器。
 - OMA Integration `ProviderId` 当前只包含 Linear、GitHub、Slack，需要增加 Feishu 并更新相关类型和 wiring。
@@ -639,7 +639,7 @@ flowchart TD
 - 生产沙箱选择：LiteBox、Daytona、E2B 或内部实现。
 - 模型网关和每个数字人的模型/成本配置。
 - Memory 和审计数据的保留期限。
-- 是否在首期实现专用 `ops-supervisor` Harness，或先以 DefaultHarness + Skill 上线。
+- 是否在首期实现专用 `ops-supervisor` Harness，或先以 PiHarness + Skill 上线。
 - 飞书管理 UI 是完整原生页面，还是首期采用管理员配置文件/CLI。
 
 ---

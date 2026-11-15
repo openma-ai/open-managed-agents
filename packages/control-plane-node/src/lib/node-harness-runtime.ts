@@ -8,14 +8,11 @@
 // Phase C-sandbox swaps the stub for E2B / docker / whatever.
 
 import type { ModelMessage } from "ai";
-import type {
-  HarnessRuntime,
-  HistoryStore,
-  SandboxExecutor,
-} from "@open-managed-agents/agent/harness/interface";
+import {
+  type HarnessRuntime, type HistoryStore, type SandboxExecutor, eventsToMessages,
+} from "@open-managed-agents/agent-harness";
 import type { SessionEvent } from "@open-managed-agents/shared";
 import type { SqlEventLog } from "@open-managed-agents/event-log/sql";
-import { eventsToMessages } from "@open-managed-agents/agent/runtime/history";
 import { getLogger } from "@open-managed-agents/observability";
 import type { EventStreamHub } from "./event-stream-hub";
 import {

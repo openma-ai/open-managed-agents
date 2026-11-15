@@ -1,4 +1,4 @@
-import type { SandboxExecutor } from "../harness/interface";
+import type { SandboxExecutor } from "@open-managed-agents/agent-harness";
 
 export interface SandboxWarmupEgressContext {
   tenantId: string;

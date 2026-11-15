@@ -749,7 +749,7 @@ runtimeDaemonRoutes.get("/sessions/:sid/bundle", async (c) => {
   // daemon doesn't have to handle three states (undefined / empty / set).
   const local_skill_blocklist = agent.runtime_binding?.local_skill_blocklist ?? [];
 
-  // Rewrite agent.mcp_servers (HTTP/SSE only) so they point at OMA's
+  // Rewrite agent.mcp_servers (Streamable HTTP only) so they point at OMA's
   // mcp-proxy. The daemon doesn't get the user's upstream tokens — those
   // live in vaults and only mcp-proxy on the cloud side resolves them.
   // The proxy URL pattern is documented in mcp-proxy.ts:10. stdio MCP
@@ -943,7 +943,7 @@ async function renderSessionBundle(
  * null when anything in the chain is missing — caller falls back to a
  * stub so a single bad skill doesn't break the whole spawn-cwd bundle.
  *
- * Mirrors the lookup chain in apps/agent/src/harness/skills.ts:91 so a
+ * Mirrors the lookup chain in packages/agent-harness/src/skills.ts:91 so a
  * skill that mounts in cloud sandbox also mounts identically in a daemon
  * spawn-cwd. Binary skill files (icons, fonts, etc.) are deliberately
  * not bundled: BundleFile.content is utf-8 string only — base64-encoding

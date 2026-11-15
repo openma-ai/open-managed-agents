@@ -3,7 +3,6 @@ import {
   resolveApplicationPort,
   type ApplicationPortSource,
 } from "../application-port-source";
-import { AGENT_MEMORY_BETA, requireBeta } from "../beta";
 import {
   memoryVersionListQuerySchema,
   memoryVersionPageResponseSchema,
@@ -30,7 +29,6 @@ export function buildMemoryVersionRoutes(
   source: ApplicationPortSource<MemoryVersionsApplicationPort>,
 ): Hono {
   const app = new Hono();
-  app.use("*", requireBeta(AGENT_MEMORY_BETA));
 
   app.get("/:memoryStoreId/memory_versions", async (c) => {
     const query = memoryVersionListQuerySchema.safeParse({

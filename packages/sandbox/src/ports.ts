@@ -1,5 +1,6 @@
+import { SESSION_WORKSPACE_ROOT } from "@open-managed-agents/runtime-resource-contract";
 // Runtime-agnostic sandbox port. Originally lived in
-// apps/agent/src/harness/interface.ts as the legacy `SandboxExecutor` and
+// packages/agent-harness/src/interface.ts as the legacy `SandboxExecutor` and
 // `ProcessHandle` interfaces; lifted here so non-CF runtimes (Node host,
 // future deployments) can implement the same shape without taking on the
 // apps/agent → cloudflare:workers → @cloudflare/sandbox import chain.
@@ -23,6 +24,19 @@ export interface ProcessHandle {
   getStatus(): Promise<string>;
 }
 
+/** Native management launch. env replaces inherited/image/session env before
+ * executable startup. Reject if unsupported; no stdio, retries or Work lease. */
+export interface SandboxManagedProcessSpec {
+  command: string;
+  args?: readonly string[];
+  env: Readonly<Record<string, string>>;
+  cwd?: string;
+}
+export type SandboxManagedProcessHandle = Pick<ProcessHandle, "id" | "pid" | "kill" | "getStatus">;
+export interface SandboxManagedProcessPort {
+  startManagedProcess(spec: SandboxManagedProcessSpec): Promise<SandboxManagedProcessHandle>;
+}
+
 /** Structured command used when a caller needs a live stdio channel instead
  * of the log-oriented `startProcess` handle. Kept in the sandbox package so
  * protocol runtimes (ACP today, other harnesses later) do not leak their own
@@ -38,6 +52,8 @@ export interface SandboxDuplexProcessSpec {
  * structurally compatible with openma-common's ACP `ChildHandle`; the ACP
  * adapter can pass it through without coupling the sandbox package to ACP. */
 export interface SandboxDuplexProcess {
+  /** Only the lifecycle owner may confirm the exact sandbox is gone. Errors are unknown. */
+  confirmSandboxGone?(): Promise<boolean>;
   stdin: WritableStream<Uint8Array>;
   stdout: ReadableStream<Uint8Array>;
   stderr: ReadableStream<Uint8Array>;
@@ -146,43 +162,6 @@ export interface SandboxSessionOutputMountPort {
   }): Promise<void>;
 }
 
-/** Serializable reference to a provider-owned prepared base: a snapshot of a
- * sandbox on which the Environment setup has already run. Hosts persist it
- * opaquely and hand it back as {@link SandboxFactoryContext.preparedBase}. */
-export interface SandboxPreparedBaseHandle {
-  provider: string;
-  id: string;
-}
-
-/** Provider primitive for capturing the current sandbox as a prepared base
- * that later sandboxes can be created from. Separate from
- * {@link SandboxRuntimePort.checkpoint}: a prepared base is a reusable
- * creation source shared across Sessions, not a restore point of one. */
-export interface SandboxPreparedBasePort {
-  capturePreparedBase(input: { name: string }): Promise<SandboxPreparedBaseHandle>;
-}
-
-export function supportsPreparedBase(
-  value: unknown,
-): value is SandboxPreparedBasePort {
-  if (typeof value !== "object" || value === null) return false;
-  const candidate = value as Partial<SandboxPreparedBasePort>;
-  return typeof candidate.capturePreparedBase === "function";
-}
-
-/** For adapters that cannot create a sandbox from a prepared base: a
- * requested base must fail the create, never be ignored. */
-export function rejectPreparedBase(
-  provider: string,
-  preparedBase: SandboxPreparedBaseHandle | undefined,
-): void {
-  if (preparedBase === undefined) return;
-  throw new Error(
-    `SANDBOX_PROVIDER=${provider} cannot create a sandbox from a prepared base ` +
-      `(requested ${preparedBase.provider}:${preparedBase.id})`,
-  );
-}
-
 export function supportsWorkspaceBackup(
   value: unknown,
 ): value is SandboxWorkspaceBackupPort {
@@ -217,22 +196,8 @@ export function supportsSessionOutputMount(
   }
 }
 
-export interface SandboxCredentialEgressBinding {
-  endpoint: string;
-  pass: string;
-}
-/** Native interception or a sandbox-resident relay implement the same capability. */
-export interface SandboxCredentialEgressPort {
-  prepareCredentialEgress(binding: SandboxCredentialEgressBinding): Promise<void>;
-  clearCredentialEgress(): Promise<void>;
-}
-export function supportsCredentialEgress(value: unknown): value is SandboxCredentialEgressPort {
-  const port = value as Partial<SandboxCredentialEgressPort> | null;
-  return port !== null && typeof port === "object" && typeof port.prepareCredentialEgress === "function" && typeof port.clearCredentialEgress === "function";
-}
-
 /** Fallback workspace root for images that declare no WORKDIR (ADR 0016). */
-export const DEFAULT_WORKSPACE_ROOT = "/workspace";
+export const DEFAULT_WORKSPACE_ROOT = SESSION_WORKSPACE_ROOT;
 /** Fixed root for platform-owned files (skills, harness state, agent homes).
  * Never under the workspace root, so the task tree is what the image ships. */
 export const PLATFORM_ROOT = "/oma";
@@ -256,6 +221,8 @@ export async function workspaceRootOf(sandbox: Pick<SandboxPort, "resolveWorkspa
 }
 
 export interface SandboxPort {
+  /** Stable loopback relay port for runtimes sharing a host network. */
+  egressRelayPort?(): Promise<number>;
   exec(command: string, timeout?: number): Promise<string>;
   /**
    * Absolute directory the agent works in, resolved once when the sandbox
@@ -372,12 +339,6 @@ export interface SandboxFactoryContext {
    * default `SANDBOX_IMAGE`; adapters that cannot honour a per-session image
    * must throw rather than ignore it. Absent means "provider default". */
   image?: { alias: string; reference: string };
-  /** Prepared base to create the sandbox from instead of the provider's
-   * template/image. When present the adapter MUST create from it; adapters
-   * that cannot, or that receive a base of another provider, must throw
-   * rather than ignore it (same rule as `image`). A base captured on a
-   * catalog image already contains that image, so `image` may accompany it. */
-  preparedBase?: SandboxPreparedBaseHandle;
 }
 
 /** Read-only view of process env handed to the factory. Whole `process.env`
@@ -393,9 +354,6 @@ export interface SandboxFactoryCapabilities {
    * must honor allocationId, or always create provider-assigned unique resources.
    * Shared host state must use the supplied allocation-scoped workdir. */
   allocationIsolation?: boolean;
-  /** Sandboxes implement {@link SandboxPreparedBasePort}, and the factory
-   * creates from {@link SandboxFactoryContext.preparedBase}. */
-  preparedBase?: boolean;
   /** Sandboxes implement {@link SandboxPort.mountMemoryStore} as a native
    * mount over the host's memory blobs (for example s3fs with `MEMORY_S3_*`,
    * or a host bind of a local memory root), and the composer guarantees it
@@ -404,6 +362,11 @@ export interface SandboxFactoryCapabilities {
    * Undeclared (the default for every built-in factory): Memory Stores are
    * file-synced, which works on any sandbox. See docs/memory-stores.md. */
   nativeMemoryStoreMount?: boolean;
+  /** Mounts (Memory Stores, Session outputs) are fixed when the sandbox's
+   * box is created by its first exec/readFile/writeFile, and a mount after
+   * that throws (LiteBox volumes). The host mounts Session outputs right
+   * after create, before the warm-up marker or the egress step's exec. */
+  mountsFixedAtCreate?: boolean;
 }
 
 export type SandboxFactory = ((
@@ -414,7 +377,7 @@ export type SandboxFactory = ((
 };
 
 /** Declare capabilities on a factory, e.g. a custom composition that wraps an
- * adapter: `withSandboxFactoryCapabilities(factory, { preparedBase: true })`. */
+ * adapter: `withSandboxFactoryCapabilities(factory, { nativeMemoryStoreMount: true })`. */
 export function withSandboxFactoryCapabilities(
   factory: SandboxFactory,
   capabilities: SandboxFactoryCapabilities,
@@ -443,6 +406,9 @@ export interface SandboxProviderPort<
     ctx: SandboxFactoryContext,
     env: SandboxFactoryEnv,
   ): Promise<Runtime>;
+  /** Delete a portable checkpoint (the Session keeps only its latest
+   * snapshot). Omitted = checkpoints wait for the provider's expiry. */
+  discard?(checkpoint: SandboxCheckpointHandle, env: SandboxFactoryEnv): Promise<void>;
 }
 
 export function supportsSandboxRuntime(

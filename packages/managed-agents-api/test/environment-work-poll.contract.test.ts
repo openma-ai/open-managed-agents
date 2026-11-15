@@ -19,6 +19,7 @@ describe("Managed Agents API — GET /v1/environments/:environment_id/work/poll"
             secret: {
               sessionsToken: "sk-ant-req-session-token",
               apiBaseUrl: "https://openma.test",
+              claimGeneration: 3,
             },
           },
         };
@@ -60,6 +61,7 @@ describe("Managed Agents API — GET /v1/environments/:environment_id/work/poll"
     expect(secret).toEqual({
       sessions_token: "sk-ant-req-session-token",
       api_base_url: "https://openma.test",
+      claim_generation: 3,
     });
   });
 });

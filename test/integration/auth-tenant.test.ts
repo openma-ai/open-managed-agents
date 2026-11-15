@@ -274,37 +274,37 @@ describe("model cards", () => {
 describe("provider resolution", () => {
   it("resolveModel creates anthropic model for ant compat", async () => {
     // Import directly since tests run in the same isolate
-    const { resolveModel } = await import("../../apps/agent/src/harness/provider");
+    const { resolveModel } = await import("../../packages/agent-harness/src/provider");
     const model = resolveModel("claude-sonnet-4-6", "sk-test", undefined, "ant");
     expect(model.modelId).toBe("claude-sonnet-4-6");
   });
 
   it("resolveModel creates anthropic model for ant-compatible", async () => {
-    const { resolveModel } = await import("../../apps/agent/src/harness/provider");
+    const { resolveModel } = await import("../../packages/agent-harness/src/provider");
     const model = resolveModel("my-model", "sk-test", "https://proxy.example.com", "ant-compatible");
     expect(model.modelId).toBe("my-model");
   });
 
   it("resolveModel creates openai model for oai compat", async () => {
-    const { resolveModel } = await import("../../apps/agent/src/harness/provider");
+    const { resolveModel } = await import("../../packages/agent-harness/src/provider");
     const model = resolveModel("gpt-4o", "sk-test", undefined, "oai");
     expect(model.modelId).toBe("gpt-4o");
   });
 
   it("resolveModel creates openai model for oai-compatible", async () => {
-    const { resolveModel } = await import("../../apps/agent/src/harness/provider");
+    const { resolveModel } = await import("../../packages/agent-harness/src/provider");
     const model = resolveModel("deepseek-chat", "sk-test", "https://api.deepseek.com/v1", "oai-compatible");
     expect(model.modelId).toBe("deepseek-chat");
   });
 
   it("resolveModel strips provider prefix", async () => {
-    const { resolveModel } = await import("../../apps/agent/src/harness/provider");
+    const { resolveModel } = await import("../../packages/agent-harness/src/provider");
     const model = resolveModel("anthropic/claude-sonnet-4-6", "sk-test", undefined, "ant");
     expect(model.modelId).toBe("claude-sonnet-4-6");
   });
 
   it("resolveModel defaults to ant when no compat specified", async () => {
-    const { resolveModel } = await import("../../apps/agent/src/harness/provider");
+    const { resolveModel } = await import("../../packages/agent-harness/src/provider");
     const model = resolveModel("claude-sonnet-4-6", "sk-test");
     expect(model.modelId).toBe("claude-sonnet-4-6");
   });

@@ -14,6 +14,7 @@
     "vitest": "^5.0.5"
   },
   "dependencies": {
-    "@open-managed-agents/domain": "workspace:*"
+    "@open-managed-agents/domain": "workspace:*",
+    "@open-managed-agents/managed-agents-application": "workspace:*"
   }
 }

@@ -15,6 +15,8 @@ export type ModelReply = { text: string } | { name: string; input: Record<string
 export type OpenAINodeModel = (input: Record<string, any>) => Promise<ModelReply> | ModelReply;
 export interface OpenAINodeOptions {
   startupTimeoutMs?: number;
+  /** Explicit live-storage fixture settings only; never inherit model credentials. */
+  storageEnvironment?: Record<string, string>;
   /** Trusted scripted tools execute real commands inside a private workdir. */
   localSandbox?: boolean;
   /** Test-only barrier allows SIGKILL between two persisted artifacts. */
@@ -45,6 +47,11 @@ function defaultReply(input: Record<string, any>): ModelReply {
  * Callers own cleanup: register fixture.dispose() in their afterEach/finally.
  * No Vitest hooks are registered here, so fixtures cannot affect other files. */
 export async function bootOpenAINode(reply: OpenAINodeModel = defaultReply, options: OpenAINodeOptions = {}): Promise<OpenAINodeProcess> {
+  const storageEnvironment = options.storageEnvironment ?? {};
+  for (const key of Object.keys(storageEnvironment)) {
+    if (!/^(FILES|MEMORY)_S3_(ENDPOINT|BUCKET|REGION|ACCESS_KEY|SECRET_KEY|PREFIX|FORCE_PATH_STYLE|REQUEST_CHECKSUM_CALCULATION)$/.test(key)) throw new Error("Unsupported storage fixture setting");
+  }
+  const storageSecrets = Object.entries(storageEnvironment).filter(([key]) => /_(ACCESS_KEY|SECRET_KEY)$/.test(key)).map(([,value]) => value).filter(Boolean);
   const root = resolve(__dirname, "../../../..");
   const directory = await mkdtemp(join(tmpdir(), "openma-openai-node-"));
   const requests: Array<Record<string, any>> = [];
@@ -148,14 +155,14 @@ export async function bootOpenAINode(reply: OpenAINodeModel = defaultReply, opti
           ...inherited, PORT: "0", HOST: "127.0.0.1", DATABASE_URL: "", OPENMA_PROCESS_MODE: "standalone",
           DATABASE_PATH: join(directory, "oma.db"), AUTH_DATABASE_PATH: join(directory, "auth.db"), SANDBOX_WORKDIR: join(directory, "sandboxes"), MEMORY_BLOB_DIR: join(directory, "memories"), FILES_BLOB_DIR: join(directory, "files"), SESSION_OUTPUTS_DIR: join(directory, "outputs"),
           AUTH_DISABLED: "1", PLATFORM_ROOT_SECRET: "openai-node-test-configuration-secret", NODE_ENV: "test", DREAM_CURATOR_MODE: "dedup",
-          MEMORY_S3_ENDPOINT: "", FILES_S3_ENDPOINT: "", SANDBOX_PROVIDER: "litebox",
+          MEMORY_S3_ENDPOINT: "", FILES_S3_ENDPOINT: "", ...storageEnvironment, SANDBOX_PROVIDER: "litebox",
           ...(options.localSandbox ? { OPENMA_TEST_SANDBOX_PROVIDER: "local-subprocess" } : {}),
           ...(options.publicationCrashBarrier ? { ARTIFACT_TEST_BARRIER_DIR: directory } : {}),
         }, stdio: ["ignore", "pipe", "pipe"],
       });
       processHandle = child;
       child.once("error", error => { spawnError = error; });
-      const record = (data: Buffer) => { const text = data.toString(); logs.push(text); currentLogs.push(text); };
+      const record = (data: Buffer) => { let text = data.toString(); for (const secret of storageSecrets) text = text.replaceAll(secret, "[REDACTED]"); logs.push(text); currentLogs.push(text); };
       child.stdout!.on("data", record);
       child.stderr!.on("data", record);
       const deadline = Date.now() + (options.startupTimeoutMs ?? 60_000);

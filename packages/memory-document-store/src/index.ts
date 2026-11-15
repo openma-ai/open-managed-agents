@@ -143,3 +143,10 @@ export interface MemoryDocumentStore {
     input: RedactMemoryVersionRecord,
   ): Promise<RedactMemoryVersionRecordResult>;
 }
+
+/** Durable file bytes; SQL stores only references and relational metadata. */
+export interface MemoryContentObjects {
+  getText(key: string): Promise<string | null>;
+  put(key: string, content: string): Promise<unknown>;
+  delete(key: string): Promise<unknown>;
+}

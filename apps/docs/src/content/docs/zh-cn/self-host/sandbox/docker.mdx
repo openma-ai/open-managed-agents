@@ -23,20 +23,23 @@ Docker 作为预装的 Node 运行时组合，而不是通过 `SANDBOX_PROVIDER`
 ```ts
 const runtime = await createNodeManagedRuntime({
   rootDir: "/var/lib/openma",
-  sql,                       // SqlClient——SQLite/Postgres/MySQL
-  initializeFenceSchema: true,
+  sql,                       // SqlClient——SQLite/Postgres/MySQL，即控制面数据库
+  initializeOrphanSchema: true,
   ownerId: processId,
-  leaseTtlMs: 90_000,
   heartbeatIntervalMs: 30_000,
   image: "node:22-slim",
 });
 ```
 
-完整选项集：`rootDir`、`sql`、`initializeFenceSchema`、`ownerId`、
-`leaseTtlMs`、`heartbeatIntervalMs`、`checkpointIntervalMs`、`image`、
+完整选项集：`rootDir`、`sql`、`initializeOrphanSchema`、`claims`、
+`ownerId`、`heartbeatIntervalMs`、`checkpointIntervalMs`、`image`、
 `network`、`docker`、`additionalMounts`（source/destination/readOnly）、
-`extraHosts`、`scheduler`、`fence`、`runtimeCheckpoint`、
-`credentialEgress`、`sessionInputs`。
+`extraHosts`、`scheduler`、`runtimeCheckpoint`、`credentialEgress`、
+`sessionInputs`。
+
+宿主只认 Environment Work claim（ADR 0005）。`claims` 默认是基于 `sql` 的
+`SqlEnvironmentWorkClaimPort`，读 `managed_environment_work`，因此要求宿主和控制面共用同一个数据库。
+只通过 Work API 连控制面的宿主，必须自己传入一个 `EnvironmentWorkClaimPort`。
 
 ## 能力
 

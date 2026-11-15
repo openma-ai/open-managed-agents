@@ -29,6 +29,16 @@ export interface ProxyUpstreamInput {
   readonly fetcher?: typeof fetch;
 }
 
+/** A request body the proxy can send more than once (a token refresh
+ * replays it). A stream cannot be replayed. */
+export type ReplayableBody = string | ArrayBuffer | null;
+
+/** Buffer an inbound body for replay; GET and HEAD carry none. */
+export function bufferRequestBody(request: Request): Promise<ArrayBuffer | null> {
+  const method = request.method.toUpperCase();
+  return method === "GET" || method === "HEAD" ? Promise.resolve(null) : request.arrayBuffer();
+}
+
 /** Not hop-by-hop, but describe the inbound hop: fetch derives `host` and
  * `content-length` from the target and body, and Node's fetch rejects
  * `expect` (UND_ERR_NOT_SUPPORTED). */

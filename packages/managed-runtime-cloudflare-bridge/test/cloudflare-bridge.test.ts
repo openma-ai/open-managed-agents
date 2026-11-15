@@ -26,7 +26,7 @@ function bridgeFetch() {
       : new Request(input.toString(), init);
     const url = new URL(request.url);
     let body: unknown;
-    if (request.method === "POST" && (url.pathname.endsWith("/exec") || url.pathname.endsWith("/session"))) {
+    if (request.method === "POST" && (url.pathname.endsWith("/exec") || url.pathname.endsWith("/session") || url.pathname.endsWith("/process"))) {
       body = await request.json();
     }
     calls.push({
@@ -45,6 +45,7 @@ function bridgeFetch() {
     if (match === null) return new Response("not found", { status: 404 });
     const id = decodeURIComponent(match[1]!);
     const operation = match[2] ?? "";
+    if (request.method === "POST" && operation === "/claim") return new Response(null,{status:204});
     if (request.method === "GET" && operation === "/running") {
       return Response.json({ running: running.has(id) });
     }
@@ -61,8 +62,10 @@ function bridgeFetch() {
       sessions.delete(decodeURIComponent(operation.slice("/session/".length)));
       return Response.json({ success: true });
     }
-    if (request.method === "POST" && operation === "/exec") {
-      const argv = (body as { argv?: string[] } | undefined)?.argv ?? [];
+    if (request.method === "POST" && operation === "/process") return Response.json({id:"process-1"});
+    if (operation.endsWith("/signal")) return Response.json({exit_code:137});
+    if ((request.method === "POST" && operation === "/exec") || operation.endsWith("/events")) {
+      const argv = ((body ?? [...calls].reverse().find(call => call.path.endsWith("/process"))?.body) as { argv?: string[] } | undefined)?.argv ?? [];
       const commandOutput = argv.some((argument) =>
           argument.includes("__OPENMA_RUNTIME_READY__")
         )
@@ -237,34 +240,13 @@ describe("Cloudflare Sandbox Bridge managed runtime provider package", () => {
     ).rejects.toThrow("checkpoint storage collision");
   });
 
-  it("turns an aborted SSE command into a terminated process instead of leaking a rejection", async () => {
+  it("uses a real remote signal rather than aborting the local SSE", async () => {
     const fake = bridgeFetch();
-    const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-      const request = input instanceof Request
-        ? new Request(input, init)
-        : new Request(input.toString(), init);
-      if (!new URL(request.url).pathname.endsWith("/exec")) {
-        return fake.fetch(request);
-      }
-      return new Response(new ReadableStream<Uint8Array>({
-        start(controller) {
-          request.signal.addEventListener("abort", () => {
-            controller.error(request.signal.reason);
-          }, { once: true });
-        },
-      }), { headers: { "content-type": "text/event-stream" } });
-    });
-    const provider = createCloudflareBridgeProvider({
-      baseUrl: "https://bridge.example.test",
-      apiKey: "bridge-secret",
-      checkpointStore: new InMemoryBlobStore(),
-      fetch,
-    });
-    const runtime = await provider.create({ sessionId: "session-1", workdir: "/workspace" }, {});
-    const process = await runtime.spawnDuplexProcess({ command: "worker" });
-
-    await process.kill("SIGKILL");
-    await expect(process.exited).resolves.toEqual({ code: null, signal: "SIGKILL" });
+    const runtime = await createCloudflareBridgeProvider({baseUrl:"https://bridge.test",apiKey:"key",checkpointStore:new InMemoryBlobStore(),fetch:fake.fetch}).create({sessionId:"s",workdir:"/workspace"},{});
+    const process = await runtime.spawnDuplexProcess({command:"worker"});
+    const consumed = Promise.all([streamText(process.stdout),streamText(process.stderr),process.exited]);
+    await process.kill("SIGKILL"); await consumed;
+    expect(fake.calls.some(call => call.path.endsWith("/process/process-1/signal") && call.method === "POST")).toBe(true);
   });
 
   it("uses the official authenticated lifecycle, argv SSE, and workspace file routes", async () => {
@@ -323,7 +305,7 @@ describe("Cloudflare Sandbox Bridge managed runtime provider package", () => {
       scope: "portable",
       metadata: { blobKey: expect.stringContaining("turn-1") },
     });
-    expect(store.size()).toBe(1);
+    expect(store.size()).toBe(2); // allocation handle plus workspace archive
     const restored = await provider.restore(checkpoint, context, {});
     expect(restored.runtimeHandle().runtimeId).toBe("sandbox-2");
     expect(new TextDecoder().decode(fake.files.get("hydrated.tar"))).toBe("workspace-tar");
@@ -344,7 +326,7 @@ describe("Cloudflare Sandbox Bridge managed runtime provider package", () => {
     });
     // Env goes in a per-process session body, never in argv; the session is
     // removed once the process exits.
-    expect(execCalls[1]?.body).toEqual({ argv: ["worker", "--once"], cwd: "/workspace/project" });
+    expect(fake.calls.find(call => call.path.endsWith("/process"))?.body).toEqual({ argv: ["worker", "--once"], cwd: "/workspace/project" });
     const sessionCreate = fake.calls.find((call) => call.method === "POST" && call.path.endsWith("/session"));
     expect(sessionCreate?.body).toEqual({
       id: expect.stringMatching(/^oma-spawn-[0-9a-f]{32}$/),
@@ -352,7 +334,7 @@ describe("Cloudflare Sandbox Bridge managed runtime provider package", () => {
       env: { A_FIRST: "a", Z_LAST: "z" },
     });
     const sessionId = (sessionCreate?.body as { id: string }).id;
-    expect(execCalls[1]?.sessionId).toBe(sessionId);
+    expect(fake.calls.find(call => call.path.endsWith("/process"))?.sessionId).toBe(sessionId);
     expect(JSON.stringify(execCalls.map((call) => call.body))).not.toMatch(/A_FIRST|Z_LAST|"a"|"z"/);
     expect(fake.calls.some((call) => call.method === "DELETE" && call.path.endsWith(`/session/${sessionId}`))).toBe(true);
     expect(fake.sessions.size).toBe(0);

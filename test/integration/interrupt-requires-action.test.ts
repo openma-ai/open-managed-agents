@@ -1,7 +1,15 @@
-import { env } from "cloudflare:workers";
+import { env, exports } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
-import { SqliteHistory } from "../../apps/agent/src/runtime/history";
+import { beforeAll, describe, expect, it } from "vitest";
+
+import { SqliteHistory } from "../../apps/agent/src/runtime/sqlite-history";
+
+// Direct DO fixtures bypass HTTP init; bootstrap the real deployment schema
+// before event projection/markProcessed RPCs can reach the combined worker.
+beforeAll(async () => {
+  const response = await exports.default.fetch(new Request("http://localhost/v1/oma/model_cards", { headers: { "x-api-key": "test-key" } }));
+  expect(response.status).toBe(200);
+});
 
 // Official CMA: against an already-idle session (including idle
 // requires_action) an interrupt is a true no-op — accept, leave event_ids /
@@ -48,6 +56,7 @@ describe("user.interrupt while requires_action (custom tool)", () => {
 
       // Unknown id -> 400.
       expect((await post({ type: "user.custom_tool_result", custom_tool_use_id: "nope", content: [] })).status).toBe(400);
+      await room._managedProjectionChain;
     });
   });
 });

@@ -10,7 +10,10 @@
     "./adapter": "./src/adapter.ts",
     "./machine": "./src/machine.ts",
     "./execution-host": "./src/execution-host.ts",
-    "./settle-batch": "./src/settle-batch.ts"
+    "./settle-batch": "./src/settle-batch.ts",
+    "./execution-lease": "./src/execution-lease.ts",
+    "./session-sandbox": "./src/session-sandbox.ts",
+    "./session-sandbox-fence": "./src/session-sandbox-fence.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -19,6 +22,7 @@
   "dependencies": {
     "@open-managed-agents/execution-control": "workspace:*",
     "@open-managed-agents/event-log": "workspace:*",
+    "@open-managed-agents/runtime-resource-contract": "workspace:*",
     "@open-managed-agents/sandbox": "workspace:*",
     "@open-managed-agents/session-runtime-contract": "workspace:*",
     "@open-managed-agents/shared": "workspace:*",

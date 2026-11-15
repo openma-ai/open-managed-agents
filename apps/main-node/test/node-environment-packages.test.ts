@@ -13,7 +13,8 @@ function sandbox(setupOutput = "") {
       commands.push(command);
       if (command.startsWith("WARM=")) return `WARM=${markers.get("w") ?? "MISSING"}\nREST=${markers.get("r") ?? "MISSING"}`;
       if (command.startsWith("(\nset -e")) return setupOutput;
-      if (command.startsWith("printf")) return "/usr/local/bin:/usr/bin:/bin";
+      // environmentCommandPath's probe: PID 1 (image) PATH, then the shell's.
+      if (command.startsWith("p=$(")) return "/opt/venv/bin:/usr/bin\n/usr/local/bin:/usr/bin:/bin";
       const w = command.match(/echo "(\w+)" > \/tmp\/\.oma-setup-warm/);
       if (w) markers.set("w", w[1]!);
       return "";
@@ -42,7 +43,7 @@ describe("Environment packages on the Node runtime", () => {
     expect(setup).toContain("UV_INDEX_URL='https://mirror.example/simple/'");
     expect(logged).toEqual(["fresh"]);
     expect(box.env.PATH).toBe(
-      "/workspace/.venv/bin:/workspace/.npm-global/bin:/workspace/.cargo/bin:/workspace/.go/bin:/usr/local/bin:/usr/bin:/bin",
+      "/workspace/.venv/bin:/workspace/.npm-global/bin:/workspace/.cargo/bin:/workspace/.go/bin:/opt/venv/bin:/usr/bin:/usr/local/bin:/bin",
     );
   });
 

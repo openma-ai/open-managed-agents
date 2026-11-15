@@ -58,7 +58,7 @@ Session 固定一个 Agent version，因此自然继承这组控制。
 | `id` | 解析当前租户的 `model_id`，再得到 wire model 与 Pi provider。 |
 | `effort` | 映射到 Pi `thinkingLevel`。Pi 根据模型的 `thinkingLevelMap` 把不支持的档位归一化到最近可用档位，例如 DeepSeek V4 Flash 的 `medium` 会变成 `high`。 |
 | `speed: standard` | 不改变 Pi/provider 默认请求。 |
-| `speed: fast` | Anthropic 映射为 fast mode body + beta header；OpenAI Responses/Codex 映射为 Pi `serviceTier: priority`，OpenAI Completions 映射为 `service_tier: priority`。其他 Pi API 明确报 unsupported，不静默忽略。 |
+| `speed: fast` | Anthropic 映射为 fast mode body + beta header；OpenAI Responses/Codex 映射为 Pi `serviceTier: priority`。其他 Pi API 明确报 unsupported，不静默忽略。 |
 | `inference_geo` | API 校验、存储、版本化与回读均保留；运行时暂不根据它选择 region/provider。 |
 
 官方 Models capability 是 Pi 元数据的保守投影：只有 Pi 明确表达的

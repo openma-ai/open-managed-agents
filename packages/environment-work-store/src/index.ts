@@ -38,6 +38,9 @@ export interface FindActiveEnvironmentSessionWork {
 export interface InsertEnvironmentWorkRecord {
   workspaceId: string;
   record: EnvironmentWorkRecord;
+  /** Recovery is valid only for this canonical history snapshot. */
+  expectedSessionRevision?: number;
+  recoveryEventIds?: string[];
 }
 
 export interface ReplaceEnvironmentWorkRecord extends EnvironmentWorkLocation {
@@ -83,6 +86,9 @@ export interface GetEnvironmentWorkQueueStatsRecord {
 }
 
 export interface EnvironmentWorkStore {
+  /** Atomically reuse queued/starting/active Session work or insert a fresh Work.
+   * Never changes an existing Work/claim. Missing support must fail closed. */
+  ensureSession?(input: InsertEnvironmentWorkRecord): Promise<StoredEnvironmentWork>;
   insert(input: InsertEnvironmentWorkRecord): Promise<StoredEnvironmentWork>;
   find(input: EnvironmentWorkLocation): Promise<StoredEnvironmentWork | null>;
   findActiveSession(

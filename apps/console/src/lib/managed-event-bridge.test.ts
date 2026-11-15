@@ -107,3 +107,13 @@ describe("encodeGuiUserMessage / encodeGuiInterrupt / encodeGuiToolConfirmation"
     });
   });
 });
+
+it.each(["session.thread_created", "session.thread_status_running", "session.thread_status_idle", "session.thread_status_terminated"])("keeps %s discoverable after the real common vendor codec", type => {
+  const gui=ingestManagedWireEvent({id:"thread-event",type,session_thread_id:"acp:claude:task",parent_thread_id:"sthr_primary",agent_name:"Researcher",processed_at:"2026-11-10T00:00:00Z"},{sessionId:"session"});
+  expect(gui).toMatchObject({type,session_thread_id:"acp:claude:task",parent_thread_id:"sthr_primary",agent_name:"Researcher"});
+  expect(gui).not.toHaveProperty("processed_at");
+});
+
+it("keeps unknown extension names wrapped rather than promoting arbitrary vendor types", () => {
+  expect(ingestManagedWireEvent({id:"future",type:"session.thread_future",session_thread_id:"child"},{sessionId:"session"})).toMatchObject({type:"raw.event"});
+});

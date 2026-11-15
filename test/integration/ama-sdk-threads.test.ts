@@ -36,9 +36,9 @@
 //   7. client.beta.sessions.threads.events.list — paginated events
 //      scoped to one thread.
 
-import { env } from "cloudflare:workers";
+import { env, exports } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterEach } from "vitest";
 import Anthropic, {
   NotFoundError,
   BadRequestError,
@@ -46,9 +46,26 @@ import Anthropic, {
   APIError,
 } from "@anthropic-ai/sdk";
 
+beforeAll(async () => { await exports.default.fetch(new Request("http://localhost/health")); });
+
+const ownedStubs: DurableObjectStub[] = [];
+afterEach(async () => {
+  for (const stub of ownedStubs.splice(0)) {
+    await runInDurableObject(stub, async (room, state) => {
+      await room._recoveryPromise;
+      await room._recoveryRun;
+      await room._finalizePromise;
+      await Promise.all(room._maintenanceRuns.values());
+      await state.storage.deleteAlarm();
+    });
+  }
+});
+
 function freshDoStub(idHint: string) {
   const id = `${idHint}_${Math.random().toString(36).slice(2, 10)}`;
-  return env.SESSION_DO.get(env.SESSION_DO.idFromName(id));
+  const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(id));
+  ownedStubs.push(stub);
+  return stub;
 }
 
 async function seedSchemaAndState(
@@ -57,14 +74,14 @@ async function seedSchemaAndState(
   agentName = "TestAgent",
 ) {
   await runInDurableObject(stub, async (instance, state) => {
-    (instance as { _ensureCfAgentsSchema: () => void })._ensureCfAgentsSchema();
-    (instance as { ensureSchema: () => void }).ensureSchema?.();
-    (instance as { _state: unknown })._state = {
+    instance.setState({
+      ...instance.state,
       session_id: "sess_sdk_test",
       tenant_id: "default",
       agent_id: agentId,
       agent_snapshot: { name: agentName },
-    };
+    });
+    (instance as { ensureSchema: () => void }).ensureSchema();
     (instance as { _ensurePrimaryThread: () => void })._ensurePrimaryThread();
     state.storage.sql.exec(
       `INSERT INTO threads (id, agent_id, agent_name, parent_thread_id, created_at)

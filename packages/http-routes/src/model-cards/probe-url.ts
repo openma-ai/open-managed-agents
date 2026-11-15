@@ -21,5 +21,5 @@ export function modelCardProbeUrl(
     baseUrl ?? (isAnt ? "https://api.anthropic.com" : "https://api.openai.com")
   ).replace(/\/+$/, "");
   const versionedBase = /\/v1$/i.test(base) ? base : `${base}/v1`;
-  return `${versionedBase}${isAnt ? "/messages" : "/chat/completions"}`;
+  return `${versionedBase}${isAnt ? "/messages" : "/responses"}`;
 }

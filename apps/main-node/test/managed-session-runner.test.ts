@@ -4,7 +4,7 @@ import { ensureSessionExecutionCoordinatorSchema, SqlSessionExecutionCoordinator
 import { createManagedSandboxBuilder } from "../../../packages/control-plane-node/src/lib/node-managed-sandbox-builder.js";
 import { withReportedArtifactPublication } from "../../../packages/control-plane-node/src/openai-artifact-publication";
 import { prepareSandboxEgress } from "../../../packages/sandbox-egress/src/install";
-import { createEgressRelayPasses } from "../../../packages/managed-credential-resolver/src/relay";
+import { generateSandboxToken } from "../../../packages/sandbox-gateway/src/index";
 import type { SandboxExecutor, SandboxLiveness } from "@open-managed-agents/sandbox";
 import type { WorkspacePersistencePort } from "@open-managed-agents/runtime-resource-contract";
 import { DefaultNodeManagedSessionRunner } from "../../../packages/control-plane-node/src/lib/node-managed-session-runner.js";
@@ -27,8 +27,8 @@ function allocatedDaytonaSandbox(state: {
           state.commands.push(command);
           await state.beforeCommand?.(command);
           const stdout = command.includes("EGRESS_READY:")
-            ? 'EGRESS_READY:{"pid":123,"port":4567,"caFile":"/workspace/ca.pem","caBundleFile":"/workspace/ca-bundle.pem"}'
-            : command.includes("EGRESS_DIR:") ? "EGRESS_DIR:/workspace/.oma-egress" : "ok";
+            ? 'EGRESS_READY:{"pid":123,"port":18080,"caFile":"/workspace/ca.pem","caBundleFile":"/workspace/ca-bundle.pem"}'
+            : command.includes("EGRESS_DIR:") ? "EGRESS_DIR:/workspace/.oma-egress" : command.includes("echo EGRESS_DELIVERED") ? "EGRESS_DELIVERED" : "ok";
           return { exitCode: 0, result: "", artifacts: { stdout } };
         } },
         fs: {
@@ -273,25 +273,26 @@ describe("DefaultNodeManagedSessionRunner", () => {
     let now = 1_000;
     let boundPass: string | undefined;
     const sandbox = {
-      exec: async () => "",
+      exec: async (command: string) => {
+        if (command.includes("if [ -f .oma-egress/ready.json")) { boundPass = undefined; return ""; }
+        return command.includes("EGRESS_DIR:") ? "EGRESS_DIR:/workspace/.oma-egress" : command.includes("echo EGRESS_DELIVERED") ? "EGRESS_DELIVERED" : command.includes("EGRESS_READY:") ? 'EGRESS_READY:{"pid":123,"port":18080,"caFile":"/workspace/ca.pem","caBundleFile":"/workspace/ca-bundle.pem"}' : "";
+      },
       readFile: async () => "",
       destroy: async () => {},
-      writeFile: async (path: string) => path,
-      prepareCredentialEgress: async (binding: { pass: string }) => { boundPass = binding.pass; },
-      clearCredentialEgress: async () => { boundPass = undefined; },
+      writeFile: async (path: string, content: string) => { if (path.endsWith(".next.json")) boundPass = JSON.parse(content).token; return path; },
       setEnvVars: async (values: Record<string, string>) => { Object.assign(env, values); },
     };
     const runner = new DefaultNodeManagedSessionRunner({
       buildSandbox: async () => { builds++; return sandbox; },
       prepareSandbox: async () => { preparations++; },
-      refreshSandboxEnvironment: async ({ workspaceId, session, sandbox }) => {
+      refreshSandboxEnvironment: async ({ workspaceId, session, sandbox, registerCleanup }) => {
         await prepareSandboxEgress({
-          sandbox,
+          sandbox, registerCleanup,
           scope: { workspaceId, sessionId: session.id, vaultIds: session.vaultIds },
           placeholders: async (scope) => scope.vaultIds.includes("vlt_a")
             ? { GITHUB_TOKEN: "__cap_managed__" } : { GITLAB_TOKEN: "__cap_managed__" },
-          relay: { endpoint: "https://control.example", pass: "" },
-          issuePass: () => createEgressRelayPasses("root", () => now).issue({ workspaceId, sessionId: session.id, ttlMs: 60000 }),
+          relay: { endpoint: "https://control.example" },
+          issueToken: async () => generateSandboxToken(),
         });
       },
       outcomes: { evaluate: async () => { throw new Error("unused"); } },
@@ -640,7 +641,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
       try {
         await prepareSandboxEgress({
           sandbox, scope: { workspaceId: "workspace_01", sessionId: session.id, vaultIds: ["vault_test"] },
-          relay: { endpoint: "https://example.test", pass: "" }, issuePass: async () => "fake-pass",
+          relay: { endpoint: "https://example.test" }, issueToken: async () => "fake-token",
           placeholders: async () => { resolving.resolve(); return lookup.promise; },
         });
       } catch (error) { refreshError = error; throw error; }
@@ -723,7 +724,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
       if (failRefresh) throw new Error("refresh failure");
       await prepareSandboxEgress({
         sandbox, registerCleanup, scope: { workspaceId: "workspace_01", sessionId: session.id, vaultIds: ["vault_test"] },
-        relay: { endpoint: "https://example.test", pass: "" }, issuePass: async () => "fake-pass",
+        relay: { endpoint: "https://example.test" }, issueToken: async () => "fake-token",
         placeholders: async () => ({ TOKEN: "placeholder" }),
       });
     });
@@ -1120,7 +1121,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
       runtime.broadcast({ type: "agent.tool_use", id: "tool_01", name: "bash", input: { command: "touch x" } });
       throw new Error("model unavailable");
     });
-    expect((result as Error).message).toBe("model unavailable");
+    expect((result as Error).message).toBe("turn.execution: Error: model unavailable");
     expect(runs).toBe(1);
     expect(summary).toEqual(["session.status_running", "agent.tool_use", "error:exhausted", "idle:retries_exhausted"]);
   });
@@ -1142,7 +1143,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
 
   it("reports exhausted after the side-effect-free retries run out", async () => {
     const { result, runs, summary } = await failingHarnessTurn(async () => { throw new Error("model unavailable"); });
-    expect((result as Error).message).toBe("model unavailable");
+    expect((result as Error).message).toBe("turn.execution: Error: model unavailable");
     expect(runs).toBe(3);
     expect(summary).toEqual([
       "session.status_running",
@@ -1217,7 +1218,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
         type: "session.error",
         error: {
           type: "unknown_error",
-          message: "final collect failed",
+          message: "turn.finalization: Error: sandbox.turn_end: Error: final collect failed; caused by Error: final collect failed",
           retry_status: "exhausted",
         },
         processed_at: "2026-08-26T03:15:00.001Z",

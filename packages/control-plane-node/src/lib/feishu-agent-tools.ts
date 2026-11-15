@@ -72,7 +72,7 @@ export function resetFeishuAgentTools(): void {
  * own HTTP layer. Tool names mirror the `FeishuProvider.mcpTools()` descriptors
  * so system prompts referencing them stay accurate. The map is loosely typed
  * (`Record<string, any>`) to match the harness tool-map convention in
- * apps/agent/src/harness/tools.ts — the AI SDK's `tool()` default generic
+ * packages/agent-harness/src/tools.ts — the AI SDK's `tool()` default generic
  * parameters (`Tool<never, never>`) don't widen across two distinct schemas.
  */
 export function buildFeishuTools(client: FeishuApiClient): Record<string, any> {

@@ -3,7 +3,6 @@ import {
   resolveApplicationPort,
   type ApplicationPortSource,
 } from "../application-port-source";
-import { MANAGED_AGENTS_BETA, requireBeta } from "../beta";
 import { invalidRequest, notFound } from "../errors";
 import type { SessionsApplicationPort } from "../ports/sessions";
 
@@ -68,7 +67,6 @@ export function buildManagedSessionOutputRoutes(
   extension: ManagedSessionOutputsExtension,
 ): Hono {
   const app = new Hono();
-  app.use("*", requireBeta(MANAGED_AGENTS_BETA));
 
   app.get("/:sessionId/outputs", async (c) => {
     const sessionId = c.req.param("sessionId");

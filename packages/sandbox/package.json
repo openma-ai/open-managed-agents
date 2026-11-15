@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@open-managed-agents/observability": "workspace:*",
+    "@open-managed-agents/runtime-resource-contract": "workspace:*",
     "@open-managed-agents/shared": "workspace:*"
   },
   "devDependencies": {

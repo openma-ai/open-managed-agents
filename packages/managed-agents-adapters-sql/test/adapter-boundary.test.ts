@@ -10,9 +10,12 @@ describe("Managed Agents SQL adapter boundary", () => {
   it("depends only on inner Ports and the runtime-neutral SQL client", () => {
     expect(Object.keys(adapterSources).sort()).toEqual([
       "../src/agents-sql-persistence.ts",
+      "../src/core-custom-tools.ts",
       "../src/credential-document-cipher.ts",
       "../src/credential-vault-sql-source.ts",
       "../src/credentials-sql-persistence.ts",
+      "../src/custom-invocation-publication.ts",
+      "../src/custom-tool-invocations.ts",
       "../src/deployment-agent-sql-source.ts",
       "../src/deployment-resource-secret-cipher.ts",
       "../src/deployment-runs-sql-persistence.ts",
@@ -47,6 +50,11 @@ describe("Managed Agents SQL adapter boundary", () => {
       "../src/tunnels-sql-persistence.ts",
       "../src/user-profiles-sql-persistence.ts",
       "../src/vaults-sql-persistence.ts",
+      "../src/work-bootstrap.ts",
+      "../src/work-finalization.ts",
+      "../src/work-inputs.ts",
+      "../src/work-model-egress.ts",
+      "../src/work-outcome-interrupt.ts",
     ]);
 
     for (const source of Object.values(adapterSources)) {

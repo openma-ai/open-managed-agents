@@ -1,3 +1,4 @@
+import { sessionExecutionLeaseTtlMs } from "./execution-config";
 import type {
   ClaimSessionExecutionResult,
   SessionExecution,
@@ -5,7 +6,7 @@ import type {
   SessionExecutionStorePort,
   SettleSessionExecutionResult,
 } from "@open-managed-agents/session-runtime-contract/coordination";
-import { errorHoldsQueuedOnLane } from "@open-managed-agents/session-runtime-contract/coordination";
+import { SessionExecutionLostError, errorHoldsQueuedOnLane } from "@open-managed-agents/session-runtime-contract/coordination";
 import {
   ExecutionLeaseController,
   type ExecutionLeaseTimers,
@@ -46,6 +47,18 @@ export type SessionExecutionRun = (
   signal: AbortSignal,
 ) => Promise<SessionExecutionRunResult>;
 
+export interface SessionLaneDrain {
+  run: SessionExecutionRun;
+  /** Called before each claim; true limits the claim to continuations (the
+   * lane is parked in requires_action and only the client's answers may run). */
+  beforeClaim(): boolean;
+  /** Admits input that reached the lane without an execution row; true when
+   * something was admitted and the lane should claim again. */
+  admitUnclaimed(): Promise<boolean>;
+  failed(error: Error): void;
+  lost(execution: SessionExecution): void;
+}
+
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
@@ -57,12 +70,13 @@ function asError(error: unknown): Error {
  * authority after the store rejects the fence.
  */
 export class SessionExecutionHost {
+  readonly #liveAttemptIds = new Set<string>();
   readonly #leaseTtlMs: number;
   readonly #heartbeatIntervalMs: number;
 
   constructor(private readonly dependencies: SessionExecutionHostDependencies) {
-    this.#leaseTtlMs = dependencies.leaseTtlMs ?? 30_000;
-    this.#heartbeatIntervalMs = dependencies.heartbeatIntervalMs ?? 10_000;
+    this.#leaseTtlMs = sessionExecutionLeaseTtlMs(dependencies.leaseTtlMs);
+    this.#heartbeatIntervalMs = dependencies.heartbeatIntervalMs ?? Math.floor(this.#leaseTtlMs / 3);
     if (!Number.isSafeInteger(this.#leaseTtlMs) || this.#leaseTtlMs <= 0) {
       throw new Error("Session Execution leaseTtlMs must be a positive integer");
     }
@@ -81,13 +95,37 @@ export class SessionExecutionHost {
       ...this.dependencies.scope,
       ...(options.continuationsOnly ? { continuationsOnly: true } : {}),
       ownerId: this.dependencies.ownerId,
+      excludeAttemptIds: [...this.#liveAttemptIds],
       attemptId: this.dependencies.ids.nextAttemptId(),
       claimedAt: this.dependencies.clock.now().toISOString(),
       leaseTtlMs: this.#leaseTtlMs,
     });
     if (claimed.type === "empty") return { type: "empty" };
     this.dependencies.onFenceChanged?.(claimed.fence);
-    return this.#runClaimed(claimed, run);
+    this.#liveAttemptIds.add(claimed.fence.attemptId);
+    try { return await this.#runClaimed(claimed, run); }
+    finally { this.#liveAttemptIds.delete(claimed.fence.attemptId); }
+  }
+
+  /**
+   * Runs the lane's executions one at a time until it is empty. An interrupt
+   * cancels only the running execution; queued ones survive and drain next.
+   * A failure or a lost lease stops the lane: the client decides what follows
+   * a failure, and the lease's next owner reclaims a lost one.
+   */
+  async drainLane(lane: SessionLaneDrain): Promise<void> {
+    while (true) {
+      const continuationsOnly = lane.beforeClaim();
+      const result = await this.runOne(lane.run, { continuationsOnly });
+      if (result.type === "empty") {
+        if (await lane.admitUnclaimed()) continue;
+        return;
+      }
+      if (result.type === "completed" || result.type === "cancelled") continue;
+      if (result.type === "failed") lane.failed(result.error);
+      else lane.lost(result.execution);
+      return;
+    }
   }
 
   async #runClaimed(
@@ -96,6 +134,8 @@ export class SessionExecutionHost {
   ): Promise<SessionExecutionHostResult> {
     const lease = new ExecutionLeaseController({
       fence: claimed.fence,
+      now: () => this.dependencies.clock.now().getTime(),
+      leaseExpiresAt: fence => Date.parse(fence.expiresAt),
       heartbeatIntervalMs: this.#heartbeatIntervalMs,
       ...(this.dependencies.timers === undefined
         ? {}
@@ -122,7 +162,7 @@ export class SessionExecutionHost {
               : { reason: new Error("session execution interrupted") }),
           };
         } catch (error) {
-          return { type: "lost" as const, reason: asError(error) };
+          return { type: "retry" as const, error: asError(error) };
         }
       },
       onFenceChanged: this.dependencies.onFenceChanged,
@@ -139,6 +179,7 @@ export class SessionExecutionHost {
         const runResult = await run(claimed.execution, claimed.fence, lease.signal);
         holdQueuedOnLane = runResult?.holdQueuedOnLane === true;
       } catch (caught) {
+        if (caught instanceof SessionExecutionLostError) return { type: "lost", execution: claimed.execution, fence: claimed.fence };
         error = asError(caught);
         holdQueuedOnLane = errorHoldsQueuedOnLane(caught);
       }

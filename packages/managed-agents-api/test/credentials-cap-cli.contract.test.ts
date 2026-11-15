@@ -107,7 +107,7 @@ describe("Managed Agents API — cap_cli credentials (OpenMA extension)", () => 
     ]);
     const listed = await call(api, "GET", "/v1/vaults/vlt_01/credentials");
     expect(listed.status).toBe(200);
-    expect((await listed.json()).data[0].auth).toEqual({
+    expect(await listed.json()).toHaveProperty("data.0.auth", {
       type: "cap_cli",
       cli_id: "gh",
       expires_at: "2026-08-27T00:00:00.000Z",

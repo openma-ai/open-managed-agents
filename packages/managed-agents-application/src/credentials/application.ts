@@ -104,10 +104,14 @@ function resolveCreateAuth(input: CredentialAuthInput): CredentialAuth {
           : { type: "limited", allowedHosts: [...input.networking.allowedHosts] },
       secretName: input.secretName,
       secretValue: input.secretValue,
-      injectionLocation: {
-        body: input.injectionLocation?.body ?? false,
-        header: input.injectionLocation?.header ?? false,
-      },
+      // CMA: an omitted object enables both locations; inside a given
+      // object an omitted field is false.
+      injectionLocation: input.injectionLocation === undefined
+        ? { body: true, header: true }
+        : {
+            body: input.injectionLocation.body ?? false,
+            header: input.injectionLocation.header ?? false,
+          },
     };
   }
   return {
@@ -299,6 +303,14 @@ function patchAuth(
   return null;
 }
 
+/** CMA: an environment_variable credential needs at least one injection location. */
+const disablesEveryInjectionLocation = (auth: CredentialAuth) =>
+  auth.type === "environment_variable" && !auth.injectionLocation.header && !auth.injectionLocation.body;
+const NO_INJECTION_LOCATION = {
+  type: "invalid_request",
+  message: "injection_location must enable at least one of header or body",
+} as const;
+
 export interface CredentialsApplicationServiceDependencies {
   workspaceId: string;
   store: CredentialStore;
@@ -331,11 +343,13 @@ export class CredentialsApplicationService implements CredentialsApplicationPort
         message: `Unknown cap_cli cli_id "${command.auth.cliId}"`,
       };
     }
+    const auth = resolveCreateAuth(command.auth);
+    if (disablesEveryInjectionLocation(auth)) return NO_INJECTION_LOCATION;
     const timestamp = this.dependencies.clock.now().toISOString();
     const credential: Credential = {
       id: this.dependencies.ids.nextCredentialId(),
       archivedAt: null,
-      auth: resolveCreateAuth(command.auth),
+      auth,
       createdAt: timestamp,
       metadata: command.metadata ?? {},
       updatedAt: timestamp,
@@ -383,6 +397,7 @@ export class CredentialsApplicationService implements CredentialsApplicationPort
         message: "Credential auth type is immutable",
       };
     }
+    if (disablesEveryInjectionLocation(auth)) return NO_INJECTION_LOCATION;
     const next: Credential = {
       ...current.credential,
       auth,

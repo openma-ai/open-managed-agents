@@ -5,7 +5,7 @@ import type {
   InferenceWireProtocol,
 } from "./types.js";
 
-/** Prefer adapter protocol order over endpoint list order. */
+/** Prefer Messages in the real intersection, then adapter preference order. */
 export function selectInferenceProtocol(
   adapter: InferenceConfigAdapter,
   endpoints: readonly InferenceProtocolEndpoint[],
@@ -13,6 +13,10 @@ export function selectInferenceProtocol(
   const byProtocol = new Map(
     endpoints.map((endpoint) => [endpoint.protocol, endpoint]),
   );
+  const messages = byProtocol.get("anthropic-messages");
+  if (messages && adapter.supportedProtocols.includes("anthropic-messages")) {
+    return { protocol: "anthropic-messages", endpoint: messages };
+  }
   for (const protocol of adapter.supportedProtocols) {
     const endpoint = byProtocol.get(protocol);
     if (endpoint) {

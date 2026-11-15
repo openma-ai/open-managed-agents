@@ -96,7 +96,7 @@ describe("OpenAI sessions streaming through the production Node process", { time
     const outcome = collect(fixture.client.beta.agents.sessions.stream(session.id, { input: "Wait for cancellation" }, {
       signal: controller.signal,
     })).then(events => ({ events, error: undefined }), error => ({ events: undefined, error }));
-    await vi.waitFor(() => expect(fixture.requests).toHaveLength(2), { timeout: 15_000, interval: 25 });
+    await vi.waitFor(() => expect(fixture.requests, fixture.logs.join("\n")).toHaveLength(2), { timeout: 15_000, interval: 25 });
     controller.abort(new Error("Consumer disconnected"));
     const stopped = await outcome;
     expect(stopped.error).toBeInstanceOf(Error);
