@@ -121,7 +121,12 @@
     {
       "tag": "v1",
       "new_sqlite_classes": ["SessionDO", "Sandbox"]
-    }
+    },
+    // Keep the historical tags that already exist on the hosted staging
+    // worker. Omitting them makes Wrangler replay v1 and Cloudflare rejects
+    // the duplicate SessionDO migration on the next deploy.
+    { "tag": "v2" },
+    { "tag": "v3" }
   ],
 
   "limits": { "cpu_ms": 300000 },
