@@ -33,7 +33,7 @@ describe("createR2TemporaryCredentials", () => {
     expect(decodeJwtPayload(issued.sessionToken)).toEqual({
       bucket: "memory",
       scope: "object-read-only",
-      paths: { prefixPaths: ["store_1/"], objectPaths: [] },
+      paths: { prefixPaths: ["store_1/"], objectPaths: ["store_1"] },
       sub: "acct",
       iss: "parent-key-id",
       aud: "acct.r2.cloudflarestorage.com",
@@ -46,6 +46,7 @@ describe("createR2TemporaryCredentials", () => {
     const port = createR2TemporaryCredentials(parent);
     const rw = await port.issue({ prefix: "store_2/", access: "read_write", ttlSeconds: 60 });
     expect(decodeJwtPayload(rw.sessionToken).scope).toBe("object-read-write");
+    expect(decodeJwtPayload(rw.sessionToken).paths).toEqual({ prefixPaths: ["store_2/"], objectPaths: ["store_2"] });
     await expect(port.issue({ prefix: "", access: "read_only", ttlSeconds: 60 })).rejects.toThrow(/Unsafe/);
     await expect(port.issue({ prefix: "a/../b", access: "read_only", ttlSeconds: 60 })).rejects.toThrow(/Unsafe/);
     await expect(port.issue({ prefix: "a", access: "read_only", ttlSeconds: 0 })).rejects.toThrow(/ttlSeconds/);

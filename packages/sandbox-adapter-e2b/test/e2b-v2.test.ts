@@ -293,10 +293,10 @@ describe("E2B v2 storage", () => {
     expect(envs(out!).RCLONE_S3_ACCESS_KEY_ID).toBe("files-parent-id");
     expect(envs(rw!).RCLONE_S3_ACCESS_KEY_ID).toBe("memory-parent-id");
     expect(envs(rw!)).toMatchObject({ RCLONE_S3_PROVIDER: "Cloudflare", RCLONE_S3_ENDPOINT: "https://acct.r2.cloudflarestorage.com", RCLONE_S3_REGION: "auto" });
-    expect(claimsOf(envs(out!).RCLONE_S3_SESSION_TOKEN!)).toMatchObject({ bucket: "files", scope: "object-read-write", paths: { prefixPaths: ["t/ws/session-outputs/sess/"] } });
-    expect(claimsOf(envs(rw!).RCLONE_S3_SESSION_TOKEN!)).toMatchObject({ bucket: "memory", scope: "object-read-write", paths: { prefixPaths: ["store_rw/"] } });
+    expect(claimsOf(envs(out!).RCLONE_S3_SESSION_TOKEN!)).toMatchObject({ bucket: "files", scope: "object-read-write", paths: { prefixPaths: ["t/ws/session-outputs/sess/"], objectPaths: ["t/ws/session-outputs/sess"] } });
+    expect(claimsOf(envs(rw!).RCLONE_S3_SESSION_TOKEN!)).toMatchObject({ bucket: "memory", scope: "object-read-write", paths: { prefixPaths: ["store_rw/"], objectPaths: ["store_rw"] } });
     const ro_claims = claimsOf(envs(ro!).RCLONE_S3_SESSION_TOKEN!);
-    expect(ro_claims).toMatchObject({ bucket: "memory", scope: "object-read-only", paths: { prefixPaths: ["store_ro/"] } });
+    expect(ro_claims).toMatchObject({ bucket: "memory", scope: "object-read-only", paths: { prefixPaths: ["store_ro/"], objectPaths: ["store_ro"] } });
     expect(ro_claims.exp - ro_claims.iat).toBe(900);
     // Idempotent while the credentials are fresh; turn_end publishes nothing (mounts are live).
     await ports.storage.attach({ runtime: acquired.runtime, scope, fence, stores, outputs, signal });

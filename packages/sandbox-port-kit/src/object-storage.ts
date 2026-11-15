@@ -59,7 +59,12 @@ export function createR2TemporaryCredentials(
       const jwt = await signHs256({
         bucket: parent.bucket,
         scope: input.access === "read_only" ? "object-read-only" : "object-read-write",
-        paths: { prefixPaths: [prefix], objectPaths: [] },
+        // rclone probes the directory root with HeadObject before listing it.
+        // The root key has no trailing slash, so a prefix-only temporary
+        // credential rejects that probe even though every child is allowed.
+        // Delegate that one marker key explicitly while keeping child access
+        // restricted to the normalized prefix.
+        paths: { prefixPaths: [prefix], objectPaths: [prefix.replace(/\/$/u, "")] },
         sub: parent.accountId,
         iss: parent.accessKeyId,
         aud: new URL(parent.endpoint).host,
