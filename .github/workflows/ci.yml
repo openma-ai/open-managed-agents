@@ -229,12 +229,12 @@ jobs:
           fi
 
       - name: Upload CF test log
-        if: ${{ failure() && hashFiles(format('{0}/cf-tests.log', runner.temp)) != '' }}
+        if: ${{ failure() }}
         uses: actions/upload-artifact@v4
         with:
           name: cf-tests-${{ github.run_id }}
           path: ${{ runner.temp }}/cf-tests.log
-          if-no-files-found: error
+          if-no-files-found: warn
 
   node:
     needs: changes
