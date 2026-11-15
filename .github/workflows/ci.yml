@@ -177,7 +177,10 @@ jobs:
     needs: changes
     if: needs.changes.outputs.cf == 'true' || needs.changes.outputs.parity_cf == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # The workerd pool is intentionally serialized below to avoid the
+    # EnvironmentTeardownError race.  Keep enough headroom for the full
+    # root suite instead of killing a healthy run at the old 45-minute cap.
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -216,7 +219,7 @@ jobs:
           pnpm test:ci:cf |& tee "$RUNNER_TEMP/cf-tests.log"
 
       - name: CF test diagnostics
-        if: ${{ failure() }}
+        if: ${{ failure() || cancelled() }}
         run: |
           echo "=== CF runner diagnostics ==="
           node --version
@@ -229,7 +232,7 @@ jobs:
           fi
 
       - name: Upload CF test log
-        if: ${{ failure() }}
+        if: ${{ failure() || cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: cf-tests-${{ github.run_id }}
