@@ -63,7 +63,7 @@ describe("HTTP provider model catalog adapter", () => {
           id: "deepseek-flash",
           name: expect.any(String),
           provider: "deepseek",
-          api: "openai-responses",
+          api: "openai-completions",
           reasoning: true,
           context_window: expect.any(Number),
           max_tokens: expect.any(Number),

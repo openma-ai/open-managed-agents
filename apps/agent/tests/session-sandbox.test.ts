@@ -50,7 +50,12 @@ function cfDeps(resources: Array<Record<string, unknown>> = []) {
   const env = {
     SANDBOX: {},
     FILES_BUCKET: {},
+    FILES_BUCKET_NAME: "files",
+    R2_ENDPOINT: "https://r2.example",
+    R2_ACCESS_KEY_ID: "id",
+    R2_SECRET_ACCESS_KEY: "secret",
     MEMORY_BUCKET: {},
+    MEMORY_BUCKET_NAME: "memory",
     MAIN_MCP: {
       async resolveManagedSessionInputs() { return { type: "found", session: { resources } }; },
       async materializeManagedMemorySnapshot(input: { memoryStoreId: string; runtimeGeneration?: string }) {
