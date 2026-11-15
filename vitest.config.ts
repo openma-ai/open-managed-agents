@@ -67,6 +67,8 @@ const cfWorkerOptions = {
       API_KEY: "test-key",
       // The local Sandbox stub models a configured managed mount. These are
       // inert fixture values, never credentials for an external object store.
+      CLOUDFLARE_ACCOUNT_ID: "test-account",
+      MEMORY_BUCKET_NAME: "test-memory",
       FILES_BUCKET_NAME: "test-files",
       R2_ENDPOINT: "https://r2.test.invalid",
       R2_ACCESS_KEY_ID: "test-r2-access",

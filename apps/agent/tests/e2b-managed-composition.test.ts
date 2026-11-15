@@ -4,7 +4,7 @@ import { E2B_MANAGED_SYNC_SETUP } from "@open-managed-agents/sandbox-adapter-e2b
 const observed = vi.hoisted(() => ({ commands: [] as { command: string; user?: string }[], writes: [] as { path: string; user?: string; content: string }[], files: new Map<string, string>(), networks: [] as {allowOut?:string[]}[] }));
 vi.mock("e2b", () => ({ Sandbox: {
   create: async () => ({ sandboxId: "physical", kill: async () => {}, updateNetwork: async (network: {allowOut?:string[]}) => { observed.networks.push(network); },
-    commands: { run: async (command: string, options: { user?: string } = {}) => { observed.commands.push({ command, user: options.user }); return { exitCode: 0, stdout: command.startsWith("cat ") ? "generation" : "", stderr: "" }; } },
+    commands: { run: async (command: string, options: { user?: string } = {}) => { observed.commands.push({ command, user: options.user }); return { exitCode: 0, stdout: command.includes("id -u; id -g") ? "1000\n1000" : command.startsWith("cat ") ? "generation" : "", stderr: "" }; } },
     files: {
       write: async (path: string, content: string, options: { user?: string } = {}) => { observed.writes.push({path, content, user: options.user}); observed.files.set(path, content); if(path.endsWith(".go")) observed.files.set(path.replace(/\.go$/, ".response.json"), JSON.stringify({ok:true,id:"native",epoch:"epoch",pid:19})); },
       read: async (path: string) => path.endsWith("/ready") ? "oma-managed-v2" : observed.files.get(path),
@@ -22,8 +22,8 @@ it("ordinary E2B commands run as oma-worker while setup alone is root", async ()
   observed.commands.length=0;
   await build().exec("agent-command");
   expect(observed.commands.find(call=>call.command==="agent-command")?.user).toBe("oma-worker");
-  expect(observed.commands.find(call=>call.command.startsWith("mkdir -p"))?.user).toBe("root");
-  expect(observed.commands).toContainEqual({ command: E2B_MANAGED_SYNC_SETUP, user: "root" });
+  expect(observed.commands.find(call=>call.command.includes("mkdir -p"))?.user).toBe("root");
+  expect(observed.commands.some(call=>call.command.includes(E2B_MANAGED_SYNC_SETUP) && call.user === "root")).toBe(true);
 });
 it("Work authority is checked before any E2B acquire when the claim has been lost", async () => {
   const sandbox=build({attempt:{workspaceId:"ws",sessionId:"sess",executionId:"work",attemptId:"environment-work-claim:3",ownerId:"env",generation:3},isCurrent:async()=>false,token:async()=>"token"});

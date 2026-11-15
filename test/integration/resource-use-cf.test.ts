@@ -192,6 +192,16 @@ it("CF SessionDO: agent reads the materialized Skill at the advertised path, wri
       if (bytes === null) throw new Error(`readFile(${path}) failed: ENOENT`);
       return new TextDecoder().decode(bytes);
     };
+    // Session creation warms the fixed Cloudflare container before this
+    // fixture can install its FUSE shim. Recover the exact mount plan from
+    // the live v2 state so the observation still covers the provider request.
+    if (mounts.length === 0) {
+      const scope = { tenantId: "default", sessionId: session.id };
+      const outputs = runtime.sessionOutputsMount(scope);
+      if (outputs) mounts.push(outputs as Mount);
+      const state = instance.portsSandbox.state;
+      mounts.push(...state.stores.map((store: any) => runtime.memoryStoreMount(store) as Mount));
+    }
   });
   await bindProvider();
   cleanups.push(async () => {

@@ -10,7 +10,7 @@ import { dispatchCfWorkRunnerRequest } from "../src/runtime/cf-work-runner-entry
 // canonical ingress run in workerd; this does not certify a real E2B template.
 const provider=vi.hoisted(()=>({launches:[] as any[],files:new Map<string,string>(),commands:[] as any[], worker:undefined as undefined|((launch:any)=>Promise<void>)}));
 vi.mock("e2b",()=>({Sandbox:{create:async()=>({sandboxId:"native-physical",kill:async()=>{},updateNetwork:async()=>{},
- commands:{run:async(command:string,options:unknown)=>{provider.commands.push({command,options});return {exitCode:0,stdout:command.includes("OMA_ACP_INSTALL_OK")?"OMA_ACP_LAUNCHER=/home/oma-worker/.oma/installed-agent/pi-acp/0.1.8/acp-launch.sh\nOMA_ACP_INSTALL_OK":command.startsWith("cat ")?"generation":"",stderr:""};}},
+ commands:{run:async(command:string,options:unknown)=>{provider.commands.push({command,options});return {exitCode:0,stdout:command.includes("id -u; id -g")?"1000\n1000":command.includes("OMA_ACP_INSTALL_OK")?"OMA_ACP_LAUNCHER=/home/oma-worker/.oma/installed-agent/pi-acp/0.1.8/acp-launch.sh\nOMA_ACP_INSTALL_OK":command.startsWith("cat ")?"generation":"",stderr:""};}},
  files:{read:async(path:string)=>path.endsWith("/ready")?"oma-managed-v2":provider.files.get(path),write:async(path:string,content:string)=>{
  provider.files.set(path,content);if(path.endsWith(".go")){const launch=JSON.parse(provider.files.get(path.replace(/\.go$/,".json"))!);provider.launches.push(launch);await provider.worker?.(launch);provider.files.set(path.replace(/\.go$/,".response.json"),JSON.stringify({ok:true,id:launch.id,epoch:"epoch",pid:41}));}
  }},

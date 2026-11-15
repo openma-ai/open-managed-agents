@@ -27,6 +27,7 @@ vi.mock("e2b", () => {
   commands = { run: async (cmd:string) => {
    remote.commands.push(cmd); let stdout="";
    if(cmd.includes("OMA_RCLONE_DRAIN_V1")) { await remote.drain?.(); return {exitCode:0,stdout:JSON.stringify({type:"drained",version:1}),stderr:""}; }
+   if(cmd.includes("id -u; id -g")) stdout="1000\n1000";
    if(cmd.startsWith("cd /workspace &&") && remote.files.has("/workspace/outputs/result.txt")) stdout=btoa("./outputs/result.txt\0");
    const probe=/if \[ -f '([^']+)' \]/.exec(cmd); if(probe) stdout=remote.files.has(probe[1])?"1":"0";
    const scan=/cd '(\/mnt\/memory\/[^']+)' && find/.exec(cmd);
@@ -142,7 +143,7 @@ it.each([false,true])("persists changed Memory through canonical D1 before check
  remote.files.set("/mnt/memory/notes/.openma-memory-store",`openma-memory-store-v1\n${mountId}`);
  remote.files.set("/mnt/memory/notes/learning.md","actual physical learning");
  if(native) remote.drain=async()=>{await env.MEMORY_BUCKET!.put(root+"/data/learning.md","actual physical learning");};
- remote.onSnapshot=async()=>{const rows=(await f.sql.prepare("SELECT document FROM managed_memories WHERE memory_store_id=?").bind(storeId).all<{document:string}>()).results!;expect(rows.map(r=>JSON.parse(r.document))).toMatchObject([{path:"/learning.md",content:"actual physical learning"}]);};
+ remote.onSnapshot=async()=>{const rows=(await f.sql.prepare("SELECT document FROM managed_memories WHERE memory_store_id=?").bind(storeId).all<{document:string}>()).results!; const documents=rows.map(r=>JSON.parse(r.document)); expect(documents).toMatchObject([{path:"/learning.md"}]); const content=await env.MEMORY_BUCKET!.get(documents[0].contentObjectKey); expect(await content?.text()).toBe("actual physical learning");};
  const response=await f.send("work-checkpoint",{turnId:"input",revision:3});expect(response.status,await response.clone().text()).toBe(200);
  expect(remote.snapshots).toBe(1);
 });

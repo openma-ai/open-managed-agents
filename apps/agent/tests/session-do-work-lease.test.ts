@@ -14,7 +14,7 @@ import { WebCryptoAesGcm } from "@open-managed-agents/integrations-adapters-cf";
 const provider=vi.hoisted(()=>({creates:0,starts:0,kills:0,renewals:0,failRenew:false,reads:0,connects:0,state:"running",autoResume:false,readFailure:false,renewGate:undefined as Promise<void>|undefined,ops:[] as string[],files:new Map<string,string>(),slot:null as any,processes:new Map<string,any>(),hold:undefined as undefined|{entered:()=>void;wait:Promise<void>;op?:string;skip?:number}}));
 vi.mock("e2b",()=>{
  const sandbox={sandboxId:"physical",setTimeout:async()=>{provider.renewals++;if(provider.failRenew)throw Error("provider unavailable");if(provider.renewGate)await provider.renewGate;},kill:async()=>{},updateNetwork:async()=>{},
- commands:{run:async(command:string)=>({exitCode:0,stdout:command.includes("OMA_ACP_INSTALL_OK")?"OMA_ACP_LAUNCHER=/home/oma-worker/.oma/installed-agent/codex-acp/1.8.0/acp-launch.sh\nOMA_ACP_INSTALL_OK":command.includes("cat /tmp/.oma-warm")?"generation":"",stderr:""})},
+ commands:{run:async(command:string)=>({exitCode:0,stdout:command.includes("id -u; id -g")?"1000\n1000":command.includes("OMA_ACP_INSTALL_OK")?"OMA_ACP_LAUNCHER=/home/oma-worker/.oma/installed-agent/codex-acp/1.8.0/acp-launch.sh\nOMA_ACP_INSTALL_OK":command.includes("cat /tmp/.oma-warm")?"generation":"",stderr:""})},
  files:{read:async(path:string)=>{
   if(path.endsWith("/ready"))return "oma-managed-v2";
   const req=JSON.parse(provider.files.get(path.replace(/\.response.json$/,".json"))!);
@@ -54,7 +54,7 @@ async function fixture() {
   const sql = new CfD1SqlClient((env as typeof env & { MAIN_DB: D1Database }).MAIN_DB), suffix = crypto.randomUUID();
   const delivery = { workspaceId: "default", environmentId: "env_"+suffix, sessionId: "sess_"+suffix, workId: "new_"+suffix, apiBaseUrl: "https://control.test", workSecret: "" };
   await seedSandboxGatewaySessionRows(sql, "default", {id:delivery.sessionId,environmentId:delivery.environmentId,vaultIds:[],agent:{id:"agent",version:1},archivedAt:null});
-  await sql.prepare("UPDATE managed_sessions SET document=? WHERE workspace_id='default' AND id=?").bind(JSON.stringify({id:delivery.sessionId,environmentId:delivery.environmentId,agent:{id:"agent",version:1,openma:{harness:"acp-sandbox",acp:{agent:{registry:"codex-acp@1.8.0"}}}}}),delivery.sessionId).run();
+  await sql.prepare("UPDATE managed_sessions SET document=? WHERE workspace_id='default' AND id=?").bind(JSON.stringify({id:delivery.sessionId,environmentId:delivery.environmentId,resources:[],agent:{id:"agent",version:1,openma:{harness:"acp-sandbox",acp:{agent:{registry:"codex-acp@1.8.0"}}}}}),delivery.sessionId).run();
   await sql.prepare("INSERT OR REPLACE INTO managed_environments (workspace_id,id,document,revision,created_at,updated_at,archived_at) VALUES ('default',?,?,1,?,?,NULL)").bind(delivery.environmentId,JSON.stringify({id:delivery.environmentId,config:{type:"cloud"}}),Date.now(),Date.now()).run();
   const work = new SqlEnvironmentWorkStore(sql,{seal:async({plaintext})=>({ciphertext:plaintext}),open:async({ciphertext})=>({plaintext:ciphertext})});
   async function insert(id:string,generation:number) {

@@ -719,7 +719,7 @@ describe("in-sandbox Session resource wiring", () => {
         { exec, gitCheckout: vi.fn(async () => undefined) } as unknown as SandboxExecutor,
         [{ type: "github_repository", url: "https://github.com/o/r.git", mount_path: "/workspace/r" }],
         {} as KVNamespace,
-      )).resolves.toBeUndefined();
+      )).resolves.toEqual([]);
     });
   });
 });

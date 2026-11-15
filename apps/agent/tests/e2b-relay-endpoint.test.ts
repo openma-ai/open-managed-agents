@@ -5,7 +5,7 @@ const observed = vi.hoisted(() => ({ creates: 0, commands: [] as string[], envs:
 vi.mock("e2b", () => ({ Sandbox: { create: async () => {
   observed.creates++;
   // A trusted-template create returns only after the launcher wrote its ready marker.
-  return { sandboxId: "box-1", commands: { run: async (cmd: string, opts: unknown) => { observed.commands.push(cmd); observed.envs.push(opts); return { exitCode: 0, stdout: "ok", stderr: "" }; } }, files: { read: async (path: string) => path === "/run/oma-managed/ready" ? "oma-managed-v2" : "", write: async () => {} }, updateNetwork: async () => {}, kill: async () => {} };
+  return { sandboxId: "box-1", commands: { run: async (cmd: string, opts: unknown) => { observed.commands.push(cmd); observed.envs.push(opts); return { exitCode: 0, stdout: cmd.includes("id -u; id -g") ? "1000\n1000" : "ok", stderr: "" }; } }, files: { read: async (path: string) => path === "/run/oma-managed/ready" ? "oma-managed-v2" : "", write: async () => {} }, updateNetwork: async () => {}, kill: async () => {} };
 } } }));
 
 const scope = { workspaceId: "ws", sessionId: "sess", environmentId: "env", workId: "exe" };

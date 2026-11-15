@@ -3,6 +3,14 @@ import { initialSandboxState } from "@open-managed-agents/session-runtime";
 import { createCloudflareSessionSandbox } from "../src/runtime/cloudflare-session-sandbox";
 import { setCloudflareSandboxForTest } from "../src/runtime/sandbox";
 
+const recoveryEnv = {
+  FILES_BUCKET: {} as never,
+  FILES_BUCKET_NAME: "test-files",
+  R2_ENDPOINT: "https://r2.test.invalid",
+  R2_ACCESS_KEY_ID: "test-access",
+  R2_SECRET_ACCESS_KEY: "test-secret",
+} as never;
+
 afterEach(() => setCloudflareSandboxForTest(undefined));
 
 it("probe rejection reaches warm caller without provisioning or publishing", async () => {
@@ -11,10 +19,11 @@ it("probe rejection reaches warm caller without provisioning or publishing", asy
   setCloudflareSandboxForTest({
     describe: async () => { throw failure; },
     provision: async () => { effects++; }, exec: async () => { effects++; },
+    sessionOutputsMount: () => null,
   });
   const kv = new Map<string, unknown>();
   const sandbox = createCloudflareSessionSandbox({
-    env: {} as never, sandboxId: "sandbox", sandboxImage: null,
+    env: recoveryEnv, sandboxId: "sandbox", sandboxImage: null,
     storage: { kv: { get: (k: string) => kv.get(k), put: (k: string, v: unknown) => { kv.set(k, v); } } } as never,
     session: () => ({ tenantId: "ws", environmentId: "env", sessionId: "", agentId: null }),
     fence: () => undefined, relayToken: async () => { effects++; return "forbidden"; },
@@ -41,10 +50,11 @@ it.each([false, true])("recordless CF warm distinguishes fresh from live contain
     },
     setBackupContext: async () => undefined,
     setBillingContext: async () => undefined,
+    sessionOutputsMount: () => null,
   });
   const kv = new Map<string, unknown>();
   const sandbox = createCloudflareSessionSandbox({
-    env: {} as never, sandboxId: "sandbox", sandboxImage: null,
+    env: recoveryEnv, sandboxId: "sandbox", sandboxImage: null,
     storage: { kv: { get: (k: string) => kv.get(k), put: (k: string, v: unknown) => { kv.set(k, v); } } } as never,
     session: () => ({ tenantId: "ws", environmentId: "env", sessionId: "", agentId: null }),
     fence: () => undefined, relayToken: async () => { throw new Error("warm must not issue token"); },
@@ -69,13 +79,14 @@ it.each([undefined, "60000"])("CF recovery uses only CAS with idle setting %s", 
     setBackupContext: async () => undefined,
     setBillingContext: async () => undefined,
     exec: async () => ({ success: true, exitCode: 0, stdout: "", stderr: "" }),
+    sessionOutputsMount: () => null,
   });
   const kv = new Map<string, unknown>([["cloudflare_sandbox_state", {
     ...initialSandboxState(), phase: "lost", version: 3,
     latestSnapshot: { status: "taken", ref: { provider: "cloudflare", ref: "cas-snapshot", kind: "snapshot", metadata: { kind: "container" } } },
   }]]);
   const sandbox = createCloudflareSessionSandbox({
-    env: { SANDBOX_IDLE_PAUSE_MS: idleMs, MAIN_DB: { prepare: () => { d1Reads++; throw new Error("D1 pointer must not be read"); } } } as never,
+    env: { ...recoveryEnv, SANDBOX_IDLE_PAUSE_MS: idleMs, MAIN_DB: { prepare: () => { d1Reads++; throw new Error("D1 pointer must not be read"); } } } as never,
     sandboxId: "sandbox", sandboxImage: null,
     storage: { kv: { get: (k: string) => kv.get(k), put: (k: string, v: unknown) => { kv.set(k, v); } } } as never,
     session: () => ({ tenantId: "ws", environmentId: "env", sessionId: "", agentId: null }),
