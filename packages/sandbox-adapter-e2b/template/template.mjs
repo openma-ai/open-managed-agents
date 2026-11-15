@@ -27,7 +27,7 @@ export function managedTemplate(sdk, preparedContext, expectedPin) {
   const verify = "/usr/bin/python3 -I -S /opt/oma-managed/verify-install.py --source-sha " + pin.sourceSha + " --lock-sha256 " + pin.lockSha256;
   return sdk.Template({ fileContextPath: preparedContext }).fromImage("node:24.18.0-bookworm-slim")
     .setUser("root")
-    .runCmd("apt-get update -qq && apt-get install -y -qq python3 ca-certificates curl unzip fuse3 sudo && rm -rf /var/lib/apt/lists/* && useradd --create-home oma-worker && mkdir -p /opt/oma-managed/worker /workspace /run/oma-managed && chown oma-worker:oma-worker /workspace && chmod 700 /opt/oma-managed /run/oma-managed")
+    .runCmd("apt-get update -qq && apt-get install -y -qq python3 ca-certificates curl unzip fuse3 s3fs sudo && rm -rf /var/lib/apt/lists/* && useradd --create-home oma-worker && mkdir -p /opt/oma-managed/worker /workspace /run/oma-managed && chown oma-worker:oma-worker /workspace && chmod 700 /opt/oma-managed /run/oma-managed")
     .runCmd(prepareGuestSudo)
     .runCmd(prepareMemoryRoot)
     // Same release and checksum as scripts/install-ci-rclone.sh. Bookworm's

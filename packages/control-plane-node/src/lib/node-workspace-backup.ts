@@ -81,32 +81,23 @@ export class NodeWorkspaceBackupService implements WorkspaceBackupService {
       },
     });
     const now = this.nowMs();
-    // Schema after apps/main/migrations/0011_workspace_backups.sql:
-    //   id              BIGSERIAL PRIMARY KEY  (auto)
-    //   tenant_id       TEXT
-    //   environment_id  TEXT NOT NULL  ← required
-    //   backup_handle   TEXT NOT NULL  ← was blob_key in pre-0011 applySchema
-    //   created_at, expires_at  BIGINT
-    //   source_session_id  TEXT  ← was session_id in pre-0011
-    // The pre-0011 columns (id=TEXT, session_id, blob_key, size_bytes) are
-    // gone; we serialize the handle JSON into backup_handle so the existing
-    // BackupHandle shape (id+dir) round-trips through one column.
-    const handleJson = JSON.stringify({ id, dir: blobKey });
+    // Node PostgreSQL/MySQL/SQLite use the consolidated Node schema:
+    // id, tenant_id, session_id, blob_key, size_bytes, created_at, expires_at.
+    // Cloudflare's D1 adapter has a separate backup_handle/source_session_id
+    // shape and does not use this service.
     await this.deps.sql
       .prepare(
-        `INSERT INTO workspace_backups (tenant_id, environment_id, backup_handle, created_at, expires_at, source_session_id)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO workspace_backups (id, tenant_id, session_id, blob_key, size_bytes, created_at, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
+        id,
         input.tenantId,
-        // environment_id: Node sessions today are single-env; the backup
-        // is logically scoped by session, so use the session id as a
-        // synthetic env id when the caller doesn't supply one.
         input.sessionId,
-        handleJson,
+        blobKey,
+        tarBytes.byteLength,
         now,
         now + this.ttlSec * 1000,
-        input.sessionId,
       )
       .run();
     this.logger.log(
@@ -136,19 +127,14 @@ export class NodeWorkspaceBackupService implements WorkspaceBackupService {
     const now = this.nowMs();
     const row = await this.deps.sql
       .prepare(
-        `SELECT id, backup_handle FROM workspace_backups
-         WHERE source_session_id = ? AND tenant_id = ? AND expires_at > ?
+        `SELECT id, blob_key FROM workspace_backups
+         WHERE session_id = ? AND tenant_id = ? AND expires_at > ?
          ORDER BY created_at DESC LIMIT 1`,
       )
       .bind(input.sessionId, input.tenantId, now)
-      .first<{ id: string | number; backup_handle: string }>();
+      .first<{ id: string; blob_key: string }>();
     if (!row) return null;
-    try {
-      const parsed = JSON.parse(row.backup_handle) as OrchestratorBackupHandle;
-      return parsed;
-    } catch {
-      return null;
-    }
+    return { id: row.id, dir: row.blob_key };
   }
 
   // ── helpers ──────────────────────────────────────────────────────────

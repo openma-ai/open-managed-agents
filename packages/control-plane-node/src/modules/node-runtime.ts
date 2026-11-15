@@ -236,7 +236,7 @@ export async function createNodeRuntime(
         id: row.id,
         name: row.name,
         prefix: row.prefix,
-        created_at: new Date(row.created_at).toISOString(),
+        created_at: msToIso(row.created_at),
         credential: row.credential_type === "environment" && row.environment_id !== null
           ? { type: "environment", environmentId: row.environment_id }
           : { type: "workspace" },
@@ -264,7 +264,7 @@ export async function createNodeRuntime(
         tenant_id: row.tenant_id,
         ...(row.user_id ? { user_id: row.user_id } : {}),
         name: row.name,
-        created_at: new Date(row.created_at).toISOString(),
+        created_at: msToIso(row.created_at),
         credential: row.credential_type === "environment" && row.environment_id !== null
           ? { type: "environment", environmentId: row.environment_id }
           : { type: "workspace" },
@@ -361,6 +361,12 @@ export async function createNodeRuntime(
     services,
     apiKeyStorage,
   };
+}
+
+function msToIso(ms: number | string): string {
+  const value = Number(ms);
+  if (!Number.isFinite(value)) throw new Error(`Invalid API key timestamp: ${String(ms)}`);
+  return new Date(value).toISOString();
 }
 
 export type NodeRuntime = Awaited<ReturnType<typeof createNodeRuntime>>;

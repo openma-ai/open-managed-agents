@@ -450,6 +450,8 @@ function toResourceRow(r: typeof session_resources.$inferSelect): SessionResourc
   };
 }
 
-function msToIso(ms: number): string {
-  return new Date(ms).toISOString();
+function msToIso(ms: number | string): string {
+  const value = Number(ms);
+  if (!Number.isFinite(value)) throw new Error(`Invalid session timestamp: ${String(ms)}`);
+  return new Date(value).toISOString();
 }
