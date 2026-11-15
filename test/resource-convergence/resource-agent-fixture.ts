@@ -98,7 +98,9 @@ export function discoverOutputsDir(system: string): string | null {
 export const B64_OPEN = "B64[";
 export const B64_CLOSE = "]B64";
 export function catBase64Command(path: string): string {
-  return `printf '${B64_OPEN}'; base64 ${shq(path)} | tr -d '\\n'; printf '${B64_CLOSE}'`;
+  // macOS `base64` requires `-i` for a file path; GNU coreutils accepts the
+  // same form and keeps the fixture portable across local and CI runners.
+  return `printf '${B64_OPEN}'; base64 -i ${shq(path)} | tr -d '\\n'; printf '${B64_CLOSE}'`;
 }
 export function decodeMarkedBase64(text: string): string | null {
   const open = text.indexOf(B64_OPEN);
