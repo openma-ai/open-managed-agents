@@ -18,6 +18,7 @@ import { dispatchCfWorkRunnerRequest } from "../../apps/agent/src/runtime/cf-wor
 import { cfWorkFinalizationRoutes } from "../../apps/main/src/lib/cf-work-finalization";
 import { SessionDO } from "../../apps/agent/src/runtime/session-do";
 import { parseExecResult } from "@open-managed-agents/sandbox";
+import { initialSandboxState, transition } from "@open-managed-agents/session-runtime";
 it("CF native Work executing child chain: Skill script, Memory across restart, readonly callID and exact output download",async()=>{
  const unique=crypto.randomUUID();
  // test-worker has a legacy 0029 baseline. Exercise the real fail-closed 0031
@@ -52,7 +53,9 @@ it("CF native Work executing child chain: Skill script, Memory across restart, r
   async describe(){return {running,incarnation,mounts:mounts.map(m=>m.mountPath)};},
   async provision(input:any){incarnation=input.incarnation;mounts=input.mounts;
    const materialized=[];for(const m of mounts){const prefix=m.options.prefix.replace(/^\/+|\/+$/g,"")+"/";const page=await bucket(m).list({prefix});const files=[];for(const object of page.objects)files.push({name:object.key.slice(prefix.length),bytes:Buffer.from(await(await bucket(m).get(object.key))!.arrayBuffer()).toString("base64")});materialized.push({path:m.mountPath,prefix,readOnly:m.options.readOnly,files});}
-   await remote("/provision",{sessionId:session.id,mounts:materialized});running=true;return {incarnation,started:true,pendingMounts:[]};},
+   await remote("/provision",{sessionId:session.id,mounts:materialized});
+   if(input.containerSnapshot?.id) await remote("/restore",{id:input.containerSnapshot.id});
+   running=true;return {incarnation,started:true,pendingMounts:[]};},
   async exec(command:string){const parsed=parseExecResult(await io("exec",command));return {exitCode:parsed.exitCode,stdout:parsed.stdout,stderr:parsed.stderr};},
   async setOutboundHandler(){},async setOutboundByHost(){},async restrictOutboundToHosts(){},async startProcess(){throw Error("Native Work generic fallback forbidden");},
   async inspectWorkProcess(){if(process&&(await remote("/status")).exited)return {...process,status:"exited"};return process;},
@@ -66,6 +69,7 @@ it("CF native Work executing child chain: Skill script, Memory across restart, r
   },
   async workProcessIO(expected:any,op:any){expect(expected).toEqual(process);if(op.type==="run"){const result=await this.exec(op.command);console.log(JSON.stringify({op:"cf.work.native_io",command:op.command,exitCode:result.exitCode,stdout:result.stdout,stderr:result.stderr}));await flush();return result;}if(op.type==="read")return io("readFile",op.path);if(op.type==="readBytes")return Buffer.from(await io("readFileBytes",op.path),"base64");if(op.type==="write")return io(op.encoding==="base64"?"writeFileBytes":"writeFile",op.path,op.content);throw Error("Unknown native IO");},
   async restoreBackup(handle:any){await remote("/restore",handle);return {success:true,id:handle.id,dir:handle.dir};},
+  async createContainerSnapshot(){const result=await remote("/checkpoint");return {id:result.backup.id,size:result.backup.size};},
   async checkpointWorkProcess(expected:any){expect(expected).toEqual(process);return remote("/checkpoint");},async discardWorkCheckpoint(){throw Error("Unexpected checkpoint discard");},
  };
  setCloudflareSandboxForTest(physical as never);
@@ -77,7 +81,7 @@ it("CF native Work executing child chain: Skill script, Memory across restart, r
    if(!response.ok)console.log(JSON.stringify({op:"cf.work.child_http_failure",path:request.path,status:response.status,body:await response.clone().text()}));
    await remote("/reply",{id:request.id,status:response.status,headers:Object.fromEntries(response.headers),body:Buffer.from(await response.arrayBuffer()).toString("base64")});}
    await new Promise(r=>setTimeout(r,10));}})();
- const dispatch=async()=>{const response=await dispatchCfWorkRunnerRequest(new Request("http://internal/__internal/work/dispatch",{method:"POST",body:JSON.stringify({...claim,apiBaseUrl:peer,workSecret:Buffer.from(JSON.stringify({sessions_token:token,api_base_url:peer,claim_generation:1})).toString("base64url")})}),configured as never);expect(response.status,await response.clone().text()).toBe(200);};
+ const dispatch=async()=>{const response=await runInDurableObject(stub,async(_instance,state)=>{const owner={storage:state.storage,id:state.id.toString(),hasSessionExecution:false};const response=await dispatchCfWorkRunnerRequest(new Request("http://internal/__internal/work/dispatch",{method:"POST",body:JSON.stringify({...claim,apiBaseUrl:peer,workSecret:Buffer.from(JSON.stringify({sessions_token:token,api_base_url:peer,claim_generation:1})).toString("base64url")})}),configured as never,owner);if(!state.storage.kv.get("cloudflare_sandbox_state"))state.storage.kv.put("cloudflare_sandbox_state",transition(initialSandboxState(),{type:"acquire",handle:{provider:"cloudflare",runtimeId:session.id},at:Date.now()}));return response;});expect(response.status,await response.clone().text()).toBe(200);};
  const turn=async(text:string,count:number)=>{await json(`/v1/sessions/${session.id}/events`,{events:[{type:"user.message",content:[{type:"text",text}]}]});await expect.poll(async()=>{const status=await remote("/status");if(status.exited)throw Error(JSON.stringify(status.observations));return status.publications.length;},{timeout:20000}).toBe(count);
   const events=(await json(`/v1/sessions/${session.id}/events?limit=1000&order=asc`)).data;expect(events.filter((e:any)=>e.type==="session.status_idle").map((e:any)=>e.stop_reason.type)).toEqual(Array(count).fill("end_turn"));expect(events.filter((e:any)=>e.type==="session.error")).toEqual([]);const errors=events.filter((e:any)=>e.type==="agent.tool_result"&&e.tool_use_id==="readonly-write");expect(errors).toHaveLength(1);expect(errors[0].is_error).toBe(true);
   for(const [store,path,bytes] of [[rw,"/fact.md",MEMORY_FACT],[ro,"/seed.md",READONLY_SEED]] as const){const page=await json(`/v1/memory_stores/${store.id}/memories?limit=100`),entry=page.data.find((r:any)=>r.path===path);expect(entry).toBeDefined();expect((await json(`/v1/memory_stores/${store.id}/memories/${entry.id}?view=full`)).content).toBe(bytes);}
