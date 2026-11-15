@@ -12,7 +12,7 @@
 // with a bare ReadableStream and no OMA code — so that path cannot prove
 // anything about this route.
 import { registerCoreHarnesses } from "../../packages/agent-harness/src/builtins";
-import { registerHarness } from "../../packages/agent-harness/src/registry";
+import { registerHarness, setDefaultHarness } from "../../packages/agent-harness/src/registry";
 import { setCloudflareSandboxForTest } from "../../apps/agent/src/runtime/sandbox";
 import { env, exports } from "cloudflare:workers";
 import { artifactPublicationModel } from "../../packages/agent-harness/test/artifact-publication-model";
@@ -91,8 +91,9 @@ describe("Cloudflare Agents API automatic artifact publication", () => {
       workspace.set("/workspace/outputs/failure.txt", new TextEncoder().encode("retained"));
       await new PiHarness().run({ ...ctx, pi: { models, model: faux.getModel(), thinkingLevel: "off", speed: "standard" } });
     } }));
+    setDefaultHarness("artifact-failure");
     try {
-      const session = await json<{id:string}>(await request("/agents/sessions", { method: "POST", body: JSON.stringify({ agent: { model: "claude-sonnet-4-6", harness: "artifact-failure" }, environment: { type: "openai_hosted" }, input: "write" }) }));
+      const session = await json<{id:string}>(await request("/agents/sessions", { method: "POST", body: JSON.stringify({ agent: { model: "claude-sonnet-4-6" }, environment: { type: "openai_hosted" }, input: "write" }) }));
       await expect.poll(() => failedReads, { timeout: 15_000 }).toBe(1);
       await expect.poll(async () => (await testEnv.MAIN_DB.prepare("SELECT state FROM managed_session_executions WHERE session_id=? ORDER BY admitted_at_ms DESC LIMIT 1").bind(session.id).first<{state:string}>())?.state, {timeout:15_000}).toBe("completed");
       const verify = async () => {
@@ -153,8 +154,9 @@ describe("Cloudflare Agents API automatic artifact publication", () => {
         ctx.runtime.broadcast({ type: "agent.message", content: [{ type: "text", text: `CF_DONE_${turns}` }] });
       },
     }));
+    setDefaultHarness("artifact-dedup");
 
-    const session = await json<{ id: string }>(await request("/agents/sessions", { method: "POST", body: JSON.stringify({ agent: { model: "claude-sonnet-4-6", harness: "artifact-dedup" }, environment: { type: "openai_hosted" } }) }));
+    const session = await json<{ id: string }>(await request("/agents/sessions", { method: "POST", body: JSON.stringify({ agent: { model: "claude-sonnet-4-6" }, environment: { type: "openai_hosted" } }) }));
     const path = `/agents/sessions/${session.id}`;
 
     // Disconnect while the first turn is running. The durable turn must still
