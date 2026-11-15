@@ -95,6 +95,7 @@
   // setup-cf.sh fills in the account id (or self-hoster sets it manually).
   "vars": {
     "MEMORY_BUCKET_NAME": "managed-agents-memory",
+    "FILES_BUCKET_NAME": "managed-agents-files",
     "WORKSPACE_BUCKET_NAME": "managed-agents-workspace",
     "BACKUP_BUCKET_NAME": "managed-agents-backups",
     "CLOUDFLARE_ACCOUNT_ID": "<set-by-setup-cf-sh>"
@@ -179,6 +180,7 @@
       "ai": { "binding": "AI" },
       "vars": {
         "MEMORY_BUCKET_NAME": "managed-agents-memory",
+        "FILES_BUCKET_NAME": "managed-agents-files",
         "WORKSPACE_BUCKET_NAME": "managed-agents-workspace",
         "BACKUP_BUCKET_NAME": "managed-agents-backups",
         "CLOUDFLARE_ACCOUNT_ID": "44af79e51582ca20c9003eb926540242"
@@ -237,6 +239,7 @@
       "ai": { "binding": "AI" },
       "vars": {
         "MEMORY_BUCKET_NAME": "managed-agents-memory-staging",
+        "FILES_BUCKET_NAME": "managed-agents-files",
         "WORKSPACE_BUCKET_NAME": "managed-agents-workspace",
         "BACKUP_BUCKET_NAME": "managed-agents-backups",
         "CLOUDFLARE_ACCOUNT_ID": "44af79e51582ca20c9003eb926540242"

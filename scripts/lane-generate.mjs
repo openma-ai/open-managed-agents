@@ -207,6 +207,16 @@ const agent = resolveStaging("apps/agent/wrangler.jsonc");
 agent.name = NAMES.agent;
 delete agent.routes;
 delete agent.triggers;
+// Cloudflare Container application names are account-scoped. Reusing the
+// staging name makes a lane upload a worker version but fails while applying
+// the Durable Object-managed Container settings. Keep each generated lane
+// isolated from staging and from other lanes.
+agent.containers = (agent.containers || []).map((container) => ({
+  ...container,
+  name: container.name
+    ? `${container.name}-${LANE}`
+    : `${NAMES.agent}-container-${LANE}`,
+}));
 agent.services = [
   { binding: "INTEGRATIONS", service: NAMES.integrations },
   // MAIN binding so AcpProxyHarness can call /v1/oma/internal/runtime-attach-harness
