@@ -99,6 +99,9 @@ describe("main lifecycle parity through production Node HTTP + ACP supervisor", 
       await running.worker.waitFor(() => prompts.length,1);
       await f.message("live-correction");
       await running.worker.waitFor(() => steers,["live-correction"]);
+      // The steer hook records the canonical processed_at asynchronously;
+      // waiting for steers alone can race that read on a busy CI worker.
+      await running.worker.waitFor(() => atSteer.length,1);
       expect(prompts).toEqual([firstNativePrompt("already-consumed-first-turn")]);
       expect(atSteer).toEqual([expect.any(String)]);
     } finally { release(); await running?.run.stop("test complete"); await running?.completion; await f.dispose(); }
