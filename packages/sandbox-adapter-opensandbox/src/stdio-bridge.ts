@@ -120,7 +120,7 @@ export async function spawnBridge(
       await response.body.dump();
       throw new Error(`OpenSandbox stdio ${path} failed (HTTP ${response.statusCode})`);
     }
-    return Readable.toWeb(response.body) as ReadableStream<Uint8Array>;
+    return Readable.toWeb(response.body) as unknown as ReadableStream<Uint8Array>;
   };
   const request = async (path: string, init: RequestInit = {}) => {
     const response = await fetch(`${endpoint.endpoint}${path}`, {
