@@ -65,6 +65,10 @@ export class AcpSandboxHarness implements HarnessInterface {
   #resumeAcpSessionId: string | null = null;
   #runtime: HarnessRuntime | null = null;
   #preparation: AcpSandboxAgentPreparation | null = null;
+  // A failed child dispose is a lifecycle barrier. Keep the original error
+  // across the execution-finalization/finally boundary so a later host
+  // dispose cannot accidentally proceed after an unconfirmed exit.
+  #disposeFailure: unknown = null;
   #semanticRecoveryReason: AcpSemanticRecoveryReason | null = null;
   #contextState: HarnessContextState = { state: "none" };
 
@@ -372,15 +376,18 @@ export class AcpSandboxHarness implements HarnessInterface {
     try {
       await session.dispose();
       this.#session = null;
+      this.#disposeFailure = null;
     } catch (error) {
       if (error instanceof SandboxGoneError) {
         this.#session = null; this.#runtime = null; this.#preparation = null;
+        this.#disposeFailure = null;
         runtime.broadcast({ type: "session.warning", source: "sandbox.persistence",
           message: "ACP sandbox was lost; native state was not captured." });
         return true;
       }
       // Exit not confirmed: keep the child as the barrier so the host's
       // dispose also rejects instead of touching state under it.
+      this.#disposeFailure ??= error;
       this.#emitError(runtime, error instanceof Error ? error.message : String(error));
       return false;
     }
@@ -397,16 +404,22 @@ export class AcpSandboxHarness implements HarnessInterface {
     const session = this.#session;
     const runtime = this.#runtime;
     const preparation = this.#preparation;
+    let failure: unknown = this.#disposeFailure ?? undefined;
     this.#session = null;
     this.#configKey = null;
     this.#resumeAcpSessionId = null;
     this.#runtime = null;
     this.#preparation = null;
+    this.#disposeFailure = null;
     this.#semanticRecoveryReason = null;
     // A failed dispose means exit was not confirmed. Do not race the live
     // process by copying or deleting any of its native state.
-    await session?.dispose();
-    let failure: unknown;
+    try {
+      await session?.dispose();
+    } catch (error) {
+      failure ??= error;
+    }
+    if (failure !== undefined && failure !== null) throw failure;
     // A host shutdown is a placement change, not logical session deletion.
     // Keep the native ACP id and session artifacts under /oma/harness-state
     // (ADR 0016) so a replacement host can resume after restoring the
