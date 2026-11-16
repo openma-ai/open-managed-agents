@@ -173,14 +173,33 @@ jobs:
       - name: Web test
         run: pnpm test:web
 
+  # Keep the required `cf` check as a small aggregate job. The actual work is
+  # split below so workerd remains serialized inside each process while the
+  # independent processes run concurrently.
   cf:
+    if: always() && (needs.changes.outputs.cf == 'true' || needs.changes.outputs.parity_cf == 'true')
+    runs-on: ubuntu-24.04
+    needs: [changes, cf-preflight, cf-root, cf-packages]
+    timeout-minutes: 5
+    steps:
+      - name: Require all CF lanes
+        run: |
+          for lane in \
+            "preflight=${{ needs.cf-preflight.result }}" \
+            "root=${{ needs.cf-root.result }}" \
+            "packages=${{ needs.cf-packages.result }}"; do
+            echo "$lane"
+            if [[ "$lane" != *=success ]]; then
+              echo "CF lane did not pass: $lane" >&2
+              exit 1
+            fi
+          done
+
+  cf-preflight:
     needs: changes
     if: needs.changes.outputs.cf == 'true' || needs.changes.outputs.parity_cf == 'true'
     runs-on: ubuntu-24.04
-    # The workerd pool is intentionally serialized below to avoid the
-    # EnvironmentTeardownError race.  Keep enough headroom for the full
-    # root suite instead of killing a healthy run at the old 45-minute cap.
-    timeout-minutes: 60
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -206,37 +225,116 @@ jobs:
       - name: CF typecheck
         run: pnpm typecheck:ci:cf
 
-      - name: CF tests
+      - name: CF test preflight
+        run: pnpm test:ci:cf:preflight
+
+  cf-root:
+    needs: [changes, cf-preflight]
+    if: needs.changes.outputs.cf == 'true' || needs.changes.outputs.parity_cf == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6.1.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: CF root tests (shard ${{ matrix.shard }}/4)
         env:
-          # Workerd's RPC pool must drain before its file environments close.
-          # Serializing root CF files removes the shutdown race while keeping
-          # the normal local developer profile at two workers.
+          # Keep workerd serialized inside every shard. The speedup comes from
+          # independent processes, without reintroducing teardown races.
           OMA_CF_VITEST_MAX_WORKERS: 1
           OMA_CF_VITEST_SERIAL: "1"
           OMA_CF_VITEST_VERBOSE: "1"
         run: |
           set -o pipefail
-          pnpm test:ci:cf |& tee "$RUNNER_TEMP/cf-tests.log"
+          pnpm exec vitest run --shard=${{ matrix.shard }}/4 |& tee "$RUNNER_TEMP/cf-root-shard-${{ matrix.shard }}.log"
 
-      - name: CF test diagnostics
+      - name: CF shard diagnostics
         if: ${{ failure() || cancelled() }}
         run: |
-          echo "=== CF runner diagnostics ==="
+          echo "=== CF root shard ${{ matrix.shard }} diagnostics ==="
           node --version
           pnpm --version
-          echo "=== tail of CF test log ==="
-          if [ -f "$RUNNER_TEMP/cf-tests.log" ]; then
-            tail -240 "$RUNNER_TEMP/cf-tests.log"
-          else
-            echo "CF test log was not created"
-          fi
+          tail -240 "$RUNNER_TEMP/cf-root-shard-${{ matrix.shard }}.log" || true
 
-      - name: Upload CF test log
+      - name: Publish CF shard summary
+        if: ${{ always() }}
+        run: |
+          {
+            echo "### CF root shard ${{ matrix.shard }}/4"
+            tail -20 "$RUNNER_TEMP/cf-root-shard-${{ matrix.shard }}.log" || true
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload CF shard log
         if: ${{ failure() || cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: cf-tests-${{ github.run_id }}
-          path: ${{ runner.temp }}/cf-tests.log
+          name: cf-root-shard-${{ matrix.shard }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/cf-root-shard-${{ matrix.shard }}.log
+          if-no-files-found: warn
+
+  cf-packages:
+    needs: [changes, cf-preflight]
+    if: needs.changes.outputs.cf == 'true' || needs.changes.outputs.parity_cf == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6.1.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Cloudflare package tests
+        env:
+          OMA_CF_VITEST_MAX_WORKERS: 1
+          OMA_CF_VITEST_SERIAL: "1"
+          OMA_CF_VITEST_VERBOSE: "1"
+        run: |
+          set -o pipefail
+          pnpm test:ci:cf:packages |& tee "$RUNNER_TEMP/cf-package-tests.log"
+
+      - name: Publish CF package summary
+        if: ${{ always() }}
+        run: |
+          {
+            echo "### Cloudflare package tests"
+            tail -20 "$RUNNER_TEMP/cf-package-tests.log" || true
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload CF package log
+        if: ${{ failure() || cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: cf-package-tests-${{ github.run_id }}
+          path: ${{ runner.temp }}/cf-package-tests.log
           if-no-files-found: warn
 
   node:
