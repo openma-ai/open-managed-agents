@@ -60,6 +60,58 @@ describe("normalizeEvent", () => {
     expect(normalizeEvent({ type: "span.x", data: { occurred_at: iso(6) } }, 0)!.ts).toBe(T0 + 6);
   });
 
+  it("unwraps Managed vendor spans and canonical tool lifecycle events", () => {
+    const model = normalizeEvent({
+      type: "vendor.event",
+      id: "evt-end",
+      ts: iso(900),
+      data: {
+        id: "evt-end",
+        type: "span.model_request_end",
+        processed_at: iso(900),
+        model_request_start_id: "evt-start",
+        model_usage: { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+        is_error: false,
+      },
+    }, 0)!;
+    expect(model).toMatchObject({ type: "span.model_request_end", ts: T0 + 900, raw: { model_request_start_id: "evt-start" } });
+
+    const started = normalizeEvent({
+      type: "tool.started",
+      id: "evt-tool",
+      ts: iso(1000),
+      data: {
+        tool_call_id: "evt-tool",
+        tool_name: "read",
+        raw_input: { file_path: "/a.ts" },
+        adapter_meta: { managed_event_type: "agent.tool_use" },
+      },
+    }, 1)!;
+    expect(started).toMatchObject({ type: "agent.tool_use", ts: T0 + 1000, raw: { id: "evt-tool", name: "read", input: { file_path: "/a.ts" } } });
+
+    const completed = normalizeEvent({
+      type: "tool.completed",
+      id: "evt-result",
+      ts: iso(1200),
+      data: {
+        tool_call_id: "evt-tool",
+        content: [{ type: "text", text: "ok" }],
+        adapter_meta: { managed_event_type: "agent.tool_result" },
+      },
+    }, 2)!;
+    expect(completed).toMatchObject({ type: "agent.tool_result", ts: T0 + 1200, raw: { tool_use_id: "evt-tool" } });
+  });
+
+  it("maps canonical session lifecycle names back to turn boundaries", () => {
+    const idle = normalizeEvent({
+      type: "session.idle",
+      id: "idle-1",
+      ts: iso(1500),
+      data: { stop_reason: { type: "end_turn" } },
+    }, 0)!;
+    expect(idle).toMatchObject({ type: "session.status_idle", ts: T0 + 1500, raw: { stop_reason: { type: "end_turn" } } });
+  });
+
   it("falls back to the envelope row when data is malformed", () => {
     const e = normalizeEvent({ seq: 1, type: "agent.message", data: "{nope", ts: iso(0) }, 0)!;
     expect(e.type).toBe("agent.message");

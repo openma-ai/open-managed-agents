@@ -59,6 +59,88 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
+function managedAdapterType(value: unknown): string | undefined {
+  if (!isRecord(value)) return undefined;
+  const meta = value.adapter_meta;
+  if (!isRecord(meta)) return undefined;
+  return typeof meta.managed_event_type === "string" ? meta.managed_event_type : undefined;
+}
+
+/**
+ * The Managed Agents API crosses the OpenMA event boundary before the Console
+ * sees history. Canonical tool events and vendor-wrapped spans still carry the
+ * original Managed event in their payload; put that shape back at the Trace
+ * projection boundary so the existing pairing and lane layout can use it.
+ */
+function normalizeManagedGuiEvent(input: Record<string, unknown>): Record<string, unknown> {
+  const type = typeof input.type === "string" ? input.type : "";
+  const data = isRecord(input.data) ? input.data : undefined;
+  const occurredAt = input.ts ?? input.occurred_at;
+
+  const vendorPayload = data?.kind === "vendor" && isRecord(data.data) ? data.data : data;
+  if (type === "vendor.event" && vendorPayload && typeof vendorPayload.type === "string") {
+    return {
+      ...vendorPayload,
+      ...(vendorPayload.occurred_at === undefined && occurredAt !== undefined ? { occurred_at: occurredAt } : {}),
+      ...(vendorPayload.id === undefined && input.id !== undefined ? { id: input.id } : {}),
+      ...(vendorPayload.session_thread_id === undefined && input.session_thread_id !== undefined
+        ? { session_thread_id: input.session_thread_id }
+        : {}),
+    };
+  }
+
+  const managedType = managedAdapterType(data);
+  if ((type === "tool.started" || type === "tool.completed" || type === "tool.failed") && data && managedType) {
+    const callId = typeof data.tool_call_id === "string" ? data.tool_call_id : undefined;
+    const mcp = managedType.includes("mcp_tool");
+    const base = {
+      id: type === "tool.started" ? callId ?? input.id : input.id,
+      ...(occurredAt !== undefined ? { occurred_at: occurredAt } : {}),
+      ...(input.session_thread_id !== undefined ? { session_thread_id: input.session_thread_id } : {}),
+    };
+    if (type === "tool.started") {
+      return {
+        ...base,
+        type: managedType,
+        name: typeof data.tool_name === "string" ? data.tool_name : "tool",
+        input: data.raw_input,
+        ...(mcp && typeof data.adapter_meta === "object" && isRecord(data.adapter_meta)
+          && typeof data.adapter_meta.mcp_server_name === "string"
+          ? { mcp_server_name: data.adapter_meta.mcp_server_name }
+          : {}),
+      };
+    }
+    return {
+      ...base,
+      type: managedType === "agent.mcp_tool_use" ? "agent.mcp_tool_result" : "agent.tool_result",
+      ...(mcp ? { mcp_tool_use_id: callId } : { tool_use_id: callId }),
+      content: data.content ?? data.raw_output,
+      ...(type === "tool.failed" ? { is_error: true } : {}),
+    };
+  }
+
+  // OpenMA canonical lifecycle names are lossless, but the trace turn
+  // bucketing intentionally follows the original Managed Agents names.
+  const lifecycleType: Record<string, string> = {
+    "session.running": "session.status_running",
+    "session.idle": "session.status_idle",
+    "session.terminated": "session.status_terminated",
+  };
+  const legacyType = lifecycleType[type];
+  if (legacyType) {
+    return {
+      ...input,
+      type: legacyType,
+      ...(occurredAt !== undefined ? { occurred_at: occurredAt } : {}),
+      ...(legacyType === "session.status_idle" && data?.stop_reason !== undefined
+        ? { stop_reason: data.stop_reason }
+        : {}),
+    };
+  }
+
+  return input;
+}
+
 /** Resolve epoch ms from `occurred_at` / `ts` (ISO or unix seconds/ms). */
 export function resolveEventTime(...candidates: unknown[]): number | null {
   for (const c of candidates) {
@@ -92,6 +174,7 @@ export function normalizeEvent(input: unknown, index: number): TrajectoryEvent |
       // Malformed payload: keep the envelope row so it still shows up.
     }
   }
+  raw = normalizeManagedGuiEvent(raw);
   const type = typeof raw.type === "string" ? raw.type : typeof input.type === "string" ? input.type : "";
   if (!type) return null;
   const seqSource = input.seq ?? raw.seq;
@@ -100,7 +183,7 @@ export function normalizeEvent(input: unknown, index: number): TrajectoryEvent |
     index,
     type,
     seq: typeof seqSource === "number" ? seqSource : null,
-    ts: resolveEventTime(raw.occurred_at, data?.occurred_at, input.ts, raw.ts, raw.created_at),
+    ts: resolveEventTime(raw.occurred_at, data?.occurred_at, input.ts, raw.ts, raw.created_at, raw.processed_at, data?.processed_at),
     raw,
   };
 }

@@ -7,7 +7,7 @@ import {
 import { StatusPill } from "../../components/Badge";
 import { Button } from "@/components/ui/button";
 import { TraceView } from "../../components/timeline/TraceView";
-import { useApi } from "../../lib/api";
+import { ApiError, useApi } from "../../lib/api";
 
 /**
  * Session-detail trajectory views.
@@ -31,7 +31,7 @@ export function TrajectoryOutcomeChip({
 }: {
   trajectory: TrajectoryState;
 }) {
-  if (!trajectory || trajectory === "loading" || trajectory === "error") return null;
+  if (!trajectory || trajectory === "loading" || trajectory === "error" || trajectory === "unavailable") return null;
   if (trajectory.outcome === "running") return null;
   const tone = outcomeToStatusTone(trajectory.outcome);
   return (
@@ -49,7 +49,7 @@ export function TrajectoryRewardChip({
 }: {
   trajectory: TrajectoryState;
 }) {
-  if (!trajectory || trajectory === "loading" || trajectory === "error") return null;
+  if (!trajectory || trajectory === "loading" || trajectory === "error" || trajectory === "unavailable") return null;
   const r = trajectory.reward;
   if (!r) return null;
   const headline = rewardHeadline(r);
@@ -75,17 +75,19 @@ export function TrajectoryRewardChip({
  *  when we fetched it. */
 export function trajectoryNeedsFetch(trajectory: TrajectoryState): boolean {
   if (trajectory === undefined || trajectory === "error") return true;
-  if (trajectory === "loading") return false;
+  if (trajectory === "loading" || trajectory === "unavailable") return false;
   return trajectory.outcome === "running";
 }
 
-export type TrajectoryState = Trajectory | "loading" | "error" | undefined;
+export type TrajectoryState = Trajectory | "loading" | "error" | "unavailable" | undefined;
 
 /**
  * On-demand loader for `GET /v1/oma/sessions/:id/trajectory` (OpenMA
- * product route, so plain `api()` rather than `managedApi`). State resets
- * whenever `sessionId` changes, and responses for a stale session id or a
- * superseded request are dropped.
+ * product route, so plain `api()` rather than `managedApi`). A 404 means this
+ * deployment has no trajectory envelope for the managed session; it becomes
+ * a silent unavailable state because Trace can still render the event history.
+ * State resets whenever `sessionId` changes, and responses for a stale
+ * session id or a superseded request are dropped.
  */
 export function useTrajectoryLoader(sessionId: string | undefined) {
   const { api } = useApi();
@@ -104,8 +106,9 @@ export function useTrajectoryLoader(sessionId: string | undefined) {
     try {
       const t = await api<Trajectory>(`/v1/oma/sessions/${encodeURIComponent(sessionId)}/trajectory`);
       if (ticket.current === mine) setTrajectory(t);
-    } catch {
-      if (ticket.current === mine) setTrajectory("error");
+    } catch (error) {
+      if (ticket.current !== mine) return;
+      setTrajectory(error instanceof ApiError && error.status === 404 ? "unavailable" : "error");
     }
   }, [api, sessionId]);
 
@@ -164,7 +167,10 @@ export function SessionTrace({
   trajectory: TrajectoryState;
   onRetry?: () => void;
 }) {
-  const ready = trajectory !== undefined && trajectory !== "loading" && trajectory !== "error";
+  const ready = trajectory !== undefined
+    && trajectory !== "loading"
+    && trajectory !== "error"
+    && trajectory !== "unavailable";
   const json = useMemo(() => (ready ? JSON.stringify(trajectory, null, 2) : ""), [ready, trajectory]);
   const source = events.length > 0 ? events : ready ? trajectory.events : [];
 

@@ -1444,9 +1444,21 @@ function Inspector({
   }
   return (
     <div className="flex flex-col min-w-0" data-testid="trace-inspector">
-      <div className="sticky top-0 z-10 px-4 py-2.5 border-b border-border border-l-2 border-l-info bg-info-subtle/40 backdrop-blur-sm flex items-center gap-2 text-sm font-medium min-w-0" data-testid="inspector-header">
-        <div className="flex items-center gap-2 min-w-0 flex-1">{title}</div>
-        <Button variant="ghost" size="xs" onClick={onClose} aria-label="Close details" className="shrink-0">×</Button>
+      <div className="sticky top-0 z-10 px-4 py-2 border-b border-border border-l-2 border-l-info bg-bg-surface/95 backdrop-blur-sm min-w-0" data-testid="inspector-header">
+        <div className="flex items-center justify-between gap-2 text-[10px] uppercase tracking-wide text-fg-subtle">
+          <span>Event details</span>
+          <Button
+            variant="ghost"
+            size="xs"
+            onClick={onClose}
+            aria-label="Close details"
+            title="Close event details panel; session status remains"
+            className="h-6 px-1.5 text-xs normal-case tracking-normal text-fg-subtle hover:text-fg"
+          >
+            Close
+          </Button>
+        </div>
+        <div className="mt-1 flex items-center gap-2 text-sm font-medium min-w-0">{title}</div>
       </div>
       <div className="p-4 flex flex-col gap-4 min-w-0">{body}</div>
     </div>

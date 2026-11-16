@@ -111,6 +111,11 @@ const SILENT_AUTH_PATHS = ["/auth-info", "/v1/oma/me"];
 /** Optional OMA capability probes: a 404 only means "this deployment does
  *  not offer it", which the caller renders as an absent feature. */
 const SILENT_NOT_FOUND_PATHS = ["/v1/oma/sandbox_images"];
+// Managed Console sessions currently load the optional trajectory envelope
+// through the legacy OMA route. A missing envelope is rendered inline by
+// SessionDetail as “Trajectory unavailable”; it must not surface the
+// generic API toast “Session not found”.
+const TRAJECTORY_PATH = /^\/v1\/oma\/sessions\/[^/?]+\/trajectory(?:\?.*)?$/;
 const SESSION_RETRIEVE_PATH = /^\/v1\/sessions\/[^/?]+(?:\?.*)?$/;
 
 /** Exported for tests. */
@@ -118,7 +123,10 @@ export const shouldSilenceApiErrorToast = (path: string, status: number) =>
   shouldSilenceAuthError(path, status);
 
 function shouldSilenceAuthError(path: string, status: number): boolean {
-  if (status === 404 && SILENT_NOT_FOUND_PATHS.some((p) => path === p || path.startsWith(`${p}?`))) {
+  if (status === 404 && (
+    SILENT_NOT_FOUND_PATHS.some((p) => path === p || path.startsWith(`${p}?`))
+    || TRAJECTORY_PATH.test(path)
+  )) {
     return true;
   }
   // GET /v1/sessions/:id 404 renders SessionDetail's own "Session not found"

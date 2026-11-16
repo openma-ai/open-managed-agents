@@ -343,6 +343,7 @@ describe("trajectory loading", () => {
     expect(trajectoryNeedsFetch(undefined)).toBe(true);
     expect(trajectoryNeedsFetch("error")).toBe(true);
     expect(trajectoryNeedsFetch("loading")).toBe(false);
+    expect(trajectoryNeedsFetch("unavailable")).toBe(false);
     expect(trajectoryNeedsFetch(envelope([]))).toBe(false);
     expect(trajectoryNeedsFetch(envelope([], { outcome: "running" }))).toBe(true);
   });
@@ -364,11 +365,24 @@ describe("trajectory loading", () => {
     expect(hits).toBe(1);
   });
 
-  it("reports errors as the error sentinel", async () => {
+  it("treats a missing optional envelope as unavailable without retrying", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     server.use(
       http.get("/v1/oma/sessions/:id/trajectory", () =>
         HttpResponse.json({ type: "error", error: { type: "not_found_error", message: "nope" } }, { status: 404 }),
+      ),
+    );
+    const { result } = renderHook(() => useTrajectoryLoader("sesn_1"));
+    await act(async () => result.current.load());
+    expect(result.current.trajectory).toBe("unavailable");
+    expect(trajectoryNeedsFetch(result.current.trajectory)).toBe(false);
+  });
+
+  it("reports server failures as the error sentinel", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    server.use(
+      http.get("/v1/oma/sessions/:id/trajectory", () =>
+        HttpResponse.json({ type: "error", error: { type: "server_error", message: "boom" } }, { status: 500 }),
       ),
     );
     const { result } = renderHook(() => useTrajectoryLoader("sesn_1"));
