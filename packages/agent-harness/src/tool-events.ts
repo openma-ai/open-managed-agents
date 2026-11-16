@@ -15,6 +15,28 @@ export const isBuiltinTool = (name: string): boolean =>
   || name === MCP_INVOKE_TOOL_NAME
   || name.startsWith("call_agent_");
 
+/** Bind permission telemetry and history before the first tool can execute.
+ *
+ * The Pi loop builds tools before it starts the Agent. If the sink is only
+ * bound while projecting the later `agent.tool_use` event, the cached judge
+ * result has already been produced and its `aux.model_call` telemetry is
+ * lost. Binding at the loop boundary keeps the execution and event paths on
+ * the same live runtime.
+ */
+export function bindHarnessToolPermissionRuntime(
+  runtime: HarnessContext["runtime"],
+  tools: Record<string, any>,
+): void {
+  for (const target of Object.values(tools)) {
+    const permission = target?.metadata?.openmaPermission as {
+      bindEventSink?: (broadcast: (event: SessionEvent) => void) => void;
+      bindHistory?: (getHistory: () => SessionEvent[]) => void;
+    } | undefined;
+    permission?.bindEventSink?.(runtime.broadcast.bind(runtime));
+    permission?.bindHistory?.(() => runtime.history.getEvents());
+  }
+}
+
 function extractMcpServerName(toolName: string): string {
   if (toolName.startsWith("mcp__")) {
     const withoutPrefix = toolName.slice("mcp__".length);

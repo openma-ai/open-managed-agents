@@ -38,7 +38,7 @@ import {
   resolveCompactionSummaryInstructions,
   resolveCompactionTriggerInputTokens,
 } from "./compaction-config";
-import { emitHarnessToolUseFromCall, isMcpTool } from "./tool-events";
+import { bindHarnessToolPermissionRuntime, emitHarnessToolUseFromCall, isMcpTool } from "./tool-events";
 import { withPiRuntimeRequestOptions } from "./pi-provider";
 import { createPiToolAssembly } from "./assembly/adapters/pi";
 import { toolsToPi, valueToPiContent } from "./pi-loop-tools";
@@ -139,6 +139,7 @@ export class PiHarness implements HarnessInterface {
     let providerFailure: AssistantMessage | undefined;
     let producedOutput = false;
 
+    bindHarnessToolPermissionRuntime(ctx.runtime, ctx.tools as Record<string, any>);
     const toolAssembly = createPiToolAssembly(ctx);
     const bootstrapMessages = toolAssembly.bootstrapTurnMessages.map((message) => ({
       role: message.role,

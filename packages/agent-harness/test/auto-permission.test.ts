@@ -184,6 +184,47 @@ describe("default harness auto permission", () => {
     }));
   });
 
+  it("emits active-model judge telemetry through the Pi tool loop", async () => {
+    const faux = fauxProvider({ tokensPerSecond: 100_000 });
+    faux.setResponses([
+      fauxAssistantMessage([fauxToolCall("bash", { command: "echo allowed" }, { id: "call-pi-main" })]),
+      fauxAssistantMessage("done"),
+    ]);
+    const models = createModels();
+    models.setProvider(faux.provider);
+    const events: SessionEvent[] = [{ type: "user.message", content: [{ type: "text", text: "run it" }] }];
+    const rt = runtime(events);
+    const sb = sandbox();
+    const mainModel = fakeJudgeModel();
+    const tools = await buildTools(agent(), sb as never, {
+      mainModel: mainModel as never,
+      mainModelInfo: { model_id: "test-model" },
+    });
+    const ctx = {
+      agent: { id: "agent-auto-permission", model: faux.getModel().id },
+      userMessage: events[0],
+      session_id: "session-auto-permission-pi",
+      tools,
+      model: {} as HarnessContext["model"],
+      pi: { models, model: faux.getModel(), thinkingLevel: "off", speed: "standard" },
+      systemPrompt: "Use tools when asked.",
+      env: {},
+      runtime: rt,
+    } as unknown as HarnessContext;
+
+    await new PiHarness().run(ctx);
+
+    expect(mainModel.doGenerate).toHaveBeenCalledTimes(1);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "aux.model_call",
+      task: "permission_judge",
+      parent_tool_use_id: "call-pi-main",
+      model_id: "test-model",
+      model_role: "main",
+      status: "ok",
+    }));
+  });
+
   it("fails closed to ask when neither reviewer nor active model is available", async () => {
     const config = agent();
     const sb = sandbox();
