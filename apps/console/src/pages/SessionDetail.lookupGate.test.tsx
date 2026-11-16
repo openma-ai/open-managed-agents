@@ -124,6 +124,8 @@ describe("SessionDetail gates history/stream/threads on the session lookup", () 
 
   it("silences the toast only for a 404 on GET /v1/sessions/:id", () => {
     expect(shouldSilenceApiErrorToast("/v1/sessions/sesn_x", 404)).toBe(true);
+    expect(shouldSilenceApiErrorToast("/v1/oma/sessions/sesn_x/trajectory", 404)).toBe(true);
+    expect(shouldSilenceApiErrorToast("/v1/oma/sessions/sesn_x/events", 404)).toBe(false);
     expect(shouldSilenceApiErrorToast("/v1/sessions/sesn_x", 500)).toBe(false);
     expect(shouldSilenceApiErrorToast("/v1/sessions/sesn_x", 403)).toBe(false);
     expect(shouldSilenceApiErrorToast("/v1/sessions/sesn_x/events?limit=100", 404)).toBe(false);
