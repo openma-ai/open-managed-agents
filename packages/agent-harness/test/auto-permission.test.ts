@@ -93,21 +93,24 @@ async function runPi(judge: (input: {
   return { events, rt, sb, tools };
 }
 
-function fakeJudgeModel() {
+function fakeJudgeModel(captured?: { request?: unknown }) {
   return {
     specificationVersion: "v3",
     provider: "test",
     modelId: "judge-model",
     supportedUrls: {},
-    doGenerate: vi.fn(async () => ({
-      content: [{ type: "text", text: '{"decision":"allow","reason":"safe"}' }],
-      finishReason: { unified: "stop", raw: "stop" },
-      usage: {
-        inputTokens: { total: 17, noCache: 17, cacheRead: 0, cacheWrite: 0 },
-        outputTokens: { total: 4, text: 4, reasoning: 0 },
-      },
-      warnings: [],
-    })),
+    doGenerate: vi.fn(async (request: unknown) => {
+      if (captured) captured.request = request;
+      return {
+        content: [{ type: "text", text: '{"decision":"allow","reason":"safe"}' }],
+        finishReason: { unified: "stop", raw: "stop" },
+        usage: {
+          inputTokens: { total: 17, noCache: 17, cacheRead: 0, cacheWrite: 0 },
+          outputTokens: { total: 4, text: 4, reasoning: 0 },
+        },
+        warnings: [],
+      };
+    }),
   };
 }
 
@@ -211,5 +214,35 @@ describe("default harness auto permission", () => {
       status: "ok",
       tokens: { input: 17, output: 4 },
     }));
+  });
+
+  it("sends a bounded semantic transcript plus the current action to the reviewer", async () => {
+    const captured: { request?: unknown } = {};
+    const mainModel = fakeJudgeModel(captured);
+    const sb = sandbox();
+    const tools = await buildTools(agent(), sb as never, {
+      mainModel: mainModel as never,
+      mainModelInfo: { model_id: "test-model" },
+      broadcastEvent: () => undefined,
+    });
+    const history = [
+      { type: "user.message", content: [{ type: "text", text: "inspect the repository" }] },
+      { type: "agent.thinking", text: "private reasoning must not be copied" },
+      { type: "agent.tool_result", tool_use_id: "old-call", content: "read-only evidence" },
+      { type: "aux.model_call", model_id: "judge", task: "permission_judge", duration_ms: 1, tokens: { input: 1, output: 1 }, status: "ok" },
+    ] as SessionEvent[];
+    const permission = (tools.bash as { metadata?: { openmaPermission?: { bindHistory?: (getHistory: () => SessionEvent[]) => void } } }).metadata?.openmaPermission;
+    permission?.bindHistory?.(() => history);
+
+    await tools.bash.execute({ command: "echo current" }, { toolCallId: "current-call", messages: [] });
+
+    const request = captured.request as { prompt?: unknown };
+    const prompt = JSON.stringify(request.prompt);
+    expect(prompt).toContain("inspect the repository");
+    expect(prompt).toContain("read-only evidence");
+    expect(prompt).toContain("current-call");
+    expect(prompt).toContain("echo current");
+    expect(prompt).not.toContain("private reasoning must not be copied");
+    expect(prompt).not.toContain("permission_judge");
   });
 });

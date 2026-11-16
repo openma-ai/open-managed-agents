@@ -70,6 +70,7 @@ export { resolveRuntimeSkillFiles, resolveSubagentSkillReminders } from "./runti
 export { assertRuntimeAgentSnapshot, resolvePinnedSubagent, resolveThreadAgentSnapshot } from "./agent-snapshot";
 
 export { ToolFailureError, buildTools, disposeTools, mainModelToolOptions } from "./tools";
+export { buildPermissionReviewTranscript, PERMISSION_REVIEW_CONTEXT_LIMITS, type PermissionReviewContextOptions } from "./permission-review-context";
 export { parkUnknownToolRetry, requestUnknownToolRetry } from "./unknown-tool-retry";
 export { resolveProxiedToolCall } from "./tool-proxy";
 
