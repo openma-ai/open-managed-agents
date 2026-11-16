@@ -12,20 +12,24 @@
     "test:certification": "OMA_OPENSANDBOX_CERTIFICATION=1 vitest run --config vitest.config.ts test/opensandbox-certification.e2e.test.ts"
   },
   "dependencies": {
-    "@open-managed-agents/sandbox": "workspace:*",
-    "undici": "8.12.4"
+    "@open-managed-agents/sandbox": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
     "vitest": "^5.0.5",
     "@open-managed-agents/managed-runtime-sandbox": "workspace:*",
-    "@alibaba-group/opensandbox": "1.1.1"
+    "@alibaba-group/opensandbox": "1.1.1",
+    "undici": "8.12.4"
   },
   "peerDependencies": {
-    "@alibaba-group/opensandbox": "^1.1.1"
+    "@alibaba-group/opensandbox": "^1.1.1",
+    "undici": "^8.12.4"
   },
   "peerDependenciesMeta": {
     "@alibaba-group/opensandbox": {
+      "optional": true
+    },
+    "undici": {
       "optional": true
     }
   }
