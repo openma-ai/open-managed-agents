@@ -42,6 +42,32 @@ const staticBearer = (token: string) => async () => [{ vault_id: "vlt_1", creden
 const routing = (sessionId: string, serverName: string) => ({ "x-oma-tenant": "tenant-1", "x-oma-session": sessionId, "x-oma-mcp-server": serverName });
 
 describe("createMcpProxyBinding", () => {
+  it("propagates a client abort through the shared MCP gateway", async () => {
+    const controller = new AbortController();
+    let upstreamSignal: AbortSignal | undefined;
+    let enteredResolve!: () => void;
+    const entered = new Promise<void>((resolve) => { enteredResolve = resolve; });
+    const fetch = upstream((request) => {
+      upstreamSignal = request.signal;
+      enteredResolve();
+      return new Promise<Response>((_resolve, reject) => {
+        const abort = () => reject(new DOMException("This operation was aborted", "AbortError"));
+        if (request.signal.aborted) abort();
+        else request.signal.addEventListener("abort", abort, { once: true });
+      });
+    });
+    const binding = createMcpProxyBinding(() => ports({ managed: managedSession([server("public")]), fetch }));
+    const pending = binding.fetch(new Request(SERVER, {
+      method: "POST", body: "{}", signal: controller.signal,
+      headers: routing("session", "public"),
+    }));
+    await entered;
+    expect(upstreamSignal?.aborted).toBe(false);
+    controller.abort();
+    expect(upstreamSignal?.aborted).toBe(true);
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+  });
+
   it.each([200, 401, 403])("forwards an anonymous target once and preserves status %s", async (status) => {
     const fetch = upstream((request) => {
       expect(request.url).toBe(SERVER);
