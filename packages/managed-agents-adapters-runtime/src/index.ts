@@ -110,6 +110,11 @@ export const OFFICIAL_RUNTIME_EVENT_TYPES = new Set([
   "span.outcome_evaluation_start",
   "span.outcome_evaluation_ongoing",
   "span.outcome_evaluation_end",
+  // Tool-internal model calls are OMA extension events, but they still need
+  // to cross the runtime codec so Node persistence can retain them. The
+  // public stream applies the separate SPEC_EVENT_TYPES filter unless the
+  // caller opts into `include=chunks`.
+  "aux.model_call",
 ]);
 
 function camelCaseKey(key: string): string {
