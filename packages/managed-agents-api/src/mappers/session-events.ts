@@ -686,6 +686,25 @@ export function toSessionEventResponse(event: SessionEventView): object {
         result: event.result,
         usage: fromSpanModelUsage(event.usage),
       };
+    case "aux.model_call":
+      return {
+        ...(event.sessionThreadId !== undefined && { session_thread_id: event.sessionThreadId }),
+        id: event.id,
+        type: event.type,
+        model_id: event.modelId,
+        ...(event.modelRole !== undefined && { model_role: event.modelRole }),
+        task: event.task,
+        ...(event.parentToolUseId !== undefined && { parent_tool_use_id: event.parentToolUseId }),
+        duration_ms: event.durationMs,
+        tokens: {
+          input: event.tokens.input,
+          output: event.tokens.output,
+          ...(event.tokens.cacheRead !== undefined && { cache_read: event.tokens.cacheRead }),
+        },
+        status: event.status,
+        ...(event.error !== undefined && { error: event.error }),
+        processed_at: event.processedAt,
+      };
     case "session.updated":
       return {
         id: event.id,
