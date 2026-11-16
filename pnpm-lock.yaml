@@ -1661,9 +1661,6 @@ importers:
       '@open-managed-agents/sandbox-gateway-sql':
         specifier: workspace:*
         version: link:../sandbox-gateway-sql
-      '@open-managed-agents/sandbox-port-kit':
-        specifier: workspace:*
-        version: link:../sandbox-port-kit
       '@open-managed-agents/scheduler':
         specifier: workspace:*
         version: link:../scheduler
@@ -4101,9 +4098,6 @@ importers:
       '@open-managed-agents/sandbox':
         specifier: workspace:*
         version: link:../sandbox
-      '@open-managed-agents/sandbox-port-kit':
-        specifier: workspace:*
-        version: link:../sandbox-port-kit
     devDependencies:
       '@types/node':
         specifier: ^26.6.6
@@ -4139,6 +4133,9 @@ importers:
       '@open-managed-agents/sandbox':
         specifier: workspace:*
         version: link:../sandbox
+      undici:
+        specifier: 8.12.4
+        version: 8.12.4
     devDependencies:
       '@alibaba-group/opensandbox':
         specifier: 1.1.1

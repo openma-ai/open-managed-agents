@@ -12,7 +12,8 @@
     "test:certification": "OMA_OPENSANDBOX_CERTIFICATION=1 vitest run --config vitest.config.ts test/opensandbox-certification.e2e.test.ts"
   },
   "dependencies": {
-    "@open-managed-agents/sandbox": "workspace:*"
+    "@open-managed-agents/sandbox": "workspace:*",
+    "undici": "8.12.4"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
