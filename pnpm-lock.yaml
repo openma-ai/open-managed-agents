@@ -4141,8 +4141,8 @@ importers:
         version: link:../sandbox
     devDependencies:
       '@alibaba-group/opensandbox':
-        specifier: 1.1.1
-        version: 1.1.1
+        specifier: 1.2.1
+        version: 1.2.1
       '@open-managed-agents/managed-runtime-sandbox':
         specifier: workspace:*
         version: link:../managed-runtime-sandbox
@@ -4996,8 +4996,8 @@ packages:
     peerDependencies:
       react: ^18 || ~19.0.1 || ~19.1.2 || ^19.2.1
 
-  '@alibaba-group/opensandbox@1.1.1':
-    resolution: {integrity: sha512-QZEmeKize8W8YeIH/qYxXRhZOE5RwvYw5s3r2xzgD2AgjABbYAqRH1KktK/I1+uqFA0Dc0AE/EaODr03wS34og==}
+  '@alibaba-group/opensandbox@1.2.1':
+    resolution: {integrity: sha512-j6IpncJtvsmngFiVOiyV/FQcpX+oL3eJa+umaUe39vV5ipDOeA+oaE9WVYezTsB6mk8HcA8lmWJAAv4i3LzTDg==}
     engines: {node: '>=20'}
 
   '@antfu/install-pkg@1.1.0':
@@ -14006,10 +14006,6 @@ packages:
     resolution: {integrity: sha512-IDxfleLmmbSskfWSUATiN1nfn2rDuvnMOqb5CWR92iIfojA0Ud+ulOAAEQ57LPr9rWmsreUyf5lwyao+7GNNVw==}
     engines: {node: '>=20.18.1'}
 
-  undici@7.30.0:
-    resolution: {integrity: sha512-dkrQXeHSaoamnItlYbmzG0wFYrM0ZwDxCIg0A7aKjTyyhh9svRzCNFEzV+Vm05/yehjCzjDZ31KXfGEjYSztDQ==}
-    engines: {node: '>=20.18.1'}
-
   undici@7.30.1:
     resolution: {integrity: sha512-03KrMbjIFDWQR5RNPrSw3bd1r12JpyFQl9/yxjUbJtqkjmllqC5lFjZh6ujeuJCKr8EOQvRW872Oy/az+nLYxg==}
     engines: {node: '>=20.18.1'}
@@ -14829,11 +14825,11 @@ snapshots:
     transitivePeerDependencies:
       - zod
 
-  '@alibaba-group/opensandbox@1.1.1':
+  '@alibaba-group/opensandbox@1.2.1':
     dependencies:
       '@opentelemetry/api': 1.9.0
       openapi-fetch: 0.14.1
-      undici: 7.30.0
+      undici: 7.30.1
 
   '@antfu/install-pkg@1.1.0':
     dependencies:
@@ -25200,8 +25196,6 @@ snapshots:
   undici@7.25.0: {}
 
   undici@7.29.0: {}
-
-  undici@7.30.0: {}
 
   undici@7.30.1: {}
 
