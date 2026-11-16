@@ -26,6 +26,8 @@ export interface ProxyUpstreamInput {
   readonly drop?: Iterable<string>;
   /** Withhold every caller header with one of these prefixes. */
   readonly dropPrefixes?: Iterable<string>;
+  /** Abort the upstream request when the inbound caller disconnects. */
+  readonly signal?: AbortSignal | null;
   readonly fetcher?: typeof fetch;
 }
 
@@ -60,6 +62,7 @@ export async function proxyUpstream(input: ProxyUpstreamInput): Promise<Response
     method,
     headers,
     body: method === "GET" || method === "HEAD" ? null : input.body ?? null,
+    signal: input.signal ?? undefined,
   });
   return proxy(input.url, {
     raw,

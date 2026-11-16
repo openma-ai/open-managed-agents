@@ -77,6 +77,7 @@ services:
       # live in the same PG database as the main store.
       SANDBOX_WORKDIR: /app/data/sandboxes
       MEMORY_BLOB_DIR: /app/data/memory-blobs
+      FILES_BLOB_DIR: /app/data/files-blobs
       SESSION_OUTPUTS_DIR: /app/data/session-outputs
       SANDBOX_PROVIDER: ${SANDBOX_PROVIDER:?Set SANDBOX_PROVIDER to an isolated provider}
       # Vault egress uses the normal HTTPS API; no extra port or shared CA.
