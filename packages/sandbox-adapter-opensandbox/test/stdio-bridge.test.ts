@@ -112,6 +112,20 @@ it("preserves binary stdin/stdout/stderr and real exit codes without a PTY", asy
   await expect(writer.write(Uint8Array.of(1))).rejects.toThrow();
 });
 
+it("captures output when a child exits before the stream requests attach", async () => {
+  const { sandbox } = await fixture();
+  const child = await sandbox.spawnDuplexProcess({
+    command: process.execPath,
+    cwd: process.cwd(),
+    args: ["-e", "process.stdout.write('early-out'); process.stderr.write('early-err')"],
+  });
+  const stdout = new Response(child.stdout).text();
+  const stderr = new Response(child.stderr).text();
+  expect(await child.exited).toEqual({ code: 0, signal: null });
+  expect(await stdout).toBe("early-out");
+  expect(await stderr).toBe("early-err");
+});
+
 it("terminates a sandbox child with the requested signal", async () => {
   const { sandbox } = await fixture();
   const child = await sandbox.spawnDuplexProcess({ command: process.execPath, cwd: process.cwd(), args: ["-e", "setInterval(() => {}, 1000)"] });

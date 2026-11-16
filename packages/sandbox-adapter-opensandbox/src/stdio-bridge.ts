@@ -33,6 +33,13 @@ const child = spawn(spec.command, spec.args || [], {
   cwd: spec.cwd || '/workspace', env: { ...process.env, ...spec.env }, detached: true,
   stdio: ['pipe', 'pipe', 'pipe']
 });
+// Attach the child pipes before the first command can exit. Without an
+// intermediate readable, a short-lived child can finish and destroy its
+// stdout/stderr streams before the HTTP consumers connect, losing output.
+const { PassThrough } = require('node:stream');
+const output = { stdout: new PassThrough(), stderr: new PassThrough() };
+child.stdout.pipe(output.stdout);
+child.stderr.pipe(output.stderr);
 let outcome;
 const startupTimer = setTimeout(() => {
   try { process.kill(-child.pid, 'SIGKILL'); } catch {}
@@ -51,7 +58,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/ready') { clearTimeout(startupTimer); res.end('ready'); return; }
   if (req.method === 'GET' && (req.url === '/stdout' || req.url === '/stderr')) {
     res.writeHead(200, { 'content-type': 'application/octet-stream', 'x-accel-buffering': 'no' });
-    res.flushHeaders(); child[req.url.slice(1)].pipe(res); return;
+    res.flushHeaders(); output[req.url.slice(1)].pipe(res); return;
   }
   if (req.method === 'GET' && req.url === '/exit') {
     res.setHeader('content-type', 'application/json');
