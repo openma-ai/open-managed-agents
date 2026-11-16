@@ -489,7 +489,7 @@ async function translatePiEvent(
       } else if (block.type === "toolCall") {
         const streamId = state.toolIds.get(index);
         if (streamId) await runtime.broadcastToolInputEnd(streamId, "completed");
-        emitHarnessToolUseFromCall(
+        await emitHarnessToolUseFromCall(
           runtime,
           ctx.tools as Record<string, unknown>,
           block.id,

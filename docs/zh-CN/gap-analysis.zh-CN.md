@@ -293,8 +293,9 @@
 | 工具集 config 里的 per-tool `permission_policy` | 已实现 | 在 `configs[].permission_policy` 支持 | - |
 | `always_allow` 策略 | 已实现 | - |
 | `always_ask` 策略 | 已实现（剥掉 execute 函数） | - |
+| `auto` 策略 | 已实现（default/Pi harness 由 reviewer model 对每次调用判定） | 显式 aux model 优先；未配置 aux 时复用主模型做独立 judge。judge 返回 `allow` 执行、`deny` 返回错误结果并继续、`ask` 暂停等待确认；无可用模型或调用失败时 fail-closed 为 `ask` |
 
-权限策略实现得很好。
+`auto` 的判定只发生一轮，并按 tool call id 缓存，trajectory 会记录 `aux.model_call(task=permission_judge)` 及实际使用的 reviewer model id。ACP harness 的逐工具 auto 仍由 ACP 权限层负责。
 
 ### 4.4 MCP server 配置
 

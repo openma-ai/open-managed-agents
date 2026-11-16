@@ -69,7 +69,7 @@ export {
 export { resolveRuntimeSkillFiles, resolveSubagentSkillReminders } from "./runtime-skills";
 export { assertRuntimeAgentSnapshot, resolvePinnedSubagent, resolveThreadAgentSnapshot } from "./agent-snapshot";
 
-export { ToolFailureError, buildTools, disposeTools } from "./tools";
+export { ToolFailureError, buildTools, disposeTools, mainModelToolOptions } from "./tools";
 export { parkUnknownToolRetry, requestUnknownToolRetry } from "./unknown-tool-retry";
 export { resolveProxiedToolCall } from "./tool-proxy";
 

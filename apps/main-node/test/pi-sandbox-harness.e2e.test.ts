@@ -141,6 +141,153 @@ describe(
       }
     });
 
+    it("evaluates auto permissions and replays an ask on a real local sandbox", async () => {
+      const workdir = await mkdtemp(join(tmpdir(), "oma-pi-auto-permission-"));
+      const sandbox = new LocalSubprocessSandbox({ workdir });
+      registerCoreHarnesses();
+
+      try {
+        const run = async (input: {
+          id: string;
+          decision: "allow" | "deny" | "ask";
+          command: string;
+          final?: boolean;
+        }) => {
+          const agent: AgentConfig = {
+            id: `agent_auto_${input.id}`,
+            name: "Auto permission agent",
+            model: "faux-model",
+            system: "Use the provided bash tool.",
+            tools: [{
+              type: "agent_toolset_20260401",
+              default_config: { enabled: false },
+              configs: [{
+                name: "bash",
+                enabled: true,
+                permission_policy: { type: "auto" },
+              }],
+            }],
+            harness: "pi",
+            version: 1,
+            created_at: "2026-08-30T00:00:00.000Z",
+          };
+          const userMessage = {
+            type: "user.message",
+            content: [{ type: "text", text: `run ${input.id}` }],
+          } as UserMessageEvent;
+          const events: SessionEvent[] = [userMessage];
+          const faux = fauxProvider({ tokensPerSecond: 100_000 });
+          faux.setResponses([
+            fauxAssistantMessage(
+              fauxToolCall("bash", { command: input.command }, { id: `tool-${input.id}` }),
+              { stopReason: "toolUse" },
+            ),
+            ...(input.final ? [fauxAssistantMessage(`finished ${input.id}`)] : []),
+          ]);
+          const models = createModels();
+          models.setProvider(faux.provider);
+          const runtime = {
+            history: {
+              getEvents: () => events,
+              getMessages: () => [],
+              append: (event: SessionEvent) => events.push(event),
+            },
+            sandbox,
+            broadcast: (event: SessionEvent) => events.push(event),
+            broadcastStreamStart: vi.fn(async () => {}),
+            broadcastChunk: vi.fn(async () => {}),
+            broadcastStreamEnd: vi.fn(async () => {}),
+            broadcastThinkingStart: vi.fn(async () => {}),
+            broadcastThinkingChunk: vi.fn(async () => {}),
+            broadcastThinkingEnd: vi.fn(async () => {}),
+            broadcastToolInputStart: vi.fn(async () => {}),
+            broadcastToolInputChunk: vi.fn(async () => {}),
+            broadcastToolInputEnd: vi.fn(async () => {}),
+            reportUsage: vi.fn(async () => {}),
+            pendingConfirmations: [],
+          } as unknown as HarnessRuntime;
+          const judge = vi.fn(async () => ({
+            decision: input.decision,
+            reason: `${input.decision} by test judge`,
+          }));
+          const tools = await buildTools(agent, sandbox, {
+            permissionJudge: judge,
+          });
+          const context = {
+            agent,
+            userMessage,
+            session_id: `session_auto_${input.id}`,
+            tools,
+            model: {} as HarnessContext["model"],
+            pi: { models, model: faux.getModel() },
+            systemPrompt: agent.system,
+            env: { ANTHROPIC_API_KEY: "mocked-by-faux-provider" },
+            runtime,
+          } satisfies HarnessContext;
+          await resolveHarness("pi").run(context);
+          return { agent, events, judge, runtime, tools };
+        };
+
+        const allowed = await run({
+          id: "allow",
+          decision: "allow",
+          command: "printf allowed > /workspace/auto-allow.txt",
+          final: true,
+        });
+        expect(await sandbox.readFile("/workspace/auto-allow.txt")).toBe("allowed");
+        expect(allowed.judge).toHaveBeenCalledTimes(1);
+        expect(allowed.events).toContainEqual(expect.objectContaining({
+          type: "agent.tool_use",
+          id: "tool-allow",
+          evaluated_permission: "allow",
+        }));
+
+        const denied = await run({
+          id: "deny",
+          decision: "deny",
+          command: "printf denied > /workspace/auto-deny.txt",
+          final: true,
+        });
+        await expect(sandbox.readFile("/workspace/auto-deny.txt")).rejects.toThrow();
+        expect(denied.events).toContainEqual(expect.objectContaining({
+          type: "agent.tool_use",
+          id: "tool-deny",
+          evaluated_permission: "deny",
+        }));
+        expect(denied.events).toContainEqual(expect.objectContaining({
+          type: "agent.tool_result",
+          tool_use_id: "tool-deny",
+          is_error: true,
+        }));
+
+        const asked = await run({
+          id: "ask",
+          decision: "ask",
+          command: "printf confirmed > /workspace/auto-ask.txt",
+        });
+        expect(asked.runtime.pendingConfirmations).toEqual(["tool-ask"]);
+        expect(asked.judge).toHaveBeenCalledTimes(1);
+        expect(asked.events).toContainEqual(expect.objectContaining({
+          type: "agent.tool_use",
+          id: "tool-ask",
+          evaluated_permission: "ask",
+        }));
+
+        const replayTools = await buildTools(asked.agent, sandbox, undefined, {
+          enforcePermissions: false,
+        });
+        await replayTools.bash.execute(
+          { command: "printf confirmed > /workspace/auto-ask.txt" },
+          { toolCallId: "tool-ask", messages: [] },
+        );
+        expect(await sandbox.readFile("/workspace/auto-ask.txt")).toBe("confirmed");
+        expect(asked.judge).toHaveBeenCalledTimes(1);
+      } finally {
+        await sandbox.destroy();
+        await rm(workdir, { recursive: true, force: true });
+      }
+    });
+
     it("preserves a threshold-triggered Pi summary across managed runtime turns", async () => {
       const workdir = await mkdtemp(join(tmpdir(), "oma-pi-compaction-"));
       const sandbox = new LocalSubprocessSandbox({ workdir });
