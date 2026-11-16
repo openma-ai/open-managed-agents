@@ -1661,6 +1661,9 @@ importers:
       '@open-managed-agents/sandbox-gateway-sql':
         specifier: workspace:*
         version: link:../sandbox-gateway-sql
+      '@open-managed-agents/sandbox-port-kit':
+        specifier: workspace:*
+        version: link:../sandbox-port-kit
       '@open-managed-agents/scheduler':
         specifier: workspace:*
         version: link:../scheduler
