@@ -99,9 +99,9 @@ FROM node:24-slim AS runtime
 # `python3` is here so build-tooling that shells out to `python` (mostly
 # memory store demos + agent-written scripts) doesn't immediately die.
 # tsx + better-sqlite3 native module also need basic runtime libs only.
-# corepack is needed at runtime so `pnpm start` resolves; alternatively we
-# could invoke tsx directly via node_modules/.bin but corepack matches the
-# dev workflow exactly.
+# Keep corepack enabled for the optional Matter service, but start main-node
+# through its workspace-local tsx entry below so an API container never needs
+# to download pnpm from the registry during boot.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
        curl ca-certificates git python3 \
@@ -135,5 +135,6 @@ USER node
 WORKDIR /app/apps/main-node
 
 # tsx is the entry. SIGTERM is handled by main-node/src/index.ts for
-# graceful shutdown.
-CMD ["pnpm", "start"]
+# graceful shutdown. Calling the workspace-local bin avoids a runtime
+# Corepack download when the container starts without registry DNS.
+CMD ["./node_modules/.bin/tsx", "src/index.ts"]
