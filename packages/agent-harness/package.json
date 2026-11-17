@@ -7,9 +7,9 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^4.0.98",
-    "@ai-sdk/openai": "^4.0.106",
-    "@ai-sdk/provider": "4.0.36",
+    "@ai-sdk/anthropic": "^4.0.105",
+    "@ai-sdk/openai": "^4.0.118",
+    "@ai-sdk/provider": "4.0.38",
     "@earendil-works/pi-agent-core": "1.1.0",
     "@earendil-works/pi-ai": "1.1.0",
     "@open-managed-agents/acp-runtime": "workspace:*",
@@ -27,7 +27,7 @@
     "@open-managed-agents/session-subagents": "workspace:*",
     "@open-managed-agents/shared": "workspace:*",
     "@openma/common": "^0.14.0",
-    "ai": "^7.0.164",
+    "ai": "^7.0.173",
     "fflate": "^0.8.2",
     "nanoid": "^5.1.0",
     "zod": "4.3.6"
