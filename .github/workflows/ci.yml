@@ -284,7 +284,7 @@ jobs:
 
       - name: Upload CF shard log
         if: ${{ failure() || cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cf-root-shard-${{ matrix.shard }}-${{ github.run_id }}
           path: ${{ runner.temp }}/cf-root-shard-${{ matrix.shard }}.log
@@ -331,7 +331,7 @@ jobs:
 
       - name: Upload CF package log
         if: ${{ failure() || cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cf-package-tests-${{ github.run_id }}
           path: ${{ runner.temp }}/cf-package-tests.log
