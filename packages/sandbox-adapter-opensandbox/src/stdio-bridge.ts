@@ -38,8 +38,66 @@ const child = spawn(spec.command, spec.args || [], {
 // stdout/stderr streams before the HTTP consumers connect, losing output.
 const { PassThrough } = require('node:stream');
 const output = { stdout: new PassThrough(), stderr: new PassThrough() };
+// Keep a byte history so a service connection reset can resume from the
+// consumer's acknowledged offset instead of replaying or losing ACP bytes.
+const maxOutputHistory = 64 * 1024 * 1024;
+const outputState = {
+  stdout: { chunks: [], size: 0, ended: false, clients: new Set() },
+  stderr: { chunks: [], size: 0, ended: false, clients: new Set() },
+};
+const appendOutput = (state, chunk) => {
+  const data = Buffer.from(chunk);
+  if (data.length === 0) return;
+  state.chunks.push({ start: state.size, data });
+  state.size += data.length;
+  while (state.chunks.length && state.size - state.chunks[0].start > maxOutputHistory) {
+    const first = state.chunks[0];
+    const trim = state.size - maxOutputHistory - first.start;
+    if (trim >= first.data.length) state.chunks.shift();
+    else { first.data = first.data.subarray(trim); first.start += trim; }
+  }
+  for (const client of state.clients) pumpOutput(state, client);
+};
+const finishOutput = state => {
+  state.ended = true;
+  for (const client of state.clients) pumpOutput(state, client);
+};
+const pumpOutput = (state, client) => {
+  if (client.pumping || client.closed) return;
+  const earliest = state.chunks[0]?.start ?? state.size;
+  if (client.cursor < earliest) {
+    client.closed = true;
+    state.clients.delete(client);
+    client.res.destroy();
+    return;
+  }
+  client.pumping = true;
+  while (!client.closed && client.cursor < state.size) {
+    const entry = state.chunks.find(item => client.cursor < item.start + item.data.length);
+    if (!entry) break;
+    const data = entry.data.subarray(Math.max(0, client.cursor - entry.start));
+    client.cursor += data.length;
+    if (!client.res.write(data)) {
+      client.pumping = false;
+      client.res.once('drain', () => pumpOutput(state, client));
+      return;
+    }
+  }
+  client.pumping = false;
+  if (!client.closed && state.ended && client.cursor >= state.size) {
+    client.closed = true;
+    state.clients.delete(client);
+    client.res.end();
+  }
+};
+for (const name of ['stdout', 'stderr']) {
+  output[name].on('data', chunk => appendOutput(outputState[name], chunk));
+  output[name].on('end', () => finishOutput(outputState[name]));
+}
 child.stdout.pipe(output.stdout);
 child.stderr.pipe(output.stderr);
+let stdinSequence = -1;
+let stdinClosed = false;
 let outcome;
 const startupTimer = setTimeout(() => {
   try { process.kill(-child.pid, 'SIGKILL'); } catch {}
@@ -56,9 +114,20 @@ child.stdin.on('error', () => {});
 const server = http.createServer((req, res) => {
   if (req.headers['x-openma-stdio-token'] !== token) { res.writeHead(401); res.end(); return; }
   if (req.method === 'GET' && req.url === '/ready') { clearTimeout(startupTimer); res.end('ready'); return; }
-  if (req.method === 'GET' && (req.url === '/stdout' || req.url === '/stderr')) {
+  const requestUrl = new URL(req.url, 'http://localhost');
+  if (req.method === 'GET' && (requestUrl.pathname === '/stdout' || requestUrl.pathname === '/stderr')) {
+    const name = requestUrl.pathname.slice(1);
+    const state = outputState[name];
+    const offset = Number(req.headers['x-openma-stdio-offset'] || requestUrl.searchParams.get('offset') || 0);
+    const earliest = state.chunks[0]?.start ?? state.size;
+    if (!Number.isSafeInteger(offset) || offset < earliest || offset > state.size) { res.writeHead(416); res.end(); return; }
     res.writeHead(200, { 'content-type': 'application/octet-stream', 'x-accel-buffering': 'no' });
-    res.flushHeaders(); output[req.url.slice(1)].pipe(res); return;
+    res.flushHeaders();
+    const client = { res, cursor: offset, pumping: false, closed: false };
+    state.clients.add(client);
+    res.on('close', () => { client.closed = true; state.clients.delete(client); });
+    pumpOutput(state, client);
+    return;
   }
   if (req.method === 'GET' && req.url === '/exit') {
     res.setHeader('content-type', 'application/json');
@@ -71,9 +140,29 @@ const server = http.createServer((req, res) => {
   }
   if (req.method === 'POST' && req.url === '/stdin') {
     if (outcome || child.stdin.destroyed) { res.writeHead(409); res.end(); return; }
-    req.pipe(child.stdin, { end: false }); req.on('end', () => res.end()); return;
+    const sequence = Number(req.headers['x-openma-stdio-sequence']);
+    if (!Number.isSafeInteger(sequence) || sequence < 0) { res.writeHead(400); res.end(); return; }
+    if (sequence <= stdinSequence) { res.end(); return; }
+    if (sequence !== stdinSequence + 1) { res.writeHead(409); res.end(); return; }
+    const chunks = [];
+    req.on('data', chunk => chunks.push(Buffer.from(chunk)));
+    req.on('end', () => {
+      if (sequence <= stdinSequence) { res.end(); return; }
+      const data = Buffer.concat(chunks);
+      if (data.length === 0) {
+        stdinSequence = sequence;
+        res.end();
+        return;
+      }
+      child.stdin.write(data, error => {
+        if (error) { res.writeHead(409); res.end(); return; }
+        stdinSequence = sequence;
+        res.end();
+      });
+    });
+    return;
   }
-  if (req.method === 'POST' && req.url === '/close') { child.stdin.end(); res.end(); return; }
+  if (req.method === 'POST' && req.url === '/close') { if (!stdinClosed) { stdinClosed = true; child.stdin.end(); } res.end(); return; }
   if (req.method === 'DELETE' && (req.url === '/SIGTERM' || req.url === '/SIGKILL')) {
     if (outcome) { res.end(); return; }
     try { process.kill(-child.pid, req.url.slice(1)); } catch (e) { if (e.code !== 'ESRCH') throw e; }
@@ -91,9 +180,195 @@ server.listen(spec.port, '0.0.0.0');
 
 const quote = (value: string) => `'${value.replace(/'/g, "'\\''")}'`;
 
+/** OpenSandbox briefly tears down service connections while a checkpoint
+ * pauses the sandbox. Keep the consumer's Web stream stable while the relay
+ * endpoint is reopened, so ACP does not mistake that handoff for child exit. */
+export interface CheckpointableDuplexProcess extends SandboxDuplexProcess {
+  suspendForCheckpoint(): Promise<() => Promise<void>>;
+}
+
+class ReconnectableOutput {
+  readonly stream: ReadableStream<Uint8Array>;
+  private reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  private connecting: Promise<void> | undefined;
+  private resumeGate: Promise<void> | undefined;
+  private resolveResume: (() => void) | undefined;
+  private rejectResume: ((error: unknown) => void) | undefined;
+  private phase: "active" | "suspended" | "resuming" = "active";
+  private closed = false;
+  private failureReported = false;
+  /** Cumulative bytes already handed to ACP; reconnects resume at this offset. */
+  private deliveredBytes = 0;
+
+  constructor(
+    private readonly open: (offset: number) => Promise<ReadableStream<Uint8Array>>,
+    private readonly onFailure: (error: unknown) => void,
+    private readonly isTerminal: () => boolean,
+  ) {
+    this.stream = new ReadableStream<Uint8Array>({
+      pull: (controller) => this.pull(controller),
+      cancel: (reason) => this.cancel(reason),
+    }, { highWaterMark: 0 });
+  }
+
+  async ready(): Promise<void> {
+    try {
+      await this.connect();
+      if (this.reader === undefined) throw new Error("OpenSandbox stdio stream did not connect");
+    } catch (error) {
+      // The first service connection can be lost independently of a
+      // checkpoint. Give a transient route/socket failure the same bounded
+      // reconnect treatment as a later read failure.
+      await this.reconnectAfterFailure(error);
+    }
+  }
+
+  async suspendForCheckpoint(): Promise<() => Promise<void>> {
+    if (this.closed) return async () => {};
+    if (this.phase !== "active") {
+      await this.resumeGate;
+      if (this.closed) return async () => {};
+    }
+    this.phase = "suspended";
+    this.resumeGate = new Promise<void>((resolve, reject) => {
+      this.resolveResume = resolve;
+      this.rejectResume = reject;
+    });
+    void this.resumeGate.catch(() => undefined);
+    const reader = this.reader;
+    this.reader = undefined;
+    await reader?.cancel(new Error("OpenSandbox checkpoint handoff")).catch(() => undefined);
+    let resumed = false;
+    return async () => {
+      if (resumed || this.closed) return;
+      resumed = true;
+      this.phase = "resuming";
+      try {
+        await this.connectWithRetry();
+        this.phase = "active";
+        this.resolveResume?.();
+      } catch (error) {
+        this.phase = "active";
+        this.rejectResume?.(error);
+        this.fail(error);
+        throw error;
+      } finally {
+        this.resumeGate = undefined;
+        this.resolveResume = undefined;
+        this.rejectResume = undefined;
+      }
+    };
+  }
+
+  private async pull(controller: ReadableStreamDefaultController<Uint8Array>): Promise<void> {
+    while (!this.closed) {
+      try {
+        if (this.phase !== "active") await this.resumeGate;
+        if (this.closed) return;
+        await this.connect();
+        const reader = this.reader;
+        if (reader === undefined) continue;
+        const item = await reader.read();
+        this.reader = undefined;
+        if (item.done) {
+          if (this.phase !== "active") continue;
+          if (this.isTerminal()) {
+            this.closed = true;
+            controller.close();
+            return;
+          }
+          await this.reconnectAfterFailure(new Error("OpenSandbox stdio stream ended before child exit"));
+          continue;
+        }
+        this.reader = reader;
+        this.deliveredBytes += item.value.byteLength;
+        controller.enqueue(item.value);
+        return;
+      } catch (error) {
+        this.reader = undefined;
+        if (this.phase !== "active") continue;
+        try {
+          await this.reconnectAfterFailure(error);
+        } catch (reconnectError) {
+          this.fail(reconnectError, controller);
+          return;
+        }
+      }
+    }
+  }
+
+  private async connect(): Promise<void> {
+    if (this.closed || this.phase === "suspended" || this.reader !== undefined) return;
+    if (this.connecting !== undefined) return this.connecting;
+    this.connecting = (async () => {
+      const source = await this.open(this.deliveredBytes);
+      if (this.closed || this.phase === "suspended") {
+        await source.cancel().catch(() => undefined);
+        return;
+      }
+      this.reader = source.getReader();
+    })();
+    try { await this.connecting; }
+    finally { this.connecting = undefined; }
+  }
+
+  private async connectWithRetry(): Promise<void> {
+    const deadline = Date.now() + 60_000;
+    let waitMs = 100;
+    let lastError: unknown;
+    while (Date.now() < deadline && !this.closed) {
+      try {
+        await this.connect();
+        if (this.reader !== undefined) return;
+      } catch (error) { lastError = error; }
+      await delay(waitMs);
+      waitMs = Math.min(2_000, waitMs * 2);
+    }
+    throw lastError instanceof Error ? lastError : new Error("OpenSandbox stdio stream did not reconnect after checkpoint");
+  }
+
+  private async reconnectAfterFailure(cause: unknown): Promise<void> {
+    let lastError: unknown = cause;
+    let waitMs = 100;
+    for (let attempt = 0; attempt < 3 && !this.closed; attempt++) {
+      try {
+        await this.connect();
+        if (this.reader !== undefined) return;
+      } catch (error) { lastError = error; }
+      if (attempt < 2) {
+        await delay(waitMs);
+        waitMs = Math.min(1_000, waitMs * 2);
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error("OpenSandbox stdio stream did not reconnect");
+  }
+
+  private async cancel(reason: unknown): Promise<void> {
+    this.closed = true;
+    this.phase = "active";
+    this.rejectResume?.(reason);
+    const reader = this.reader;
+    this.reader = undefined;
+    await reader?.cancel(reason).catch(() => undefined);
+  }
+
+  private fail(error: unknown, controller?: ReadableStreamDefaultController<Uint8Array>): void {
+    this.closed = true;
+    this.phase = "active";
+    this.rejectResume?.(error);
+    void this.reader?.cancel(error).catch(() => undefined);
+    this.reader = undefined;
+    if (!this.failureReported) {
+      this.failureReported = true;
+      this.onFailure(error);
+    }
+    try { controller?.error(error); } catch { /* consumer already cancelled */ }
+  }
+}
+
 export async function spawnBridge(
   sandbox: OpenSandbox, spec: SandboxDuplexProcessSpec, port: number,
-): Promise<SandboxDuplexProcess> {
+): Promise<CheckpointableDuplexProcess> {
   const token = Buffer.from(randomBytes(32)).toString("hex");
   const dir = `/tmp/openma-stdio-${Buffer.from(randomBytes(12)).toString("hex")}`;
   const config = {
@@ -113,15 +388,28 @@ export async function spawnBridge(
     await cleanup();
     throw error;
   }
-  const endpoint = await sandbox.serviceEndpoint(port);
-  const headers = { ...endpoint.headers, "X-OpenMA-Stdio-Token": token };
+  const endpointWithRetry = async () => {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try { return await sandbox.serviceEndpoint(port); }
+      catch (error) {
+        lastError = error;
+        if (attempt < 2) await delay(100 * 2 ** attempt);
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error("OpenSandbox service endpoint unavailable");
+  };
+  let endpoint = await endpointWithRetry();
+  const headers = () => ({ ...endpoint.headers, "X-OpenMA-Stdio-Token": token });
+  const refreshEndpoint = async () => { endpoint = await endpointWithRetry(); };
   const streamsAbort = new AbortController();
-  const openStream = async (path: string): Promise<ReadableStream<Uint8Array>> => {
+  const openStream = async (path: string, offset = 0): Promise<ReadableStream<Uint8Array>> => {
     // fetch applies its own five-minute body deadline even without an
     // AbortSignal. Raw stdio may be silent for an entire turn; it cannot carry
-    // heartbeat bytes and cannot be replayed safely after disconnect.
+    // heartbeat bytes. The relay retains a bounded byte history and accepts
+    // the delivered offset so a reconnect can resume without replaying data.
     const response = await httpRequest(`${endpoint.endpoint}${path}`, {
-      headers, headersTimeout: 30_000, bodyTimeout: 0, signal: streamsAbort.signal,
+      headers: { ...headers(), "X-OpenMA-Stdio-Offset": String(offset) }, headersTimeout: 30_000, bodyTimeout: 0, signal: streamsAbort.signal,
     });
     if (response.statusCode !== 200) {
       await response.body.dump();
@@ -130,22 +418,47 @@ export async function spawnBridge(
     return Readable.toWeb(response.body) as unknown as ReadableStream<Uint8Array>;
   };
   const request = async (path: string, init: RequestInit = {}) => {
+    const requestHeaders = new Headers(headers());
+    for (const [name, value] of new Headers(init.headers)) requestHeaders.set(name, value);
     const response = await fetch(`${endpoint.endpoint}${path}`, {
-      ...init, headers,
+      ...init, headers: requestHeaders,
       signal: AbortSignal.timeout(path === "/exit" ? 1_000 : 30_000),
     });
     if (!response.ok) { await response.body?.cancel(); throw new Error(`OpenSandbox stdio relay failed (HTTP ${response.status})`); }
     return response;
   };
+  const retryableRequest = async (path: string, init: RequestInit = {}): Promise<Response> => {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try { return await request(path, init); }
+      catch (error) {
+        lastError = error;
+        const statusMatch = error instanceof Error ? error.message.match(/HTTP (\d+)/) : undefined;
+        const status = statusMatch === null || statusMatch === undefined ? undefined : Number(statusMatch[1]);
+        const retryableStatus = status === undefined || [408, 425, 429, 500, 502, 503, 504].includes(status);
+        if (!retryableStatus || attempt === 2) throw error;
+        await refreshEndpoint().catch(() => undefined);
+        await delay(100 * 2 ** attempt);
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error("OpenSandbox relay request failed");
+  };
   const deadline = Date.now() + 30_000;
   while (true) {
     try { await (await request("/ready")).text(); break; }
-    catch (error) { if (Date.now() >= deadline) { await cleanup(); throw error; } await delay(100); }
+    catch (error) {
+      if (Date.now() >= deadline) { await cleanup(); throw error; }
+      await refreshEndpoint().catch(() => undefined);
+      await delay(100);
+    }
   }
   try {
-    const [stdout, stderr] = await Promise.all([
-      openStream("/stdout"), openStream("/stderr"),
-    ]);
+    let checkpointing = false;
+    let exitObserved = false;
+    const onStreamFailure = (error: unknown) => streamsAbort.abort(error);
+    const stdout = new ReconnectableOutput(async (offset) => { await refreshEndpoint(); return openStream("/stdout", offset); }, onStreamFailure, () => exitObserved);
+    const stderr = new ReconnectableOutput(async (offset) => { await refreshEndpoint(); return openStream("/stderr", offset); }, onStreamFailure, () => exitObserved);
+    await Promise.all([stdout.ready(), stderr.ready()]);
     const exited = (async () => {
       let failures = 0;
       for (;;) {
@@ -160,10 +473,17 @@ export async function spawnBridge(
               (outcome.code === null && outcome.signal === null)) {
               throw new Error("Invalid OpenSandbox child exit response");
             }
+            exitObserved = true;
             return outcome as { code: number | null; signal: string | null };
           }
           failures = 0;
         } catch (cause) {
+          if (checkpointing) {
+            await refreshEndpoint().catch(() => undefined);
+            await delay(250);
+            continue;
+          }
+          await refreshEndpoint().catch(() => undefined);
           if (++failures >= 3) {
             const error = new Error(`OpenSandbox exit observation failed (sandbox=${sandbox.id}, port=${port}, phase=exit_observation, at=${new Date().toISOString()}); child exit is unconfirmed`, { cause });
             streamsAbort.abort(error);
@@ -176,19 +496,50 @@ export async function spawnBridge(
     // Consumers may attach after this request fails; avoid an unhandled rejection.
     void exited.catch(() => undefined);
     const kill = async (signal: "SIGTERM" | "SIGKILL" = "SIGTERM") => {
-      await (await request(`/${signal}`, { method: "DELETE" })).text();
+      await (await retryableRequest(`/${signal}`, { method: "DELETE" })).text();
+    };
+    let nextStdinSequence = 0;
+    const suspendForCheckpoint = async () => {
+      if (checkpointing) return async () => {};
+      checkpointing = true;
+      let resumeStdout: (() => Promise<void>) | undefined;
+      let resumeStderr: (() => Promise<void>) | undefined;
+      try {
+        resumeStdout = await stdout.suspendForCheckpoint();
+        resumeStderr = await stderr.suspendForCheckpoint();
+      } catch (error) {
+        checkpointing = false;
+        await resumeStderr?.().catch(() => undefined);
+        await resumeStdout?.().catch(() => undefined);
+        throw error;
+      }
+      let resumed = false;
+      return async () => {
+        if (resumed) return;
+        resumed = true;
+        try {
+          await Promise.all([resumeStdout?.(), resumeStderr?.()]);
+        } finally { checkpointing = false; }
+      };
     };
     return {
-      stdout, stderr, exited, kill,
+      stdout: stdout.stream, stderr: stderr.stream, exited, kill, suspendForCheckpoint,
       stdin: new WritableStream<Uint8Array>({
-        async write(chunk) { await (await request("/stdin", { method: "POST", body: Buffer.from(chunk) })).text(); },
-        async close() { await (await request("/close", { method: "POST" })).text(); },
+        async write(chunk) {
+          const sequence = nextStdinSequence;
+          await (await retryableRequest("/stdin", {
+            method: "POST", body: Buffer.from(chunk),
+            headers: { "X-OpenMA-Stdio-Sequence": String(sequence) },
+          })).text();
+          nextStdinSequence += 1;
+        },
+        async close() { await (await retryableRequest("/close", { method: "POST" })).text(); },
         async abort() { await kill("SIGKILL"); },
       }),
     };
   } catch (error) {
     streamsAbort.abort(error);
-    await request("/SIGKILL", { method: "DELETE" }).then(response => response.text()).catch(() => undefined);
+    await retryableRequest("/SIGKILL", { method: "DELETE" }).then(response => response.text()).catch(() => undefined);
     throw error;
   }
 }

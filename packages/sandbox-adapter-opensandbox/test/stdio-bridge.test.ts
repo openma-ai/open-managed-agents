@@ -21,7 +21,10 @@ async function freePort(): Promise<number> {
   return port;
 }
 
-async function fixture(options: { dropStdoutAfterFirstChunk?: boolean } = {}) {
+async function fixture(options: {
+  dropStdoutAfterFirstChunk?: boolean;
+  dropStdoutBeforeFirstChunk?: boolean;
+} = {}) {
   const port = await freePort();
   const written: Array<{ path: string; mode: number | undefined; text: string }> = [];
   const dirs: Array<{ path: string; mode?: number }> = [];
@@ -35,10 +38,16 @@ async function fixture(options: { dropStdoutAfterFirstChunk?: boolean } = {}) {
       for (const e of entries) {
         let text = Buffer.from(e.data).toString("utf8");
         written.push({ path: e.path, mode: e.mode, text });
-        if (options.dropStdoutAfterFirstChunk && e.path.endsWith("/relay.js")) {
+        if ((options.dropStdoutAfterFirstChunk || options.dropStdoutBeforeFirstChunk) && e.path.endsWith("/relay.js")) {
           text = text.replace(
-            "res.flushHeaders(); output[req.url.slice(1)].pipe(res); return;",
-            "res.flushHeaders();\n    const source = output[req.url.slice(1)];\n    if (req.url === '/stdout') { source.once('data', () => { source.unpipe(res); res.destroy(new Error('test network disconnect')); }); }\n    source.pipe(res); return;",
+            "const output = { stdout: new PassThrough(), stderr: new PassThrough() };",
+            `const output = { stdout: new PassThrough(), stderr: new PassThrough() }; let testDroppedStdout = false; let testDroppedStdoutBefore = ${options.dropStdoutBeforeFirstChunk ? "false" : "true"};`,
+          ).replace(
+            "res.flushHeaders();\n    const name = requestUrl.pathname.slice(1);",
+            "res.flushHeaders();\n    if (requestUrl.pathname === '/stdout' && !testDroppedStdoutBefore) { testDroppedStdoutBefore = true; setTimeout(() => res.destroy(new Error('test network disconnect before payload')), 10); return; }\n    const name = requestUrl.pathname.slice(1);",
+          ).replace(
+            "state.clients.add(client);",
+            "state.clients.add(client);\n    if (name === 'stdout' && !testDroppedStdout) { testDroppedStdout = true; const originalWrite = res.write.bind(res); res.write = (...args) => { const result = originalWrite(...args); res.destroy(new Error('test network disconnect')); return result; }; }",
           );
         }
         // Redirect only the exposed service port so this test needs no OpenSandbox server.
@@ -118,6 +127,34 @@ it("preserves binary stdin/stdout/stderr and real exit codes without a PTY", asy
   await expect(writer.write(Uint8Array.of(1))).rejects.toThrow();
 });
 
+it("retries a lost stdin acknowledgement without duplicating the chunk", async () => {
+  const { sandbox } = await fixture();
+  const realFetch = globalThis.fetch;
+  let interrupted = false;
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+    const response = await realFetch(url, init);
+    if (String(url).endsWith("/stdin") && !interrupted) {
+      interrupted = true;
+      await response.body?.cancel();
+      throw new Error("stdin acknowledgement connection lost");
+    }
+    return response;
+  });
+  const child = await sandbox.spawnDuplexProcess({
+    command: process.execPath,
+    cwd: process.cwd(),
+    args: ["-e", "process.stdin.on('data', b => process.stdout.write(b)); process.stdin.on('end', () => process.exit(0))"],
+  });
+  const stdout = new Response(child.stdout).text();
+  const stderr = new Response(child.stderr).text();
+  const writer = child.stdin.getWriter();
+  await writer.write(new TextEncoder().encode("once"));
+  await writer.close();
+  await expect(child.exited).resolves.toEqual({ code: 0, signal: null });
+  await expect(stdout).resolves.toBe("once");
+  await stderr;
+});
+
 it("captures output when a child exits before the stream requests attach", async () => {
   const { sandbox } = await fixture();
   const child = await sandbox.spawnDuplexProcess({
@@ -168,19 +205,61 @@ it("recovers exit observation after a disconnected request without treating it a
   expect(outcome).toEqual({ code: 7, signal: null });
 });
 
-it("surfaces a mid-stream service disconnect instead of replaying ACP bytes", async () => {
+it("retries an ordinary stream disconnect before delivering payload", async () => {
+  const { sandbox } = await fixture({ dropStdoutBeforeFirstChunk: true });
+  const child = await sandbox.spawnDuplexProcess({
+    command: process.execPath,
+    cwd: process.cwd(),
+    args: ["-e", "setTimeout(() => process.stdout.write('retry-ok'), 100)"],
+  });
+  const stdout = new Response(child.stdout).text();
+  const stderr = new Response(child.stderr).text();
+  await expect(child.exited).resolves.toEqual({ code: 0, signal: null });
+  await expect(stdout).resolves.toBe("retry-ok");
+  await stderr;
+});
+
+it("reconnects after a mid-stream service disconnect without replaying ACP bytes", async () => {
   const { sandbox } = await fixture({ dropStdoutAfterFirstChunk: true });
   const child = await sandbox.spawnDuplexProcess({
     command: process.execPath,
     cwd: process.cwd(),
-    args: ["-e", "process.stdout.write('first'); process.stdin.resume()"],
+    args: ["-e", "process.stdout.write('first'); setTimeout(() => { process.stdout.write('second'); }, 100)"],
   });
   const stdout = new Response(child.stdout).text();
   const stderr = new Response(child.stderr).text();
-  await expect(stdout).rejects.toThrow();
-  await child.kill("SIGKILL");
-  await expect(child.exited).resolves.toEqual({ code: null, signal: "SIGKILL" });
+  await expect(child.exited).resolves.toEqual({ code: 0, signal: null });
+  await expect(stdout).resolves.toBe("firstsecond");
   await stderr.catch(() => undefined);
+});
+
+it("detaches and retries both stdio streams during a checkpoint handoff", async () => {
+  const { sandbox, port } = await fixture();
+  const child = await sandbox.spawnDuplexProcess({
+    command: process.execPath,
+    cwd: process.cwd(),
+    args: ["-e", "process.stdin.on('data', b => { process.stdout.write(b); process.stderr.write(b); }); process.stdin.on('end', () => process.exit(0))"],
+  });
+  const stdout = new Response(child.stdout).text();
+  const stderr = new Response(child.stderr).text();
+  const endpoint = vi.mocked(sandbox.serviceEndpoint);
+  let transientFailures = 2;
+  endpoint.mockImplementation(async () => {
+    if (transientFailures > 0) {
+      transientFailures -= 1;
+      throw new Error("checkpoint route is temporarily unavailable");
+    }
+    return { endpoint: `http://127.0.0.1:${port}`, headers: undefined };
+  });
+  const resume = await child.suspendForCheckpoint();
+  const writer = child.stdin.getWriter();
+  await writer.write(new TextEncoder().encode("during-checkpoint"));
+  await resume();
+  await writer.close();
+  await expect(child.exited).resolves.toEqual({ code: 0, signal: null });
+  await expect(stdout).resolves.toBe("during-checkpoint");
+  await expect(stderr).resolves.toBe("during-checkpoint");
+  expect(endpoint.mock.calls.length).toBeGreaterThan(5);
 });
 
 it("keeps silent raw stdio usable beyond fetch idle deadlines without injecting heartbeat bytes", async () => {
