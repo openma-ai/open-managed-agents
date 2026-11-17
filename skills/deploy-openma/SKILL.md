@@ -65,6 +65,11 @@ Read only the selected deployment reference:
   around secret handling. Redact logs and resolved deployment configuration.
 - Keep authentication and sandbox isolation enabled. Do not use `AUTH_DISABLED`,
   test adapters, a host subprocess or unscoped credential access as a shortcut.
+- For an attached Runtime using BoxLite, use the explicit `SANDBOX_PROXY_URL`
+  (or separate `SANDBOX_HTTP_PROXY` / `SANDBOX_HTTPS_PROXY`) settings when a
+  deployment needs Vault or upstream credential routing. Treat proxy variables
+  as advisory guest configuration; the proxy service must own enforcement and
+  secret injection.
 - For an existing install, establish backup and rollback before migrations or
   redeployment. Do not reset volumes, rotate keys or overwrite configuration to
   make a smoke test pass.

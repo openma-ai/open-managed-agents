@@ -566,6 +566,7 @@ The same demo works on the Postgres compose unchanged.
 | `E2BSandbox` | Official E2B SDK adapter | `SANDBOX_PROVIDER=e2b`, `E2B_API_KEY=...`, optional `SANDBOX_IMAGE` (template id). Compatible/self-hosted services use `E2B_API_URL` plus `E2B_SANDBOX_URL`, or `E2B_DOMAIN` when they expose the standard wildcard domain. `E2B_CREATE_METADATA` (a JSON object of string values) is passed as the standard `metadata` field of every sandbox creation, which E2B-compatible services can use for per-deployment options such as selecting a container image. Sandboxes are created with a 30-minute initial lifetime (`E2B_SANDBOX_TIMEOUT_MS`, positive integer, milliseconds); while a turn runs the server renews it as described in [Sandbox loss and recovery](#sandbox-loss-and-recovery). Memory uses `MEMORY_S3_*` (same s3fs setup as Daytona). Outbound vault CA upload requires a template that allows `sudo` writes to `/etc/ssl/`. |
 | `OpenSandbox` | Self-hosted or remote OpenSandbox server, using the official TypeScript SDK | `SANDBOX_PROVIDER=opensandbox`, `OPENSANDBOX_DOMAIN=localhost:8080`, optional `OPENSANDBOX_API_KEY` and `OPENSANDBOX_PROTOCOL=https`. `SANDBOX_IMAGE=node:22-slim` by default. See [OpenSandbox configuration](../packages/sandbox-adapter-opensandbox/README.md) for resource limits, lifetime, endpoint routing, SDK installation, and harness image requirements. |
 | `BoxRunSandbox` | Remote BoxLite REST endpoint (no KVM on the OMA host) | `SANDBOX_PROVIDER=boxrun`, `BOXRUN_URL=http://host:8100/v1/default`, optional `BOXRUN_TOKEN`. No mount primitive — bake a custom image with s3fs preinstalled if you need `/mnt/memory`. |
+| `CloudflareSandbox` | If you happen to deploy on CF Workers + Containers | Use the regular `apps/agent` worker, not main-node. |
 
 Attached Runtime sandbox placement supports the same two BoxLite modes. Leave
 `SANDBOX_PROVIDER` unset (or set it to `litebox`) for an embedded local VM. To
@@ -574,7 +575,18 @@ use a cloud or remote BoxLite service, set `SANDBOX_PROVIDER=boxrun` and point
 `BOXLITE_URL=https://api.example.com/v1/acme BOXLITE_API_KEY=…`. The existing
 `BOXRUN_URL`/`BOXRUN_TOKEN` names remain accepted; a `/v1/<prefix>` URL is
 normalized to the current BoxLite SDK's `url` plus `pathPrefix` arguments.
-| `CloudflareSandbox` | If you happen to deploy on CF Workers + Containers | Use the regular `apps/agent` worker, not main-node. |
+
+Attached Runtime BoxLite also accepts an explicit operator proxy. Set
+`SANDBOX_PROXY_URL` to use one proxy for HTTP and HTTPS, or set
+`SANDBOX_HTTP_PROXY` and `SANDBOX_HTTPS_PROXY` separately; optionally set
+`SANDBOX_NO_PROXY`. The daemon copies only these explicit values into the
+guest command environment (both upper- and lower-case spellings), and the
+configured proxy wins over per-process ACP values. Point this at a proxy that
+owns Vault lookup or upstream authentication. The proxy variables are
+advisory inside a VM, so this supplies credential routing without claiming
+network isolation. The attached Runtime path does not yet mint the ordinary
+Session-scoped OMA Vault relay pass from the Runtime token; use the explicit
+proxy configuration until that binding is added.
 
 Every provider installs an Environment's `packages` when a sandbox starts: pip into `/workspace/.venv` (with `uv`, installed from pip when the image lacks it; the venv is created with `--system-site-packages`, so packages installed into the image's system Python stay importable), npm into `/workspace/.npm-global`, cargo into `/workspace/.cargo`, go into `/workspace/.go`, apt system-wide. Those directories are put on `PATH` for the agent's commands. A container that already ran the same list, or whose restored `/workspace` carries it, skips the install; a failed install fails the session with the installer's output. Set `SANDBOX_PIP_INDEX_URL` to install pip packages from a mirror when the sandbox network reaches one faster than pypi.org.
 

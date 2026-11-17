@@ -245,6 +245,35 @@ describe("BoxLite provider boundary contracts", () => {
     await expect(failed.runtime.exec("false")).resolves.toBe("\n[exit 9]");
   });
 
+  it("keeps operator proxy environment on every command and lets it override ACP env", async () => {
+    const value = box({ execution: execution() });
+    const sdk = client(value);
+    const runtime = new BoxLiteManagedRuntime({
+      providerId: "litebox",
+      client: sdk,
+      box: value,
+      expectedName: expectedName(),
+      sandboxEnv: { HTTPS_PROXY: "http://proxy.internal:8080" },
+    });
+    await runtime.setEnvVars({ NO_PROXY: "localhost" });
+    await runtime.exec("true");
+    expect(value.exec).toHaveBeenCalledWith(
+      "/bin/sh", ["-lc", "true"],
+      [["HTTPS_PROXY", "http://proxy.internal:8080"], ["NO_PROXY", "localhost"]],
+      false, null, 120, "/workspace",
+    );
+
+    await runtime.spawnDuplexProcess({
+      command: "worker",
+      env: { HTTPS_PROXY: "http://agent-bypass.invalid", AGENT: "1" },
+    });
+    expect(value.exec).toHaveBeenLastCalledWith(
+      "worker", [],
+      [["HTTPS_PROXY", "http://proxy.internal:8080"], ["AGENT", "1"], ["NO_PROXY", "localhost"]],
+      false, null, 0, "/workspace",
+    );
+  });
+
   it("copies text and binary files through cleaned temporary staging", async () => {
     const { value, runtime } = direct({ execution: execution() });
     await expect(runtime.readFileBytes("/workspace/a")).resolves.toEqual(new Uint8Array([1, 2, 3]));

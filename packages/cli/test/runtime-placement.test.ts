@@ -255,5 +255,29 @@ describe("Runtime sandbox placement (mocked LiteBox; live daemon evidence deferr
     expect(runtimeSandboxEnvironment({ BOXLITE_HOME: " /tmp/oma-boxlite " })).toEqual({
       providerId: "litebox", image: "node:22-bookworm", connection: { type: "embedded", homeDir: "/tmp/oma-boxlite" },
     });
+    expect(runtimeSandboxEnvironment({
+      SANDBOX_PROXY_URL: " https://egress.example/proxy ",
+      SANDBOX_NO_PROXY: "localhost,127.0.0.1",
+    })).toEqual({
+      providerId: "litebox", image: "node:22-bookworm",
+      sandboxEnv: {
+        HTTP_PROXY: "https://egress.example/proxy",
+        http_proxy: "https://egress.example/proxy",
+        HTTPS_PROXY: "https://egress.example/proxy",
+        https_proxy: "https://egress.example/proxy",
+        NO_PROXY: "localhost,127.0.0.1",
+        no_proxy: "localhost,127.0.0.1",
+      },
+      connection: { type: "embedded" },
+    });
+    expect(runtimeSandboxEnvironment({
+      SANDBOX_HTTP_PROXY: "http://http-proxy:8080",
+      SANDBOX_HTTPS_PROXY: "https://https-proxy:8443",
+    }).sandboxEnv).toEqual({
+      HTTP_PROXY: "http://http-proxy:8080", http_proxy: "http://http-proxy:8080",
+      HTTPS_PROXY: "https://https-proxy:8443", https_proxy: "https://https-proxy:8443",
+    });
+    expect(() => runtimeSandboxEnvironment({ SANDBOX_PROXY_URL: "file:///tmp/proxy" }))
+      .toThrow("SANDBOX_PROXY_URL must be an absolute http(s) URL");
   });
 });

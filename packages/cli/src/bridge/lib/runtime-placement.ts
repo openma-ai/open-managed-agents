@@ -17,6 +17,7 @@ export type RuntimeSandbox = SandboxPort & SandboxRuntimePort & SandboxDuplexPro
 type RuntimeBoxLiteEnvironment = {
   providerId: "litebox" | "boxrun";
   image: string;
+  sandboxEnv?: Readonly<Record<string, string>>;
   cpus?: number;
   memoryMib?: number;
   connection:
@@ -43,6 +44,7 @@ export function runtimeSandboxEnvironment(env: SandboxFactoryEnv) {
     return {
       providerId: "boxrun" as const,
       image: env.SANDBOX_IMAGE ?? "node:22-bookworm",
+      ...sandboxProxyEnvironment(env),
       ...boxRunResources(env),
       connection: boxRunConnection(remoteUrl, env),
     } satisfies RuntimeBoxLiteEnvironment;
@@ -51,12 +53,68 @@ export function runtimeSandboxEnvironment(env: SandboxFactoryEnv) {
   return {
     providerId: "litebox" as const,
     image: env.SANDBOX_IMAGE ?? "node:22-bookworm",
+    ...sandboxProxyEnvironment(env),
     // Optional BOXLITE_HOME keeps the daemon out of another process's lock
     // (for example a co-located Cloud SANDBOX_PROVIDER=litebox main-node).
     connection: homeDir
       ? { type: "embedded" as const, homeDir }
       : { type: "embedded" as const },
   } satisfies RuntimeBoxLiteEnvironment;
+}
+
+/**
+ * Keep proxy configuration explicit at the Runtime boundary. Passing the
+ * daemon's ambient HTTP_PROXY would make host networking part of the guest
+ * contract and could accidentally carry credentials into a VM. The proxy is
+ * advisory inside BoxLite; operators should point it at a relay that owns any
+ * Vault lookup or upstream authentication.
+ */
+function sandboxProxyEnvironment(env: SandboxFactoryEnv): {
+  sandboxEnv?: Readonly<Record<string, string>>;
+} {
+  const shared = trimmed(env.SANDBOX_PROXY_URL);
+  const explicitHttp = trimmed(env.SANDBOX_HTTP_PROXY);
+  const explicitHttps = trimmed(env.SANDBOX_HTTPS_PROXY);
+  const http = explicitHttp === undefined
+    ? proxyUrl("SANDBOX_PROXY_URL", shared)
+    : proxyUrl("SANDBOX_HTTP_PROXY", explicitHttp);
+  const https = explicitHttps === undefined
+    ? proxyUrl("SANDBOX_PROXY_URL", shared)
+    : proxyUrl("SANDBOX_HTTPS_PROXY", explicitHttps);
+  const noProxy = trimmed(env.SANDBOX_NO_PROXY);
+  const sandboxEnv: Record<string, string> = {};
+  if (http !== undefined) {
+    sandboxEnv.HTTP_PROXY = http;
+    sandboxEnv.http_proxy = http;
+  }
+  if (https !== undefined) {
+    sandboxEnv.HTTPS_PROXY = https;
+    sandboxEnv.https_proxy = https;
+  }
+  if (noProxy !== undefined) {
+    sandboxEnv.NO_PROXY = noProxy;
+    sandboxEnv.no_proxy = noProxy;
+  }
+  return Object.keys(sandboxEnv).length === 0 ? {} : { sandboxEnv };
+}
+
+function trimmed(value: string | undefined): string | undefined {
+  const result = value?.trim();
+  return result === undefined || result === "" ? undefined : result;
+}
+
+function proxyUrl(key: string, value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error(`${key} must be an absolute http(s) URL`);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(`${key} must be an absolute http(s) URL`);
+  }
+  return value;
 }
 
 function boxRunResources(env: SandboxFactoryEnv): { cpus?: number; memoryMib?: number } {

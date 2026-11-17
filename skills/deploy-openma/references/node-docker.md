@@ -72,6 +72,15 @@ accepted as aliases. The daemon normalizes the `/v1/<prefix>` URL and passes a
 bearer credential to the current BoxLite SDK; it does not fall back to host
 execution when the remote provider is unavailable.
 
+For Runtime-attached BoxLite egress, configure an operator-owned proxy with
+`SANDBOX_PROXY_URL` (sets both HTTP and HTTPS), or with
+`SANDBOX_HTTP_PROXY`/`SANDBOX_HTTPS_PROXY`; `SANDBOX_NO_PROXY` is optional.
+These values are passed explicitly to guest commands and the ACP process, and
+the proxy may perform Vault or upstream credential injection. The attached
+Runtime daemon does not currently mint the Session-scoped OMA Vault relay pass
+itself, so do not assume these variables are the OMA relay or a network
+isolation boundary.
+
 For local trials, bind the Console/API host port to `127.0.0.1`. The bundled
 Compose mapping may bind all interfaces. Use a local deployment configuration
 that **replaces** the published port; a naive Compose override can append a

@@ -128,6 +128,8 @@ export interface BoxLiteCreateOptions {
     value: string;
     hosts?: string[];
     placeholder?: string;
+    /** Header templates are required by BoxLite's native secret injector. */
+    headers: Record<string, string>;
   }>;
 }
 
@@ -139,6 +141,13 @@ type SafeAllocationOptions = Omit<
 export interface BoxLiteProviderOptions {
   providerId: BoxLiteManagedProviderId;
   image: string;
+  /**
+   * Operator-owned environment that must be present for every command in the
+   * guest. This is deliberately opt-in: host process environment variables
+   * are never copied into a BoxLite sandbox implicitly. A common use is an
+   * HTTP(S) proxy whose upstream owns Vault injection.
+   */
+  sandboxEnv?: Readonly<Record<string, string>>;
   client?: BoxLiteClientPort;
   connection?:
     | { type: "embedded"; homeDir?: string }
@@ -321,6 +330,7 @@ export class BoxLiteManagedRuntime
   readonly #checkpoints?: BoxLiteCheckpointPort;
   readonly #checkpointTimeoutMs: number;
   readonly #checkpointPollIntervalMs: number;
+  readonly #sandboxEnv: Record<string, string>;
   #destroyed = false;
 
   constructor(input: {
@@ -328,6 +338,7 @@ export class BoxLiteManagedRuntime
     client: BoxLiteClientPort;
     box: BoxLiteBoxSdkPort;
     expectedName: string;
+    sandboxEnv?: Readonly<Record<string, string>>;
     checkpoints?: BoxLiteCheckpointPort;
     checkpointTimeoutMs?: number;
     checkpointPollIntervalMs?: number;
@@ -336,6 +347,7 @@ export class BoxLiteManagedRuntime
     this.#client = input.client;
     this.#box = input.box;
     this.#expectedName = input.expectedName;
+    this.#sandboxEnv = { ...(input.sandboxEnv ?? {}) };
     this.#checkpoints = input.checkpoints;
     this.#checkpointTimeoutMs = input.checkpointTimeoutMs ?? 120_000;
     this.#checkpointPollIntervalMs = input.checkpointPollIntervalMs ?? 250;
@@ -364,6 +376,17 @@ export class BoxLiteManagedRuntime
     if (await this.status() === "stopped") {
       throw new Error("BoxLite runtime has been removed");
     }
+  }
+
+  /** Install operator-managed environment for all future guest commands.
+   * Explicit runtime environment wins over ACP-provided per-process values so
+   * an agent cannot bypass the configured egress proxy. */
+  async setEnvVars(envVars: Record<string, string>): Promise<void> {
+    Object.assign(this.#sandboxEnv, envVars);
+  }
+
+  private commandEnv(env?: Readonly<Record<string, string | undefined>>): Array<[string, string]> {
+    return envPairs({ ...env, ...this.#sandboxEnv });
   }
 
   async suspend(input: { kind: "filesystem" | "memory" }): Promise<SandboxCheckpointHandle> {
@@ -440,7 +463,7 @@ export class BoxLiteManagedRuntime
       this.#box,
       "/bin/sh",
       ["-lc", command],
-      [],
+      this.commandEnv(),
       Math.max(1, Math.ceil(timeoutMs / 1_000)),
       "/workspace",
     );
@@ -478,7 +501,7 @@ export class BoxLiteManagedRuntime
         this.#box,
         "mkdir",
         ["-p", parent],
-        [],
+        this.commandEnv(),
         30,
         "/workspace",
       );
@@ -496,7 +519,7 @@ export class BoxLiteManagedRuntime
     const execution = await this.#box.exec(
       spec.command,
       spec.args === undefined ? [] : [...spec.args],
-      envPairs(spec.env),
+      this.commandEnv(spec.env),
       false,
       null,
       0,
@@ -583,6 +606,7 @@ function createBoxLiteProviderWithClient(
     client: sdk,
     box,
     expectedName,
+    ...(options.sandboxEnv === undefined ? {} : { sandboxEnv: options.sandboxEnv }),
     ...(options.connection?.type === "rest" && sdk.checkpoints !== undefined
       ? { checkpoints: sdk.checkpoints }
       : {}),
