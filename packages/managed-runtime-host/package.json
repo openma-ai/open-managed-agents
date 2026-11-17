@@ -21,7 +21,7 @@
     "@open-managed-agents/shared": "workspace:*"
   },
   "devDependencies": {
-    "standardwebhooks": "1.0.0",
+    "standardwebhooks": "1.1.1",
     "vitest": "^5.0.5"
   }
 }
