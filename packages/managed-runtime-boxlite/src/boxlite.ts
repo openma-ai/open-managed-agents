@@ -52,14 +52,17 @@ export interface BoxLiteExecutionPort {
   signal?(signal: number): Promise<void>;
 }
 
+export interface BoxLiteBoxInfo {
+  id: string;
+  name?: string;
+  state: { status: string; running: boolean; pid?: number };
+}
+
 export interface BoxLiteBoxSdkPort {
   readonly id: string;
   readonly name: string | null;
-  info(): {
-    id: string;
-    name?: string;
-    state: { status: string; running: boolean; pid?: number };
-  };
+  /** BoxLite 0.13 made info() asynchronous for both embedded and REST clients. */
+  info(): BoxLiteBoxInfo | Promise<BoxLiteBoxInfo>;
   exec(
     command: string,
     args?: string[] | null,
@@ -142,9 +145,10 @@ export interface BoxLiteProviderOptions {
     | {
         type: "rest";
         url: string;
-        clientId?: string;
-        clientSecret?: string;
-        prefix?: string;
+        /** BoxLite REST API key, sent as a bearer credential. */
+        apiKey?: string;
+        /** Optional organization / deployment routing prefix. */
+        pathPrefix?: string;
       };
   cpus?: number;
   memoryMib?: number;
@@ -169,12 +173,25 @@ export interface BoxLiteManagedRuntimeOptions extends BoxLiteProviderOptions {
 interface BoxLiteConstructorPort {
   new(options?: { homeDir?: string }): BoxLiteClientPort;
   withDefaultConfig(): BoxLiteClientPort;
-  rest(options: {
+  rest(options: unknown): BoxLiteClientPort;
+}
+
+interface BoxLiteRestOptionsPort {
+  new(options: {
     url: string;
-    clientId?: string;
-    clientSecret?: string;
-    prefix?: string;
-  }): BoxLiteClientPort;
+    credential?: unknown;
+    pathPrefix?: string;
+  }): unknown;
+}
+
+interface BoxLiteApiKeyCredentialPort {
+  new(key: string): unknown;
+}
+
+interface BoxLiteModulePort {
+  JsBoxlite: BoxLiteConstructorPort;
+  BoxliteRestOptions: BoxLiteRestOptionsPort;
+  ApiKeyCredential: BoxLiteApiKeyCredentialPort;
 }
 
 function stableName(providerId: BoxLiteManagedProviderId, sessionId: string): string {
@@ -188,11 +205,11 @@ async function loadBoxLiteClient(
   options: BoxLiteProviderOptions,
 ): Promise<BoxLiteClientPort> {
   if (options.client !== undefined) return options.client;
-  let module: { JsBoxlite: BoxLiteConstructorPort };
+  let module: BoxLiteModulePort;
   try {
     module = await import(
       /* @vite-ignore */ "@boxlite-ai/boxlite" as string
-    ) as unknown as { JsBoxlite: BoxLiteConstructorPort };
+    ) as unknown as BoxLiteModulePort;
   } catch (error) {
     throw new Error(
       `BoxLite managed runtime requires '@boxlite-ai/boxlite': ${String(error)}`,
@@ -200,14 +217,19 @@ async function loadBoxLiteClient(
   }
   const connection = options.connection ?? { type: "embedded" as const };
   if (connection.type === "rest") {
-    return module.JsBoxlite.rest({
+    if (typeof module.BoxliteRestOptions !== "function" || typeof module.ApiKeyCredential !== "function") {
+      throw new Error(
+        "BoxLite REST managed runtime requires @boxlite-ai/boxlite 0.13.1 or newer",
+      );
+    }
+    const credential = connection.apiKey === undefined
+      ? undefined
+      : new module.ApiKeyCredential(connection.apiKey);
+    return module.JsBoxlite.rest(new module.BoxliteRestOptions({
       url: connection.url,
-      ...(connection.clientId === undefined ? {} : { clientId: connection.clientId }),
-      ...(connection.clientSecret === undefined
-        ? {}
-        : { clientSecret: connection.clientSecret }),
-      ...(connection.prefix === undefined ? {} : { prefix: connection.prefix }),
-    });
+      ...(credential === undefined ? {} : { credential }),
+      ...(connection.pathPrefix === undefined ? {} : { pathPrefix: connection.pathPrefix }),
+    }));
   }
   return connection.homeDir === undefined
     ? module.JsBoxlite.withDefaultConfig()
@@ -215,6 +237,10 @@ async function loadBoxLiteClient(
 }
 
 type BoxLiteClientResolver = () => Promise<BoxLiteClientPort>;
+
+async function boxInfo(box: BoxLiteBoxSdkPort): Promise<BoxLiteBoxInfo> {
+  return await box.info();
+}
 
 function createClientResolver(
   options: BoxLiteProviderOptions,
@@ -329,7 +355,7 @@ export class BoxLiteManagedRuntime
 
   async status(): Promise<SandboxRuntimeStatus> {
     if (this.#destroyed) return "stopped";
-    const info = this.#box.info();
+    const info = await boxInfo(this.#box);
     if (info.state.running) return "running";
     return /stop|exit/i.test(info.state.status) ? "suspended" : "unknown";
   }
@@ -373,7 +399,7 @@ export class BoxLiteManagedRuntime
         "BoxLite embedded runtime does not support portable workspace checkpoints; use BoxRun REST",
       );
     }
-    const wasRunning = this.#box.info().state.running;
+    const wasRunning = (await boxInfo(this.#box)).state.running;
     if (wasRunning) await this.#box.stop();
     try {
       const created = await checkpoints.create(
@@ -525,7 +551,7 @@ function validateBox(
 }
 
 async function ensureRunning(box: BoxLiteBoxSdkPort): Promise<void> {
-  if (!box.info().state.running) await box.start();
+  if (!(await boxInfo(box)).state.running) await box.start();
 }
 
 async function ensureWorkspace(box: BoxLiteBoxSdkPort): Promise<void> {

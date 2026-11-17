@@ -8,6 +8,22 @@ import type {
 export const fixtureCalls: Array<{ type: string; input?: unknown }> = [];
 const boxes = new Map<string, BoxLiteBoxSdkPort>();
 
+export class ApiKeyCredential {
+  constructor(readonly key: string) {}
+}
+
+export class BoxliteRestOptions {
+  readonly url: string;
+  readonly credential?: unknown;
+  readonly pathPrefix?: string;
+
+  constructor(input: { url: string; credential?: unknown; pathPrefix?: string }) {
+    this.url = input.url;
+    this.credential = input.credential;
+    this.pathPrefix = input.pathPrefix;
+  }
+}
+
 function output() {
   return { async next() { return null; } };
 }

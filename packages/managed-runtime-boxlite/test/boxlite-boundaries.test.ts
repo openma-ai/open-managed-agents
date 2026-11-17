@@ -58,17 +58,21 @@ function box(input: {
   running?: boolean;
   status?: string;
   execution?: BoxLiteExecutionPort;
+  asyncInfo?: boolean;
 } = {}) {
   let running = input.running ?? true;
   const nextExecution = input.execution ?? execution();
   const value: BoxLiteBoxSdkPort = {
     id: input.id ?? "box",
     name: input.name === undefined ? expectedName() : input.name,
-    info: () => ({
+    info: () => {
+      const info = {
       id: input.id ?? "box",
       ...(value.name === null ? {} : { name: value.name }),
       state: { status: input.status ?? (running ? "Running" : "Stopped"), running },
-    }),
+      };
+      return input.asyncInfo ? Promise.resolve(info) : info;
+    },
     exec: vi.fn(async () => nextExecution),
     start: vi.fn(async () => { running = true; }),
     stop: vi.fn(async () => { running = false; }),
@@ -131,7 +135,7 @@ describe("BoxLite provider boundary contracts", () => {
     for (const connection of [
       undefined,
       { type: "embedded" as const, homeDir: "/tmp/boxlite" },
-      { type: "rest" as const, url: "https://boxrun", clientId: "id", clientSecret: "secret", prefix: "/api" },
+      { type: "rest" as const, url: "https://boxrun", apiKey: "key", pathPrefix: "acme" },
       { type: "rest" as const, url: "https://minimal" },
     ]) {
       const provider = createBoxLiteProvider({
@@ -144,8 +148,10 @@ describe("BoxLite provider boundary contracts", () => {
     expect(fixtureCalls).toEqual(expect.arrayContaining([
       { type: "default" },
       { type: "constructor", input: { homeDir: "/tmp/boxlite" } },
-      { type: "rest", input: { url: "https://boxrun", clientId: "id", clientSecret: "secret", prefix: "/api" } },
-      { type: "rest", input: { url: "https://minimal" } },
+      { type: "rest", input: expect.objectContaining({
+        url: "https://boxrun", pathPrefix: "acme", credential: expect.objectContaining({ key: "key" }),
+      }) },
+      { type: "rest", input: expect.objectContaining({ url: "https://minimal" }) },
     ]));
   });
 
@@ -164,6 +170,14 @@ describe("BoxLite provider boundary contracts", () => {
     await running.runtime.destroy();
     await expect(running.runtime.status()).resolves.toBe("stopped");
     await expect(running.runtime.renewLease()).rejects.toThrow("has been removed");
+  });
+
+  it("accepts the asynchronous info surface used by BoxLite 0.13 REST", async () => {
+    const { runtime } = direct({ running: false, asyncInfo: true });
+    await expect(runtime.status()).resolves.toBe("suspended");
+    const handle = await runtime.suspend({ kind: "filesystem" });
+    await expect(runtime.resume(handle)).resolves.toBeUndefined();
+    await expect(runtime.status()).resolves.toBe("running");
   });
 
   it("supports retained suspension and validates every resume field", async () => {

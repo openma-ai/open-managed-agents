@@ -62,6 +62,16 @@ network names and paths do not apply to a native process.
    Local interception belongs to the sandbox (or its native outbound adapter).
    Environment proxy variables are bypassable; do not present them as isolation.
 
+For an attached Runtime bridge, the sandbox provider is also split into two
+BoxLite modes: embedded `litebox` keeps the VM on the Runtime host, while
+`boxrun` uses a remote/cloud BoxLite REST service. Configure the latter on the
+Runtime process with `SANDBOX_PROVIDER=boxrun` and
+`BOXLITE_URL=https://api.example.com/v1/<prefix>` plus `BOXLITE_API_KEY` in a
+protected environment. The existing `BOXRUN_URL` and `BOXRUN_TOKEN` names are
+accepted as aliases. The daemon normalizes the `/v1/<prefix>` URL and passes a
+bearer credential to the current BoxLite SDK; it does not fall back to host
+execution when the remote provider is unavailable.
+
 For local trials, bind the Console/API host port to `127.0.0.1`. The bundled
 Compose mapping may bind all interfaces. Use a local deployment configuration
 that **replaces** the published port; a naive Compose override can append a
