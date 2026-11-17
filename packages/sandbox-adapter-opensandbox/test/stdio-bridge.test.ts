@@ -21,7 +21,7 @@ async function freePort(): Promise<number> {
   return port;
 }
 
-async function fixture() {
+async function fixture(options: { dropStdoutAfterFirstChunk?: boolean } = {}) {
   const port = await freePort();
   const written: Array<{ path: string; mode: number | undefined; text: string }> = [];
   const dirs: Array<{ path: string; mode?: number }> = [];
@@ -35,6 +35,12 @@ async function fixture() {
       for (const e of entries) {
         let text = Buffer.from(e.data).toString("utf8");
         written.push({ path: e.path, mode: e.mode, text });
+        if (options.dropStdoutAfterFirstChunk && e.path.endsWith("/relay.js")) {
+          text = text.replace(
+            "res.flushHeaders(); output[req.url.slice(1)].pipe(res); return;",
+            "res.flushHeaders();\n    const source = output[req.url.slice(1)];\n    if (req.url === '/stdout') { source.once('data', () => { source.unpipe(res); res.destroy(new Error('test network disconnect')); }); }\n    source.pipe(res); return;",
+          );
+        }
         // Redirect only the exposed service port so this test needs no OpenSandbox server.
         if (e.path.endsWith("/spec.json")) text = JSON.stringify({ ...JSON.parse(text), port });
         writeFileSync(e.path, text, { mode: e.mode ? parseInt(String(e.mode), 8) : undefined });
@@ -160,6 +166,21 @@ it("recovers exit observation after a disconnected request without treating it a
   await streams;
   expect(settledBeforeExit).toBe(false);
   expect(outcome).toEqual({ code: 7, signal: null });
+});
+
+it("surfaces a mid-stream service disconnect instead of replaying ACP bytes", async () => {
+  const { sandbox } = await fixture({ dropStdoutAfterFirstChunk: true });
+  const child = await sandbox.spawnDuplexProcess({
+    command: process.execPath,
+    cwd: process.cwd(),
+    args: ["-e", "process.stdout.write('first'); process.stdin.resume()"],
+  });
+  const stdout = new Response(child.stdout).text();
+  const stderr = new Response(child.stderr).text();
+  await expect(stdout).rejects.toThrow();
+  await child.kill("SIGKILL");
+  await expect(child.exited).resolves.toEqual({ code: null, signal: "SIGKILL" });
+  await stderr.catch(() => undefined);
 });
 
 it("keeps silent raw stdio usable beyond fetch idle deadlines without injecting heartbeat bytes", async () => {
