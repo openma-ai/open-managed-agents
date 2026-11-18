@@ -43,7 +43,7 @@ export function runtimeSandboxEnvironment(env: SandboxFactoryEnv) {
     }
     return {
       providerId: "boxrun" as const,
-      image: env.SANDBOX_IMAGE ?? "node:22-bookworm",
+      image: env.SANDBOX_IMAGE ?? "node:22-slim",
       ...sandboxProxyEnvironment(env),
       ...boxRunResources(env),
       connection: boxRunConnection(remoteUrl, env),
@@ -52,7 +52,7 @@ export function runtimeSandboxEnvironment(env: SandboxFactoryEnv) {
   const homeDir = env.BOXLITE_HOME?.trim();
   return {
     providerId: "litebox" as const,
-    image: env.SANDBOX_IMAGE ?? "node:22-bookworm",
+    image: env.SANDBOX_IMAGE ?? "node:22-slim",
     ...sandboxProxyEnvironment(env),
     // Optional BOXLITE_HOME keeps the daemon out of another process's lock
     // (for example a co-located Cloud SANDBOX_PROVIDER=litebox main-node).

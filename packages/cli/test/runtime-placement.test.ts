@@ -239,7 +239,7 @@ describe("Runtime sandbox placement (mocked LiteBox; live daemon evidence deferr
       BOXRUN_MEMORY_MIB: "1024",
     })).toEqual({
       providerId: "boxrun",
-      image: "node:22-bookworm",
+      image: "node:22-slim",
       cpus: 4,
       memoryMib: 1024,
       connection: {
@@ -247,19 +247,19 @@ describe("Runtime sandbox placement (mocked LiteBox; live daemon evidence deferr
       },
     });
     expect(runtimeSandboxEnvironment({ BOXLITE_URL: "https://remote.example", BOXLITE_API_KEY: "key" })).toEqual({
-      providerId: "boxrun", image: "node:22-bookworm",
+      providerId: "boxrun", image: "node:22-slim",
       connection: { type: "rest", url: "https://remote.example", apiKey: "key" },
     });
-    expect(runtimeSandboxEnvironment({})).toEqual({ providerId: "litebox", image: "node:22-bookworm", connection: { type: "embedded" } });
+    expect(runtimeSandboxEnvironment({})).toEqual({ providerId: "litebox", image: "node:22-slim", connection: { type: "embedded" } });
     expect(runtimeSandboxEnvironment({ SANDBOX_IMAGE: "prepared-acp-image" }).image).toBe("prepared-acp-image");
     expect(runtimeSandboxEnvironment({ BOXLITE_HOME: " /tmp/oma-boxlite " })).toEqual({
-      providerId: "litebox", image: "node:22-bookworm", connection: { type: "embedded", homeDir: "/tmp/oma-boxlite" },
+      providerId: "litebox", image: "node:22-slim", connection: { type: "embedded", homeDir: "/tmp/oma-boxlite" },
     });
     expect(runtimeSandboxEnvironment({
       SANDBOX_PROXY_URL: " https://egress.example/proxy ",
       SANDBOX_NO_PROXY: "localhost,127.0.0.1",
     })).toEqual({
-      providerId: "litebox", image: "node:22-bookworm",
+      providerId: "litebox", image: "node:22-slim",
       sandboxEnv: {
         HTTP_PROXY: "https://egress.example/proxy",
         http_proxy: "https://egress.example/proxy",
