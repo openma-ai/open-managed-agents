@@ -91,8 +91,17 @@ describe("managed runtime provider conformance", () => {
       status: "managed-runtime",
       managedRuntime: true,
       workspace: {
-        strategies: ["retained_runtime"],
-        durability: "best_effort",
+        strategies: ["retained_runtime", "checkpoint_restore"],
+        durability: "durable",
+      },
+      sandboxPortFacts: {
+        available: expect.arrayContaining([
+          "managed_volume_api",
+          "runtime_network_update_and_tunnel",
+          "provider_secret_substitution",
+          "live_execution_inventory",
+        ]),
+        unavailable: expect.arrayContaining(["process_memory_checkpoint", "provider_lease_renewal"]),
       },
       outputs: {
         strategies: ["final_collect"],
