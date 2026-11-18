@@ -14,21 +14,168 @@ export interface RuntimeAttachment {
 }
 export type RuntimeSandbox = SandboxPort & SandboxRuntimePort & SandboxDuplexProcessPort;
 
-/** Attached Runtime sandboxes run embedded LiteBox on the daemon's machine.
- * Cloud/REST selection and host volumes are deliberately not accepted here. */
+type RuntimeBoxLiteEnvironment = {
+  providerId: "litebox" | "boxrun";
+  image: string;
+  sandboxEnv?: Readonly<Record<string, string>>;
+  cpus?: number;
+  memoryMib?: number;
+  connection:
+    | { type: "embedded"; homeDir?: string }
+    | { type: "rest"; url: string; apiKey?: string; pathPrefix?: string };
+};
+
+/** Resolve the two Runtime-owned BoxLite providers. Embedded LiteBox is the
+ * default; BoxRun is the cloud/remote REST provider selected explicitly with
+ * SANDBOX_PROVIDER=boxrun. */
 export function runtimeSandboxEnvironment(env: SandboxFactoryEnv) {
-  if (env.BOXRUN_URL || (env.SANDBOX_PROVIDER && env.SANDBOX_PROVIDER !== "litebox")) {
-    throw new Error("Runtime sandbox placement requires local embedded LiteBox; cloud/boxrun REST is not supported");
+  const selected = env.SANDBOX_PROVIDER?.trim().toLowerCase();
+  const remoteUrl = env.BOXRUN_URL?.trim() || env.BOXLITE_URL?.trim();
+  if (selected !== undefined && selected !== "" && selected !== "litebox" && selected !== "boxlite" && selected !== "boxrun") {
+    throw new Error("Runtime sandbox placement supports SANDBOX_PROVIDER=litebox or boxrun");
+  }
+  if (selected === "boxrun" || remoteUrl !== undefined && remoteUrl !== "") {
+    if (selected === "litebox" || selected === "boxlite") {
+      throw new Error("SANDBOX_PROVIDER=litebox cannot be combined with BOXRUN_URL/BOXLITE_URL; use boxrun");
+    }
+    if (remoteUrl === undefined || remoteUrl === "") {
+      throw new Error("SANDBOX_PROVIDER=boxrun requires BOXRUN_URL or BOXLITE_URL");
+    }
+    return {
+      providerId: "boxrun" as const,
+      image: env.SANDBOX_IMAGE ?? "node:22-slim",
+      ...sandboxProxyEnvironment(env),
+      ...boxRunResources(env),
+      connection: boxRunConnection(remoteUrl, env),
+    } satisfies RuntimeBoxLiteEnvironment;
   }
   const homeDir = env.BOXLITE_HOME?.trim();
   return {
     providerId: "litebox" as const,
-    image: env.SANDBOX_IMAGE ?? "node:22-bookworm",
+    image: env.SANDBOX_IMAGE ?? "node:22-slim",
+    ...sandboxProxyEnvironment(env),
     // Optional BOXLITE_HOME keeps the daemon out of another process's lock
     // (for example a co-located Cloud SANDBOX_PROVIDER=litebox main-node).
     connection: homeDir
       ? { type: "embedded" as const, homeDir }
       : { type: "embedded" as const },
+  } satisfies RuntimeBoxLiteEnvironment;
+}
+
+/**
+ * Keep proxy configuration explicit at the Runtime boundary. Passing the
+ * daemon's ambient HTTP_PROXY would make host networking part of the guest
+ * contract and could accidentally carry credentials into a VM. The proxy is
+ * advisory inside BoxLite; operators should point it at a relay that owns any
+ * Vault lookup or upstream authentication.
+ */
+function sandboxProxyEnvironment(env: SandboxFactoryEnv): {
+  sandboxEnv?: Readonly<Record<string, string>>;
+} {
+  const shared = trimmed(env.SANDBOX_PROXY_URL);
+  const explicitHttp = trimmed(env.SANDBOX_HTTP_PROXY);
+  const explicitHttps = trimmed(env.SANDBOX_HTTPS_PROXY);
+  const http = explicitHttp === undefined
+    ? proxyUrl("SANDBOX_PROXY_URL", shared)
+    : proxyUrl("SANDBOX_HTTP_PROXY", explicitHttp);
+  const https = explicitHttps === undefined
+    ? proxyUrl("SANDBOX_PROXY_URL", shared)
+    : proxyUrl("SANDBOX_HTTPS_PROXY", explicitHttps);
+  const noProxy = trimmed(env.SANDBOX_NO_PROXY);
+  const sandboxEnv: Record<string, string> = {};
+  if (http !== undefined) {
+    sandboxEnv.HTTP_PROXY = http;
+    sandboxEnv.http_proxy = http;
+  }
+  if (https !== undefined) {
+    sandboxEnv.HTTPS_PROXY = https;
+    sandboxEnv.https_proxy = https;
+  }
+  if (noProxy !== undefined) {
+    sandboxEnv.NO_PROXY = noProxy;
+    sandboxEnv.no_proxy = noProxy;
+  }
+  return Object.keys(sandboxEnv).length === 0 ? {} : { sandboxEnv };
+}
+
+function trimmed(value: string | undefined): string | undefined {
+  const result = value?.trim();
+  return result === undefined || result === "" ? undefined : result;
+}
+
+function proxyUrl(key: string, value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error(`${key} must be an absolute http(s) URL`);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(`${key} must be an absolute http(s) URL`);
+  }
+  return value;
+}
+
+function boxRunResources(env: SandboxFactoryEnv): { cpus?: number; memoryMib?: number } {
+  const integer = (key: string): number | undefined => {
+    const raw = env[key]?.trim();
+    if (!raw) return undefined;
+    const value = Number(raw);
+    if (!Number.isInteger(value) || value < 1) {
+      throw new Error(`${key} must be a positive integer`);
+    }
+    return value;
+  };
+  const cpus = integer("BOXRUN_CPUS");
+  const memoryMib = integer("BOXRUN_MEMORY_MIB");
+  return {
+    ...(cpus === undefined ? {} : { cpus }),
+    ...(memoryMib === undefined ? {} : { memoryMib }),
+  };
+}
+
+function boxRunConnection(
+  rawUrl: string,
+  env: SandboxFactoryEnv,
+): RuntimeBoxLiteEnvironment["connection"] {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error("BOXRUN_URL/BOXLITE_URL must be an absolute http(s) URL");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("BOXRUN_URL/BOXLITE_URL must be an absolute http(s) URL");
+  }
+
+  const configuredPrefix = env.BOXRUN_PATH_PREFIX?.trim() || env.BOXLITE_PATH_PREFIX?.trim();
+  let pathPrefix = configuredPrefix || undefined;
+  const path = parsed.pathname.replace(/\/+$/, "");
+  if (path === "/v1" || path.startsWith("/v1/")) {
+    const urlPrefix = path.slice("/v1/".length);
+    if (path !== "/v1") {
+      let decodedPrefix: string;
+      try {
+        decodedPrefix = decodeURIComponent(urlPrefix);
+      } catch {
+        throw new Error("BOXRUN_URL/BOXLITE_URL contains an invalid encoded path prefix");
+      }
+      if (pathPrefix !== undefined && pathPrefix !== decodedPrefix) {
+        throw new Error("BOXRUN_PATH_PREFIX conflicts with the /v1/<prefix> URL path");
+      }
+      pathPrefix = decodedPrefix;
+    }
+    parsed.pathname = "";
+  }
+  parsed.search = "";
+  parsed.hash = "";
+  const apiKey = env.BOXLITE_API_KEY?.trim() || env.BOXRUN_TOKEN?.trim() || undefined;
+  return {
+    type: "rest",
+    url: parsed.toString().replace(/\/$/, ""),
+    ...(apiKey === undefined ? {} : { apiKey }),
+    ...(pathPrefix === undefined || pathPrefix === "" ? {} : { pathPrefix }),
   };
 }
 
@@ -68,14 +215,14 @@ interface Ownership {
   handle: SandboxRuntimeHandle;
 }
 
-/** Local, durable ownership registry. Never recreate a missing retained
- * LiteBox silently: that would lose ACP transcripts on resume. Retention,
+/** Durable ownership registry. Never recreate a missing retained BoxLite
+ * runtime silently: that would lose ACP transcripts on resume. Retention,
  * lease renewal and automatic cleanup remain separate future work. */
 export class RuntimeSandboxRegistry {
   readonly owned = new Map<string, { ownership: Ownership; sandbox: RuntimeSandbox }>();
   private readonly pending = new Map<string, Promise<RuntimeSandbox>>();
-  /** One embedded LiteBox client per registry. Creating a provider per acquire
-   * takes a second BOXLITE_HOME lock and fails once any session box is live. */
+  /** Reuse one client per provider configuration. Creating an embedded provider
+   * per acquire takes a second BOXLITE_HOME lock and deadlocks with a live box. */
   private provider: ReturnType<typeof createBoxLiteProvider> | undefined;
   private providerKey: string | undefined;
 
@@ -109,6 +256,9 @@ export class RuntimeSandboxRegistry {
     const active = this.owned.get(sessionId);
     if (active) {
       if (active.ownership.runtimeId !== runtimeId) throw new Error("Sandbox Runtime ownership mismatch");
+      if (active.ownership.handle.provider !== options.providerId) {
+        throw new Error("Sandbox Runtime provider mismatch");
+      }
       return active.sandbox;
     }
     const path = join(scratchDir, ".oma-runtime-sandbox.json");
@@ -117,7 +267,7 @@ export class RuntimeSandboxRegistry {
       return null;
     });
     const ownership: Ownership | null = saved === null ? null : JSON.parse(saved);
-    if (ownership && (ownership.sessionId !== sessionId || ownership.runtimeId !== runtimeId || ownership.handle.provider !== "litebox")) {
+    if (ownership && (ownership.sessionId !== sessionId || ownership.runtimeId !== runtimeId || ownership.handle.provider !== options.providerId)) {
       throw new Error("Sandbox Runtime ownership mismatch");
     }
     const context = { sessionId, workdir: "/workspace" };
@@ -126,7 +276,11 @@ export class RuntimeSandboxRegistry {
       ? await provider.resume(ownership.handle, context, {}, allocation)
       : await provider.create(context, {}, allocation);
     if (!supportsDuplexProcess(sandbox) || !supportsSandboxRuntime(sandbox)) {
-      throw new Error("LiteBox requires runtime and duplex process capabilities");
+      throw new Error("BoxLite requires runtime and duplex process capabilities");
+    }
+    if (sandbox.runtimeHandle().provider !== options.providerId) {
+      await sandbox.destroy?.();
+      throw new Error("BoxLite provider returned a runtime handle for the wrong provider");
     }
     const record = ownership ?? { sessionId, runtimeId, handle: sandbox.runtimeHandle() };
     if (!ownership) {

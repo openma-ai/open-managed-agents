@@ -31,9 +31,9 @@ import { SessionManager } from "../src/bridge/lib/session-manager";
 
 let dir: string;
 let sandbox: ReturnType<typeof fakeSandbox>;
-function fakeSandbox(runtimeId = "box-1") {
+function fakeSandbox(runtimeId = "box-1", provider: "litebox" | "boxrun" = "litebox") {
   return {
-    runtimeHandle: () => ({ provider: "litebox", runtimeId }),
+    runtimeHandle: () => ({ provider, runtimeId }),
     runtimeCapabilities: () => ({ lease: true, suspend: [], checkpoint: [] }),
     status: vi.fn(async () => "running"), renewLease: vi.fn(), suspend: vi.fn(), resume: vi.fn(), checkpoint: vi.fn(),
     exec: vi.fn(async () => ""), writeFile: vi.fn(), writeFileBytes: vi.fn(), destroy: vi.fn(),
@@ -150,6 +150,32 @@ describe("Runtime sandbox placement (mocked LiteBox; live daemon evidence deferr
     expect(next.owned.get("session-1")?.ownership.runtimeId).toBe("rt_1");
   });
 
+  it("persists and resumes a remote BoxRun handle without treating it as LiteBox", async () => {
+    const remote = fakeSandbox("boxrun-1", "boxrun");
+    mocks.create.mockResolvedValue(remote);
+    mocks.resume.mockResolvedValue(remote);
+    vi.stubEnv("SANDBOX_PROVIDER", "boxrun");
+    vi.stubEnv("BOXRUN_URL", "https://boxrun.example/v1/acme");
+    vi.stubEnv("BOXRUN_TOKEN", "token");
+    const first = new RuntimeSandboxRegistry();
+    await first.acquire("session-1", "rt_1", dir, process.env, "tenant-1");
+    expect(JSON.parse(await readFile(join(dir, ".oma-runtime-sandbox.json"), "utf8"))).toEqual({
+      sessionId: "session-1", runtimeId: "rt_1", handle: { provider: "boxrun", runtimeId: "boxrun-1" },
+    });
+    const next = new RuntimeSandboxRegistry();
+    await next.acquire("session-1", "rt_1", dir, process.env, "tenant-1");
+    expect(mocks.resume).toHaveBeenCalledWith(
+      { provider: "boxrun", runtimeId: "boxrun-1" },
+      { sessionId: "session-1", workdir: "/workspace" },
+      {},
+      expect.anything(),
+    );
+    vi.stubEnv("SANDBOX_PROVIDER", "litebox");
+    vi.stubEnv("BOXRUN_URL", "");
+    await expect(first.acquire("session-1", "rt_1", dir, process.env, "tenant-1"))
+      .rejects.toThrow("provider mismatch");
+  });
+
   it("copies selected skill-cache bytes into jail paths and forwards ACP resume", async () => {
     const cachePath = join(dir, "cache", "skill_1");
     await mkdir(join(cachePath, "pkg"), { recursive: true });
@@ -198,17 +224,60 @@ describe("Runtime sandbox placement (mocked LiteBox; live daemon evidence deferr
     expect(await readFile(path, "utf8")).toContain("box-1");
   });
 
-  it("fails closed on invalid placement, directories and REST/cloud providers", () => {
+  it("keeps placement fail-closed while selecting embedded or remote BoxLite providers", () => {
     expect(runtimePlacement()).toBe("host");
     expect(() => runtimePlacement({ runtime_id: "rt_1", placement: "invalid" as "host" })).toThrow("Invalid Runtime placement");
     expect(() => runtimePlacement({ runtime_id: "rt_1", placement: "sandbox", directories: [] })).toThrow("directories");
-    expect(() => runtimeSandboxEnvironment({ SANDBOX_PROVIDER: "boxrun" })).toThrow("local embedded LiteBox");
-    expect(() => runtimeSandboxEnvironment({ SANDBOX_PROVIDER: "e2b" })).toThrow("local embedded LiteBox");
-    expect(() => runtimeSandboxEnvironment({ BOXRUN_URL: "https://remote.example" })).toThrow("REST");
-    expect(runtimeSandboxEnvironment({})).toEqual({ providerId: "litebox", image: "node:22-bookworm", connection: { type: "embedded" } });
+    expect(() => runtimeSandboxEnvironment({ SANDBOX_PROVIDER: "boxrun" })).toThrow("requires BOXRUN_URL");
+    expect(() => runtimeSandboxEnvironment({ SANDBOX_PROVIDER: "e2b" })).toThrow("supports SANDBOX_PROVIDER");
+    expect(() => runtimeSandboxEnvironment({ SANDBOX_PROVIDER: "litebox", BOXRUN_URL: "https://remote.example" })).toThrow("cannot be combined");
+    expect(runtimeSandboxEnvironment({
+      SANDBOX_PROVIDER: "boxrun",
+      BOXRUN_URL: "https://remote.example/v1/acme/",
+      BOXRUN_TOKEN: "token",
+      BOXRUN_CPUS: "4",
+      BOXRUN_MEMORY_MIB: "1024",
+    })).toEqual({
+      providerId: "boxrun",
+      image: "node:22-slim",
+      cpus: 4,
+      memoryMib: 1024,
+      connection: {
+        type: "rest", url: "https://remote.example", apiKey: "token", pathPrefix: "acme",
+      },
+    });
+    expect(runtimeSandboxEnvironment({ BOXLITE_URL: "https://remote.example", BOXLITE_API_KEY: "key" })).toEqual({
+      providerId: "boxrun", image: "node:22-slim",
+      connection: { type: "rest", url: "https://remote.example", apiKey: "key" },
+    });
+    expect(runtimeSandboxEnvironment({})).toEqual({ providerId: "litebox", image: "node:22-slim", connection: { type: "embedded" } });
     expect(runtimeSandboxEnvironment({ SANDBOX_IMAGE: "prepared-acp-image" }).image).toBe("prepared-acp-image");
     expect(runtimeSandboxEnvironment({ BOXLITE_HOME: " /tmp/oma-boxlite " })).toEqual({
-      providerId: "litebox", image: "node:22-bookworm", connection: { type: "embedded", homeDir: "/tmp/oma-boxlite" },
+      providerId: "litebox", image: "node:22-slim", connection: { type: "embedded", homeDir: "/tmp/oma-boxlite" },
     });
+    expect(runtimeSandboxEnvironment({
+      SANDBOX_PROXY_URL: " https://egress.example/proxy ",
+      SANDBOX_NO_PROXY: "localhost,127.0.0.1",
+    })).toEqual({
+      providerId: "litebox", image: "node:22-slim",
+      sandboxEnv: {
+        HTTP_PROXY: "https://egress.example/proxy",
+        http_proxy: "https://egress.example/proxy",
+        HTTPS_PROXY: "https://egress.example/proxy",
+        https_proxy: "https://egress.example/proxy",
+        NO_PROXY: "localhost,127.0.0.1",
+        no_proxy: "localhost,127.0.0.1",
+      },
+      connection: { type: "embedded" },
+    });
+    expect(runtimeSandboxEnvironment({
+      SANDBOX_HTTP_PROXY: "http://http-proxy:8080",
+      SANDBOX_HTTPS_PROXY: "https://https-proxy:8443",
+    }).sandboxEnv).toEqual({
+      HTTP_PROXY: "http://http-proxy:8080", http_proxy: "http://http-proxy:8080",
+      HTTPS_PROXY: "https://https-proxy:8443", https_proxy: "https://https-proxy:8443",
+    });
+    expect(() => runtimeSandboxEnvironment({ SANDBOX_PROXY_URL: "file:///tmp/proxy" }))
+      .toThrow("SANDBOX_PROXY_URL must be an absolute http(s) URL");
   });
 });

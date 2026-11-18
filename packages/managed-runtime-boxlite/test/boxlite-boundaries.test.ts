@@ -15,6 +15,7 @@ import {
   type BoxLiteInputPort,
   type BoxLiteOutputPort,
 } from "../src/boxlite";
+import { createBoxLiteV2Adapter } from "../src/v2";
 import { fixtureCalls } from "./fixtures/boxlite-sdk";
 
 const scope = { workspaceId: "workspace", environmentId: "environment", sessionId: "session", workId: "work" };
@@ -58,17 +59,21 @@ function box(input: {
   running?: boolean;
   status?: string;
   execution?: BoxLiteExecutionPort;
+  asyncInfo?: boolean;
 } = {}) {
   let running = input.running ?? true;
   const nextExecution = input.execution ?? execution();
   const value: BoxLiteBoxSdkPort = {
     id: input.id ?? "box",
     name: input.name === undefined ? expectedName() : input.name,
-    info: () => ({
+    info: () => {
+      const info = {
       id: input.id ?? "box",
       ...(value.name === null ? {} : { name: value.name }),
       state: { status: input.status ?? (running ? "Running" : "Stopped"), running },
-    }),
+      };
+      return input.asyncInfo ? Promise.resolve(info) : info;
+    },
     exec: vi.fn(async () => nextExecution),
     start: vi.fn(async () => { running = true; }),
     stop: vi.fn(async () => { running = false; }),
@@ -131,7 +136,7 @@ describe("BoxLite provider boundary contracts", () => {
     for (const connection of [
       undefined,
       { type: "embedded" as const, homeDir: "/tmp/boxlite" },
-      { type: "rest" as const, url: "https://boxrun", clientId: "id", clientSecret: "secret", prefix: "/api" },
+      { type: "rest" as const, url: "https://boxrun", apiKey: "key", pathPrefix: "acme" },
       { type: "rest" as const, url: "https://minimal" },
     ]) {
       const provider = createBoxLiteProvider({
@@ -144,8 +149,10 @@ describe("BoxLite provider boundary contracts", () => {
     expect(fixtureCalls).toEqual(expect.arrayContaining([
       { type: "default" },
       { type: "constructor", input: { homeDir: "/tmp/boxlite" } },
-      { type: "rest", input: { url: "https://boxrun", clientId: "id", clientSecret: "secret", prefix: "/api" } },
-      { type: "rest", input: { url: "https://minimal" } },
+      { type: "rest", input: expect.objectContaining({
+        url: "https://boxrun", pathPrefix: "acme", credential: expect.objectContaining({ key: "key" }),
+      }) },
+      { type: "rest", input: expect.objectContaining({ url: "https://minimal" }) },
     ]));
   });
 
@@ -164,6 +171,37 @@ describe("BoxLite provider boundary contracts", () => {
     await running.runtime.destroy();
     await expect(running.runtime.status()).resolves.toBe("stopped");
     await expect(running.runtime.renewLease()).rejects.toThrow("has been removed");
+  });
+
+  it("keeps the complete provider-native BoxLite surface available beside v2 ports", () => {
+    const { runtime, client: sdk, value } = direct();
+    expect(runtime.boxLiteCapabilities()).toEqual({
+      client: sdk,
+      box: value,
+      provider: "litebox",
+    });
+  });
+
+  it("composes the managed provider through the Sandbox SDK v2 bridge", () => {
+    const sdk = client(box());
+    const adapter = createBoxLiteV2Adapter({
+      providerId: "litebox",
+      client: sdk,
+      image: "image",
+      leaseTtlMs: 60_000,
+    });
+    expect(adapter.name).toBe("litebox");
+    expect(adapter.lifecycle.handle).toBe("changes");
+    expect(adapter.vendor.exec).toEqual(expect.any(Function));
+    expect(adapter.boxlite.listBoxes).toEqual(expect.any(Function));
+  });
+
+  it("accepts the asynchronous info surface used by BoxLite 0.13 REST", async () => {
+    const { runtime } = direct({ running: false, asyncInfo: true });
+    await expect(runtime.status()).resolves.toBe("suspended");
+    const handle = await runtime.suspend({ kind: "filesystem" });
+    await expect(runtime.resume(handle)).resolves.toBeUndefined();
+    await expect(runtime.status()).resolves.toBe("running");
   });
 
   it("supports retained suspension and validates every resume field", async () => {
@@ -199,6 +237,8 @@ describe("BoxLite provider boundary contracts", () => {
         sourceBoxId: value.id,
         state: "ready" as const,
       })),
+      list: vi.fn(async () => []),
+      remove: vi.fn(async () => undefined),
     };
     const runtime = new BoxLiteManagedRuntime({
       providerId: "boxrun",
@@ -225,10 +265,39 @@ describe("BoxLite provider boundary contracts", () => {
     const success = direct({ execution: execution({ stdout: stream("a", "b"), stderr: stream("warn ") }) });
     await expect(success.runtime.exec("echo", 1)).resolves.toBe("ab\nwarn");
     expect(success.value.exec).toHaveBeenCalledWith(
-      "/bin/sh", ["-lc", "echo"], [], false, null, 1, "/workspace",
+      "/bin/sh", ["-lc", "cd /workspace && echo"], [], false, null, 1, undefined,
     );
     const failed = direct({ execution: execution({ exitCode: 9, stdout: stream(), stderr: stream() }) });
     await expect(failed.runtime.exec("false")).resolves.toBe("\n[exit 9]");
+  });
+
+  it("keeps operator proxy environment on every command and lets it override ACP env", async () => {
+    const value = box({ execution: execution() });
+    const sdk = client(value);
+    const runtime = new BoxLiteManagedRuntime({
+      providerId: "litebox",
+      client: sdk,
+      box: value,
+      expectedName: expectedName(),
+      sandboxEnv: { HTTPS_PROXY: "http://proxy.internal:8080" },
+    });
+    await runtime.setEnvVars({ NO_PROXY: "localhost" });
+    await runtime.exec("true");
+    expect(value.exec).toHaveBeenCalledWith(
+      "/bin/sh", ["-lc", "cd /workspace && true"],
+      [["HTTPS_PROXY", "http://proxy.internal:8080"], ["NO_PROXY", "localhost"]],
+      false, null, 120, undefined,
+    );
+
+    await runtime.spawnDuplexProcess({
+      command: "worker",
+      env: { HTTPS_PROXY: "http://agent-bypass.invalid", AGENT: "1" },
+    });
+    expect(value.exec).toHaveBeenLastCalledWith(
+      "/bin/sh", ["-lc", "cd '/workspace' && exec 'worker'"],
+      [["HTTPS_PROXY", "http://proxy.internal:8080"], ["AGENT", "1"], ["NO_PROXY", "localhost"]],
+      false, null, 0, undefined,
+    );
   });
 
   it("copies text and binary files through cleaned temporary staging", async () => {
@@ -259,7 +328,10 @@ describe("BoxLite provider boundary contracts", () => {
     await expect(Promise.all([
       new Response(process.stdout).text(), new Response(process.stderr).text(), process.exited,
     ])).resolves.toEqual(["ab", "e", { code: 0, signal: null }]);
-    expect(value.exec).toHaveBeenCalledWith("worker", ["--poll"], [["B", "2"]], false, null, 0, "/workspace/project");
+    expect(value.exec).toHaveBeenCalledWith(
+      "/bin/sh", ["-lc", "cd '/workspace/project' && exec 'worker' '--poll'"],
+      [["B", "2"]], false, null, 0, undefined,
+    );
     await process.kill();
     expect(graceful.signal).toHaveBeenCalledWith(15);
     await process.kill("SIGKILL");
@@ -381,6 +453,8 @@ describe("BoxLite provider boundary contracts", () => {
       checkpoints: {
         create: vi.fn(),
         get: vi.fn(),
+        list: vi.fn(async () => []),
+        remove: vi.fn(async () => undefined),
       },
     };
     const provider = createBoxLiteProvider({
