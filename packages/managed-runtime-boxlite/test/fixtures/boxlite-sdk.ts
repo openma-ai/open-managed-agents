@@ -67,6 +67,8 @@ export class JsBoxlite implements BoxLiteClientPort {
       sourceBoxId: "source",
       state: "ready" as const,
     }),
+    list: async () => [],
+    remove: async () => undefined,
   };
 
   constructor(options?: { homeDir?: string }) {

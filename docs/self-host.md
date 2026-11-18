@@ -639,6 +639,8 @@ Vault credentials of type `environment_variable` are set in the sandbox of every
 
 Read-only memory mounts: Daytona and E2B enforce read-only on their mounted view. LiteBox honors the `readOnly` flag on its volume mount. CloudflareSandbox does not enforce ro at the FS layer — the harness's write tool checks `assertWritable` and refuses writes regardless of provider.
 
+The BoxLite REST driver also keeps the provider's native 0.13 surface available through the typed BoxLite extension. It includes managed volumes, box network updates and tunnels, provider-side HTTPS secrets, live execution inventory and attach, image and registry management, organization domains, snapshots, guest SSH, and the BoxLite agent API. The provider-neutral Sandbox v2 Ports use the lifecycle, file, process, storage, and egress projections, while callers that need BoxLite-specific operations use the extension without putting vendor fields into Session state.
+
 On the Node server these native mounts are opt-in: by default every provider gets Memory Stores through file sync (copied into `/mnt/memory/<name>/` before the turn, written back at the turn barrier), which needs no mount primitive and therefore also works on BoxRun and OpenSandbox. A composed sandbox factory turns native mounts on by declaring `nativeMemoryStoreMount`. See [Memory Stores in a sandbox](./memory-stores.md).
 
 ### Sandbox loss and recovery

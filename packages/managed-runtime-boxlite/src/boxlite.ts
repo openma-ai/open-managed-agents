@@ -50,12 +50,216 @@ export interface BoxLiteExecutionPort {
   wait(): Promise<{ exitCode: number; errorMessage?: string }>;
   kill(): Promise<void>;
   signal?(signal: number): Promise<void>;
+  resizeTty?(rows: number, cols: number): Promise<void>;
+}
+
+export interface BoxLiteExecutionInfo {
+  executionId: string;
+  argv: string[];
+  startedAt: number;
+  tty: boolean;
+  isMainSession: boolean;
+}
+
+export interface BoxLiteExecutionInventoryPort {
+  list(): Promise<BoxLiteExecutionInfo[]>;
+  get(executionId: string): Promise<BoxLiteExecutionPort>;
+  attach(executionId: string, stdin?: boolean): Promise<BoxLiteExecutionPort>;
+}
+
+export interface BoxLiteSnapshotInfo {
+  id: string;
+  boxId: string;
+  name: string;
+  createdAt: number;
+  containerDiskBytes: number;
+  sizeBytes: number;
+}
+
+export interface BoxLiteSnapshotPort {
+  create(name: string, options?: Record<string, never> | null): Promise<BoxLiteSnapshotInfo>;
+  list(): Promise<BoxLiteSnapshotInfo[]>;
+  get(name: string): Promise<BoxLiteSnapshotInfo | null>;
+  remove(name: string): Promise<void>;
+  restore(name: string): Promise<void>;
+}
+
+export type BoxLiteAgentJson = null | boolean | number | string | BoxLiteAgentJson[] | { [key: string]: BoxLiteAgentJson };
+
+export interface BoxLiteAgentsPort {
+  create(agent: string, options?: Record<string, unknown>): Promise<unknown>;
+  get(agentId: string): Promise<unknown>;
+}
+
+export type BoxLiteSocketAddress =
+  | { type: "tcp"; host?: string; port: number }
+  | { type: "unix"; path: string };
+
+export interface BoxLiteTunnelOptions {
+  isPublic?: boolean;
+}
+
+export interface BoxLiteConnectionPort {
+  read(maxBytes: number): Promise<Uint8Array>;
+  write(data: Uint8Array): Promise<number>;
+  shutdownWrite(): Promise<void>;
+  close(): Promise<void>;
+}
+
+export interface BoxLiteTunnelForwarderPort {
+  localAddr(): BoxLiteSocketAddress;
+  wait(): Promise<void>;
+  close(): Promise<void>;
+}
+
+export interface BoxLiteTunnelPort {
+  uri(): string | null;
+  isPublic(): boolean;
+  token(): string | null;
+  connect(): Promise<BoxLiteConnectionPort>;
+  forward(listen: BoxLiteSocketAddress): Promise<BoxLiteTunnelForwarderPort>;
+}
+
+export interface BoxLiteNetworkPort {
+  updateInbound(spec: { mode: "enabled" | "disabled"; allowNet?: string[] }): Promise<void>;
+  updateOutbound(spec: { mode: "enabled" | "disabled"; allowNet?: string[] }): Promise<void>;
+  tunnel(target: BoxLiteSocketAddress, options?: BoxLiteTunnelOptions): Promise<BoxLiteTunnelPort>;
+  revokeTunnel(port: number): Promise<void>;
+}
+
+export interface BoxLiteSshAccount {
+  login: string;
+  authorizedKeys?: string[];
+  ca?: { publicKey: string; principal: string };
+}
+
+export interface BoxLiteSshConfig {
+  listenAddress: string;
+  hostPrivateKey: string;
+  accounts: BoxLiteSshAccount[];
+}
+
+export interface BoxLiteSshStatus {
+  enabled: boolean;
+  generation: bigint;
+  listenAddress: string;
+  hostPublicKey: string;
+  hostKeyFingerprint: string;
+}
+
+export interface BoxLiteSshPort {
+  configure(config: BoxLiteSshConfig): Promise<BoxLiteSshStatus>;
+  enable(): Promise<BoxLiteSshStatus>;
+  status(): Promise<BoxLiteSshStatus>;
+  disable(): Promise<BoxLiteSshStatus>;
+}
+
+export interface BoxLiteVolumeInfo {
+  id: string;
+  name: string;
+  createdAt: string;
+  sizeBytes?: number;
+}
+
+export interface BoxLiteVolumePort {
+  create(name?: string): Promise<BoxLiteVolumeInfo>;
+  list(): Promise<BoxLiteVolumeInfo[]>;
+  get(id: string): Promise<BoxLiteVolumeInfo>;
+  remove(id: string, force?: boolean | null): Promise<void>;
+}
+
+export interface BoxLiteImageVersion {
+  digest: string;
+  sizeBytes?: number;
+  sourceRef: string;
+  recordedAt: string;
+  aliases: string[];
+  lastUsedAt?: string;
+  upstreamMissingAt?: string;
+}
+
+export interface BoxLiteImageInfo {
+  reference: string;
+  repository: string;
+  tag: string;
+  id: string;
+  cachedAt: string;
+  sizeBytes?: number;
+}
+
+export interface BoxLiteImageDetail {
+  name: string;
+  aliases: string[];
+  curated: boolean;
+  versions: BoxLiteImageVersion[];
+}
+
+export interface BoxLiteImagePort {
+  pull(reference: string): Promise<{ reference: string; configDigest: string; layerCount: number }>;
+  list(): Promise<BoxLiteImageInfo[]>;
+  get(name: string): Promise<BoxLiteImageDetail>;
+  remove(name: string): Promise<void>;
+  usage(): Promise<{ count: number; limit: number; knownBytes: number }>;
+  createAlias(name: string, alias: string, digest: string): Promise<BoxLiteImageDetail>;
+  deleteAlias(name: string, alias: string): Promise<void>;
+}
+
+export interface BoxLiteRegistryCredential {
+  id: string;
+  registryHost: string;
+  repositoryPrefix: string;
+  username: string;
+  createdBy?: string;
+  createdAt?: string;
+}
+
+export interface BoxLiteRegistryPort {
+  list(): Promise<BoxLiteRegistryCredential[]>;
+  create(input: {
+    registryHost: string;
+    repositoryPrefix?: string;
+    username: string;
+    password: string;
+  }): Promise<BoxLiteRegistryCredential>;
+  remove(id: string): Promise<void>;
+}
+
+export type BoxLiteDomainTarget =
+  | { type: "box"; box: string; port: number }
+  | { type: "app"; app: string };
+
+export interface BoxLiteDomainPort {
+  list(): Promise<{
+    domains: Array<{ hostname: string; url: string; target: BoxLiteDomainTarget | null }>;
+    limit: number;
+    used: number;
+    remaining: number;
+    minLength: number;
+  }>;
+  bind(domain: string, target: BoxLiteDomainTarget): Promise<{ hostname: string; url: string; target: BoxLiteDomainTarget | null }>;
+  unbind(domain: string): Promise<void>;
+}
+
+export interface BoxLiteManagedRuntimeNativeCapabilities {
+  readonly client: BoxLiteClientPort;
+  readonly box: BoxLiteBoxSdkPort;
+  readonly provider: BoxLiteManagedProviderId;
 }
 
 export interface BoxLiteBoxInfo {
   id: string;
   name?: string;
+  createdAt?: string;
   state: { status: string; running: boolean; pid?: number };
+  privileged?: boolean;
+  network?: {
+    publishedPorts?: Array<{
+      hostPort?: number;
+      guestPort: number;
+      protocol?: string;
+      hostIp?: string;
+    }>;
+  };
 }
 
 export interface BoxLiteBoxSdkPort {
@@ -63,6 +267,11 @@ export interface BoxLiteBoxSdkPort {
   readonly name: string | null;
   /** BoxLite 0.13 made info() asynchronous for both embedded and REST clients. */
   info(): BoxLiteBoxInfo | Promise<BoxLiteBoxInfo>;
+  readonly agents?: BoxLiteAgentsPort;
+  executions?(): BoxLiteExecutionInventoryPort;
+  readonly network?: BoxLiteNetworkPort;
+  readonly ssh?: BoxLiteSshPort;
+  readonly snapshot?: BoxLiteSnapshotPort;
   exec(
     command: string,
     args?: string[] | null,
@@ -76,12 +285,17 @@ export interface BoxLiteBoxSdkPort {
   stop(): Promise<void>;
   copyIn(hostPath: string, containerDest: string, options?: unknown): Promise<void>;
   copyOut(containerSrc: string, hostDest: string, options?: unknown): Promise<void>;
+  cloneBox?(options?: unknown, name?: string | null): Promise<BoxLiteBoxSdkPort>;
+  export?(destination: string, options?: unknown): Promise<string>;
+  metrics?(): Promise<Record<string, number | undefined>>;
 }
 
 export interface BoxLiteCheckpointInfo {
   id: string;
   name: string;
   sourceBoxId: string;
+  createdAt?: string;
+  sizeBytes?: number;
   state: "creating" | "ready" | "failed" | "deleting";
   errorReason?: string;
 }
@@ -92,10 +306,13 @@ export interface BoxLiteCheckpointInfo {
  */
 export interface BoxLiteCheckpointPort {
   create(source: string, name?: string | null): Promise<BoxLiteCheckpointInfo>;
+  list(): Promise<BoxLiteCheckpointInfo[]>;
   get(key: string): Promise<BoxLiteCheckpointInfo>;
+  remove(key: string, force?: boolean | null): Promise<void>;
 }
 
 export interface BoxLiteClientPort {
+  importBox?(archivePath: string, name?: string | null): Promise<BoxLiteBoxSdkPort>;
   create?(
     options: BoxLiteCreateOptions,
     name?: string | null,
@@ -105,8 +322,22 @@ export interface BoxLiteClientPort {
     name?: string | null,
   ): Promise<{ created: boolean; box: BoxLiteBoxSdkPort }>;
   get(idOrName: string): Promise<BoxLiteBoxSdkPort | null>;
+  listInfo?(): Promise<BoxLiteBoxInfo[]>;
   remove(idOrName: string, force?: boolean | null): Promise<void>;
   readonly checkpoints?: BoxLiteCheckpointPort;
+  readonly volumes?: BoxLiteVolumePort;
+  readonly images?: BoxLiteImagePort;
+  readonly registries?: BoxLiteRegistryPort;
+  readonly domains?: BoxLiteDomainPort;
+  metrics?(): Promise<Record<string, number | undefined>>;
+  close?(): void;
+  shutdown?(timeout?: number | null): Promise<void>;
+}
+
+export interface BoxLiteProviderPort
+  extends ProviderManagedRuntimeProviderPort<BoxLiteManagedRuntime> {
+  /** Provider-native inventory used by v2 orphan reaping and diagnostics. */
+  listBoxes(): Promise<BoxLiteBoxInfo[]>;
 }
 
 export interface BoxLiteCreateOptions {
@@ -117,11 +348,29 @@ export interface BoxLiteCreateOptions {
   memoryMib?: number;
   diskSizeGb?: number;
   workingDir?: string;
-  env?: Array<{ key: string; value: string }>;
-  volumes?: Array<{ hostPath: string; guestPath: string; readOnly?: boolean }>;
-  network?: { mode: "enabled" | "disabled"; allowNet?: string[] };
+  env?: Record<string, string> | Array<{ key: string; value: string }>;
+  volumes?: Array<
+    | { hostPath: string; guestPath: string; readOnly?: boolean }
+    | { managedVolume: string; guestPath: string; readOnly?: false }
+  >;
+  network?: {
+    outbound?: { mode: "enabled" | "disabled"; allowNet?: string[] };
+    inbound?: { mode: "enabled" | "disabled"; allowNet?: string[] };
+    mode?: "enabled" | "disabled";
+    allowNet?: string[];
+  };
+  ports?: Array<{
+    hostPort?: number;
+    guestPort: number;
+    protocol?: string;
+    hostIp?: string;
+  }>;
+  entrypoint?: string[];
+  cmd?: string[];
+  user?: string;
   autoRemove?: boolean;
   detach?: boolean;
+  advanced?: Readonly<Record<string, unknown>>;
   security?: Readonly<Record<string, boolean | number | undefined>>;
   secrets?: Array<{
     name: string;
@@ -355,6 +604,12 @@ export class BoxLiteManagedRuntime
 
   runtimeHandle() {
     return { provider: this.#providerId, runtimeId: this.#box.id };
+  }
+
+  /** Full provider-native BoxLite surface for callers that need capabilities
+   * beyond the provider-neutral Sandbox SDK v2 Ports. */
+  boxLiteCapabilities(): BoxLiteManagedRuntimeNativeCapabilities {
+    return { client: this.#client, box: this.#box, provider: this.#providerId };
   }
 
   runtimeCapabilities() {
@@ -596,7 +851,7 @@ async function ensureWorkspace(box: BoxLiteBoxSdkPort): Promise<void> {
 function createBoxLiteProviderWithClient(
   options: BoxLiteProviderOptions,
   client: BoxLiteClientResolver,
-): ProviderManagedRuntimeProviderPort<BoxLiteManagedRuntime> {
+): BoxLiteProviderPort {
   const runtime = (
     sdk: BoxLiteClientPort,
     box: BoxLiteBoxSdkPort,
@@ -618,7 +873,7 @@ function createBoxLiteProviderWithClient(
       : { checkpointPollIntervalMs: options.checkpointPollIntervalMs }),
   });
 
-  return {
+  const provider: BoxLiteProviderPort = {
     async create(context, _environment, acquisition) {
       if (acquisition === undefined) {
         throw new Error("BoxLite managed allocation requires acquisition context");
@@ -708,12 +963,22 @@ function createBoxLiteProviderWithClient(
         throw error;
       }
     },
+    async discard(checkpoint) {
+      if (checkpoint.provider !== options.providerId || checkpoint.scope !== "portable") return;
+      const sdk = await client();
+      await sdk.checkpoints?.remove(checkpoint.checkpointId, true);
+    },
+    async listBoxes() {
+      const sdk = await client();
+      return sdk.listInfo === undefined ? [] : sdk.listInfo();
+    },
   };
+  return provider;
 }
 
 export function createBoxLiteProvider(
   options: BoxLiteProviderOptions,
-): ProviderManagedRuntimeProviderPort<BoxLiteManagedRuntime> {
+): BoxLiteProviderPort {
   return createBoxLiteProviderWithClient(options, createClientResolver(options));
 }
 

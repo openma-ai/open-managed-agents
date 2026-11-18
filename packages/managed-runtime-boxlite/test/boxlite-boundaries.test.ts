@@ -15,6 +15,7 @@ import {
   type BoxLiteInputPort,
   type BoxLiteOutputPort,
 } from "../src/boxlite";
+import { createBoxLiteV2Adapter } from "../src/v2";
 import { fixtureCalls } from "./fixtures/boxlite-sdk";
 
 const scope = { workspaceId: "workspace", environmentId: "environment", sessionId: "session", workId: "work" };
@@ -172,6 +173,29 @@ describe("BoxLite provider boundary contracts", () => {
     await expect(running.runtime.renewLease()).rejects.toThrow("has been removed");
   });
 
+  it("keeps the complete provider-native BoxLite surface available beside v2 ports", () => {
+    const { runtime, client: sdk, value } = direct();
+    expect(runtime.boxLiteCapabilities()).toEqual({
+      client: sdk,
+      box: value,
+      provider: "litebox",
+    });
+  });
+
+  it("composes the managed provider through the Sandbox SDK v2 bridge", () => {
+    const sdk = client(box());
+    const adapter = createBoxLiteV2Adapter({
+      providerId: "litebox",
+      client: sdk,
+      image: "image",
+      leaseTtlMs: 60_000,
+    });
+    expect(adapter.name).toBe("litebox");
+    expect(adapter.lifecycle.handle).toBe("changes");
+    expect(adapter.vendor.exec).toEqual(expect.any(Function));
+    expect(adapter.boxlite.listBoxes).toEqual(expect.any(Function));
+  });
+
   it("accepts the asynchronous info surface used by BoxLite 0.13 REST", async () => {
     const { runtime } = direct({ running: false, asyncInfo: true });
     await expect(runtime.status()).resolves.toBe("suspended");
@@ -213,6 +237,8 @@ describe("BoxLite provider boundary contracts", () => {
         sourceBoxId: value.id,
         state: "ready" as const,
       })),
+      list: vi.fn(async () => []),
+      remove: vi.fn(async () => undefined),
     };
     const runtime = new BoxLiteManagedRuntime({
       providerId: "boxrun",
@@ -424,6 +450,8 @@ describe("BoxLite provider boundary contracts", () => {
       checkpoints: {
         create: vi.fn(),
         get: vi.fn(),
+        list: vi.fn(async () => []),
+        remove: vi.fn(async () => undefined),
       },
     };
     const provider = createBoxLiteProvider({
