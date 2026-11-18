@@ -134,7 +134,6 @@ describe("BoxLite managed runtime provider", () => {
       image: "registry.example/openma-custom:sha256-test",
       autoRemove: false,
       detach: true,
-      workingDir: "/workspace",
       network: { mode: "disabled" },
     }), expectedName);
     await expect(runtime.harness.run({
@@ -147,13 +146,13 @@ describe("BoxLite managed runtime provider", () => {
       signal,
     })).resolves.toEqual({ type: "completed" });
     expect(box.exec).toHaveBeenCalledWith(
-      "worker",
-      ["--poll"],
+      "/bin/sh",
+      ["-lc", "cd '/workspace' && exec 'worker' '--poll'"],
       [],
       false,
       null,
       0,
-      "/workspace",
+      undefined,
     );
 
     const suspended = await runtime.sandbox.suspend({ scope, fence, lease, signal });

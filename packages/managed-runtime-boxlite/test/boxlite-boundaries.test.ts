@@ -265,7 +265,7 @@ describe("BoxLite provider boundary contracts", () => {
     const success = direct({ execution: execution({ stdout: stream("a", "b"), stderr: stream("warn ") }) });
     await expect(success.runtime.exec("echo", 1)).resolves.toBe("ab\nwarn");
     expect(success.value.exec).toHaveBeenCalledWith(
-      "/bin/sh", ["-lc", "echo"], [], false, null, 1, "/workspace",
+      "/bin/sh", ["-lc", "cd /workspace && echo"], [], false, null, 1, undefined,
     );
     const failed = direct({ execution: execution({ exitCode: 9, stdout: stream(), stderr: stream() }) });
     await expect(failed.runtime.exec("false")).resolves.toBe("\n[exit 9]");
@@ -284,9 +284,9 @@ describe("BoxLite provider boundary contracts", () => {
     await runtime.setEnvVars({ NO_PROXY: "localhost" });
     await runtime.exec("true");
     expect(value.exec).toHaveBeenCalledWith(
-      "/bin/sh", ["-lc", "true"],
+      "/bin/sh", ["-lc", "cd /workspace && true"],
       [["HTTPS_PROXY", "http://proxy.internal:8080"], ["NO_PROXY", "localhost"]],
-      false, null, 120, "/workspace",
+      false, null, 120, undefined,
     );
 
     await runtime.spawnDuplexProcess({
@@ -294,9 +294,9 @@ describe("BoxLite provider boundary contracts", () => {
       env: { HTTPS_PROXY: "http://agent-bypass.invalid", AGENT: "1" },
     });
     expect(value.exec).toHaveBeenLastCalledWith(
-      "worker", [],
+      "/bin/sh", ["-lc", "cd '/workspace' && exec 'worker'"],
       [["HTTPS_PROXY", "http://proxy.internal:8080"], ["AGENT", "1"], ["NO_PROXY", "localhost"]],
-      false, null, 0, "/workspace",
+      false, null, 0, undefined,
     );
   });
 
@@ -328,7 +328,10 @@ describe("BoxLite provider boundary contracts", () => {
     await expect(Promise.all([
       new Response(process.stdout).text(), new Response(process.stderr).text(), process.exited,
     ])).resolves.toEqual(["ab", "e", { code: 0, signal: null }]);
-    expect(value.exec).toHaveBeenCalledWith("worker", ["--poll"], [["B", "2"]], false, null, 0, "/workspace/project");
+    expect(value.exec).toHaveBeenCalledWith(
+      "/bin/sh", ["-lc", "cd '/workspace/project' && exec 'worker' '--poll'"],
+      [["B", "2"]], false, null, 0, undefined,
+    );
     await process.kill();
     expect(graceful.signal).toHaveBeenCalledWith(15);
     await process.kill("SIGKILL");

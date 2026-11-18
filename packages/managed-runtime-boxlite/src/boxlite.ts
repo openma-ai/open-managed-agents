@@ -545,13 +545,16 @@ function envPairs(
   );
 }
 
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
 async function executeAndCollect(
   box: BoxLiteBoxSdkPort,
   command: string,
   args: string[],
   env: Array<[string, string]>,
   timeoutSeconds: number,
-  cwd: string,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   const execution = await box.exec(
     command,
@@ -560,7 +563,7 @@ async function executeAndCollect(
     false,
     null,
     timeoutSeconds,
-    cwd,
+    undefined,
   );
   const [stdout, stderr, result] = await Promise.all([
     execution.stdout().then(collectOutput),
@@ -717,10 +720,9 @@ export class BoxLiteManagedRuntime
     const result = await executeAndCollect(
       this.#box,
       "/bin/sh",
-      ["-lc", command],
+      ["-lc", `cd /workspace && ${command}`],
       this.commandEnv(),
       Math.max(1, Math.ceil(timeoutMs / 1_000)),
-      "/workspace",
     );
     const output = `${result.stdout}${result.stderr === "" ? "" : `\n${result.stderr}`}`
       .replace(/\s+$/g, "");
@@ -758,7 +760,6 @@ export class BoxLiteManagedRuntime
         ["-p", parent],
         this.commandEnv(),
         30,
-        "/workspace",
       );
       if (mkdirResult.exitCode !== 0) {
         throw new Error(`BoxLite failed to create ${parent}: ${mkdirResult.stderr}`);
@@ -771,14 +772,23 @@ export class BoxLiteManagedRuntime
   }
 
   async spawnDuplexProcess(spec: SandboxDuplexProcessSpec): Promise<SandboxDuplexProcess> {
+    const processEnv = this.commandEnv(spec.env);
+    const cwd = spec.cwd ?? "/workspace";
+    const command = "/bin/sh";
+    const args = [
+      "-lc",
+      `cd ${shellQuote(cwd)} && exec ${shellQuote(spec.command)}${spec.args === undefined || spec.args.length === 0
+        ? ""
+        : ` ${spec.args.map(shellQuote).join(" ")}`}`,
+    ];
     const execution = await this.#box.exec(
-      spec.command,
-      spec.args === undefined ? [] : [...spec.args],
-      this.commandEnv(spec.env),
+      command,
+      args,
+      processEnv,
       false,
       null,
       0,
-      spec.cwd ?? "/workspace",
+      undefined,
     );
     const input = execution.stdin();
     const exited = execution.wait().then((result) => ({
@@ -839,7 +849,6 @@ async function ensureWorkspace(box: BoxLiteBoxSdkPort): Promise<void> {
     ["-p", "/workspace"],
     [],
     30,
-    "/",
   );
   if (result.exitCode !== 0) {
     throw new Error(
@@ -898,7 +907,6 @@ function createBoxLiteProviderWithClient(
         ...(options.memoryMib === undefined ? {} : { memoryMib: options.memoryMib }),
         ...(options.diskSizeGb === undefined ? {} : { diskSizeGb: options.diskSizeGb }),
         ...extra,
-        workingDir: "/workspace",
         autoRemove: false,
         detach: true,
       }, name);
