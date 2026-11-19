@@ -367,6 +367,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Check dependency boundaries
+        run: node scripts/check-core-boundaries.mjs
+
       - name: Node typecheck
         run: pnpm typecheck:ci:node
 
