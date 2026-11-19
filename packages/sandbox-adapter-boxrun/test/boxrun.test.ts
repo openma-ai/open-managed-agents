@@ -220,10 +220,15 @@ describe("BoxRunSandbox", () => {
     await expect(new BoxRunSandbox({ baseUrl: "http://boxrun" }).readFileBytes("/a")).rejects.toThrow("no regular file");
   });
 
-  it("states unsupported mount semantics", async () => {
+  it("creates an in-guest output directory while keeping host mounts unsupported", async () => {
     const sandbox = new BoxRunSandbox({ baseUrl: "http://boxrun" });
     await expect(sandbox.mountMemoryStore({ storeName: "m", storeId: "1", readOnly: true })).rejects.toThrow("no mount primitive");
-    await expect(sandbox.mountSessionOutputs({ tenantId: "t", sessionId: "s" })).rejects.toThrow("no host-bind primitive");
+    installFetch((url) => {
+      if (url.endsWith("/boxes")) return json({ box_id: "box-1" });
+      if (url.endsWith("/exec")) return json({ execution_id: "exec-1" });
+      return sse('event: exit\ndata: {"exit_code":0}\n\n');
+    });
+    await expect(sandbox.mountSessionOutputs({ tenantId: "t", sessionId: "s" })).resolves.toBeUndefined();
   });
 
   it("destroys idempotently and tolerates already-gone, create, HTTP, and transport failures", async () => {

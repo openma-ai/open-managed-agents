@@ -10,6 +10,11 @@ import type { OmaDb } from "@open-managed-agents/db-schema";
 import type { NodeDatabase } from "@open-managed-agents/node-database";
 import { createPostgresSqlClient } from "@open-managed-agents/sql-client";
 
+// Drizzle and the control-plane bootstrap create several schemas and indexes.
+// Serialize the complete startup sequence when multiple Node replicas share
+// one fresh PostgreSQL database.
+const NODE_MIGRATION_ADVISORY_LOCK = 0x4d494752;
+
 export interface PostgresDatabaseOptions {
   /** postgres:// connection string. */
   url: string;
@@ -30,6 +35,21 @@ export async function openPostgresDatabase(options: PostgresDatabaseOptions): Pr
     stop:()=>stopped??=(async()=>{await driver.end();await sql.close();})(),
     applyMigrations: async (migrationsFolder) => {
       await migrate(db, { migrationsFolder });
+    },
+    withMigrationLock: async <T>(work: () => Promise<T>) => {
+      // Keep this session-level advisory lock alive on a dedicated one-
+      // connection client while the normal database handle runs DDL.
+      const lockDriver = postgres(url, { max: 1 });
+      try {
+        await lockDriver.unsafe("SELECT pg_advisory_lock($1)", [NODE_MIGRATION_ADVISORY_LOCK]);
+        try {
+          return await work();
+        } finally {
+          await lockDriver.unsafe("SELECT pg_advisory_unlock($1)", [NODE_MIGRATION_ADVISORY_LOCK]);
+        }
+      } finally {
+        await lockDriver.end();
+      }
     },
     openAuthDatabase: async () => {
       const pool = new pg.Pool({ connectionString: url });

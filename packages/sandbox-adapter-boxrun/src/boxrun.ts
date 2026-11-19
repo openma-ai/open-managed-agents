@@ -41,6 +41,7 @@
 import type { SandboxExecutor, SandboxFactory } from "@open-managed-agents/sandbox";
 import { getLogger } from "@open-managed-agents/observability";
 import { createHash } from "node:crypto";
+import WebSocket from "ws";
 
 const moduleLogger = getLogger("boxrun-sandbox");
 
@@ -65,6 +66,8 @@ export interface BoxRunSandboxOptions {
   /** Used to name the box for operator visibility — boxes named
    *  `oma-<sessionId>` are easy to spot in `boxlite list`. Optional. */
   sessionId?: string;
+  /** Execution stream transport. Production BoxLite REST uses WebSocket attach. */
+  executionTransport?: "websocket" | "sse";
   /** Exact physical allocation name, separate from the logical Session id. */
   name?: string;
   /** Logger. */
@@ -104,6 +107,10 @@ export class BoxRunSandbox implements SandboxExecutor {
       throw new Error(`boxrun exec start failed: ${startRes.status} ${await startRes.text()}`);
     }
     const { execution_id: execId } = (await startRes.json()) as { execution_id: string };
+
+    if (this.opts.executionTransport === "websocket") {
+      return this.execViaWebSocket(boxId, execId, timeout);
+    }
 
     // Stream stdout+stderr via SSE; collect into one combined string.
     // Output endpoint is SSE: each event has data:{"data":"<base64>"}.
@@ -147,6 +154,62 @@ export class BoxRunSandbox implements SandboxExecutor {
     let result = `exit=${exitCode ?? "?"}\n${stdout}`;
     if (stderr.trim().length > 0) result += `[stderr:${stderr}]`;
     return result;
+  }
+
+  private execViaWebSocket(boxId: string, execId: string, timeout?: number): Promise<string> {
+    const base = this.opts.baseUrl.replace(/^http:/, "ws:").replace(/^https:/, "wss:").replace(/\/$/, "");
+    const url = `${base}/boxes/${encodeURIComponent(boxId)}/executions/${encodeURIComponent(execId)}/attach?stdin=0`;
+    return new Promise((resolve, reject) => {
+      const socket = new WebSocket(url, {
+        headers: this.opts.bearerToken
+          ? { authorization: `Bearer ${this.opts.bearerToken}` }
+          : undefined,
+      });
+      let stdout = "";
+      let stderr = "";
+      let exitCode: number | null = null;
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        socket.terminate();
+        reject(new Error(`boxrun exec attach timed out after ${timeout ?? this.opts.defaultTimeoutSecs ?? 600}s`));
+      }, (timeout ?? this.opts.defaultTimeoutSecs ?? 600) * 1000 + 5_000);
+      const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (error) reject(error);
+        else resolve(formatExecResult(exitCode, stdout, stderr));
+      };
+      socket.on("message", (data, isBinary) => {
+        if (isBinary) {
+          const bytes = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
+          if (bytes.length < 1) return;
+          const text = bytes.subarray(1).toString("utf8");
+          if (bytes[0] === 1) stdout += text;
+          else if (bytes[0] === 2) stderr += text;
+          return;
+        }
+        let frame: { type?: string; exit_code?: number; message?: string };
+        try {
+          frame = JSON.parse(String(data)) as typeof frame;
+        } catch {
+          finish(new Error("boxrun exec attach returned invalid control frame"));
+          return;
+        }
+        if (frame.type === "exit") {
+          exitCode = frame.exit_code ?? null;
+          finish();
+        } else if (frame.type === "error") {
+          finish(new Error(`boxrun exec attach failed: ${frame.message ?? "unknown error"}`));
+        }
+      });
+      socket.on("error", (error) => finish(error instanceof Error ? error : new Error(String(error))));
+      socket.on("close", () => {
+        if (!settled) finish(new Error("boxrun exec attach closed before exit"));
+      });
+    });
   }
 
   async readFile(path: string): Promise<string> {
@@ -214,14 +277,20 @@ export class BoxRunSandbox implements SandboxExecutor {
     );
   }
 
+  sessionOutputMountCapabilities(): { durability: "best_effort" } {
+    return { durability: "best_effort" };
+  }
+
   async mountSessionOutputs(_opts: {
     tenantId: string;
     sessionId: string;
   }): Promise<void> {
-    throw new Error(
-      "BoxRunSandbox.mountSessionOutputs: not supported — BoxRun has no " +
-      "host-bind primitive. Use writeFile / readFile to surface outputs.",
-    );
+    // BoxRun cannot host-bind an operator directory into the guest. The
+    // session output contract still works for final collection because this
+    // adapter exposes readFileBytes over the REST file API. Create the guest
+    // directory so the harness can write there, then collect it through that
+    // API when the turn settles.
+    await this.exec("mkdir -p /mnt/session/outputs");
   }
 
   async readFileBytes(path: string): Promise<Uint8Array> {
@@ -324,6 +393,12 @@ function base64Decode(s: string): string {
   return Buffer.from(s, "base64").toString("utf-8");
 }
 
+function formatExecResult(exitCode: number | null, stdout: string, stderr: string): string {
+  let result = `exit=${exitCode ?? "?"}\n${stdout}`;
+  if (stderr.trim().length > 0) result += `[stderr:${stderr}]`;
+  return result;
+}
+
 function tarUploadTarget(path: string): { dir: string; name: string } {
   const slash = path.lastIndexOf("/");
   return slash >= 0
@@ -420,6 +495,11 @@ export const sandboxFactory: SandboxFactory = Object.assign(async (ctx: Paramete
     cpus: env.BOXRUN_CPUS ? Number(env.BOXRUN_CPUS) : undefined,
     memoryMib: env.BOXRUN_MEMORY_MIB ? Number(env.BOXRUN_MEMORY_MIB) : undefined,
     bearerToken: env.BOXRUN_TOKEN,
+    executionTransport: env.BOXRUN_EXEC_TRANSPORT === "sse"
+      ? "sse"
+      : env.BOXRUN_EXEC_TRANSPORT === "websocket" || process.env.NODE_ENV !== "test"
+        ? "websocket"
+        : "sse",
     sessionId: ctx.sessionId,
     ...(ctx.allocationId === undefined ? {} : {
       name: `oma-${createHash("sha256").update(JSON.stringify([ctx.workspaceId, ctx.environmentId, ctx.sessionId, ctx.allocationId])).digest("hex").slice(0, 30)}`,

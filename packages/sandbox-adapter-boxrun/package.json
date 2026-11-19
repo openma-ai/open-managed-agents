@@ -13,10 +13,12 @@
   },
   "dependencies": {
     "@open-managed-agents/observability": "workspace:*",
-    "@open-managed-agents/sandbox": "workspace:*"
+    "@open-managed-agents/sandbox": "workspace:*",
+    "ws": "^8.21.0"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
+    "@types/ws": "^8.18.1",
     "vitest": "^5.0.5"
   }
 }
