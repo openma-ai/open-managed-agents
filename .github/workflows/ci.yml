@@ -337,12 +337,14 @@ jobs:
           path: ${{ runner.temp }}/cf-package-tests.log
           if-no-files-found: warn
 
-  node:
+  # Fast, deterministic checks run before the long Node lanes. Every dependent
+  # lane reuses this gate so lockfile and dependency-boundary failures are
+  # reported without spending time on tests.
+  node-preflight:
     needs: changes
     if: needs.changes.outputs.node == 'true' || needs.changes.outputs.parity_node == 'true'
     runs-on: ubuntu-24.04
-    # Full Node suite plus browser, storage and MySQL integration; allow cleanup.
-    timeout-minutes: 45
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -365,43 +367,179 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Install native storage test dependency
-        run: bash scripts/install-ci-rclone.sh
-
       - name: Node typecheck
         run: pnpm typecheck:ci:node
 
-      # The native management daemon requires uid 0. A user namespace gives
-      # these tests that identity without root authority over the CI host.
-      # OMA_REQUIRE_NATIVE_BOOTSTRAP makes unavailable isolation fail, not skip.
+  # The package suite is intentionally split into independently retryable
+  # groups. Keep each command explicit so a failed group is easy to identify.
+  node-unit:
+    needs: [changes, node-preflight]
+    if: needs.changes.outputs.node == 'true' || needs.changes.outputs.parity_node == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [checks, core, stores, runtime, applications, adapters, openai]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6.1.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Node unit tests (${{ matrix.group }})
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ matrix.group }}" in
+            checks)
+              pnpm run test:discovery
+              pnpm run test:architecture
+              pnpm run test:self-host
+              pnpm run test:certification:runner
+              pnpm run test:certification:orchestrators
+              pnpm run test:certification:offline
+              pnpm run test:provider-chaos
+              pnpm run test:console
+              pnpm run test:resource-convergence:node
+              ;;
+            core)
+              pnpm --filter @open-managed-agents/auth test
+              pnpm --filter @open-managed-agents/matter test
+              pnpm --filter @open-managed-agents/execution-control test
+              pnpm --filter @open-managed-agents/managed-agents-api test:official-worker
+              pnpm --filter @open-managed-agents/environment-work-store-memory test
+              pnpm --filter @open-managed-agents/environment-work-store-sql test
+              ;;
+            stores)
+              pnpm --filter @open-managed-agents/agent-store-sql --filter @open-managed-agents/credential-store-sql --filter @open-managed-agents/deployment-store-sql --filter @open-managed-agents/deployment-run-store-sql --filter @open-managed-agents/dream-store-sql --filter @open-managed-agents/environment-store-sql --filter @open-managed-agents/file-store-sql --filter @open-managed-agents/memory-document-store-sql --filter @open-managed-agents/memory-store-store-sql --filter @open-managed-agents/session-resource-store-sql --filter @open-managed-agents/session-thread-store-sql --filter @open-managed-agents/skill-store-sql --filter @open-managed-agents/tunnel-store-sql --filter @open-managed-agents/user-profile-store-sql --filter @open-managed-agents/vault-store-sql test
+              ;;
+            runtime)
+              pnpm --filter '@open-managed-agents/environment-activation-*' test
+              pnpm --filter '@open-managed-agents/environment-dispatch-*' test
+              pnpm --filter @open-managed-agents/harness-supervisor test
+              pnpm --filter @open-managed-agents/harness-runtime-acp test
+              pnpm --filter '@open-managed-agents/managed-runtime-*' test
+              pnpm --filter @open-managed-agents/vercel-sandbox-contract test
+              pnpm --filter @open-managed-agents/sandbox-orphan-store-sql test
+              pnpm --filter @open-managed-agents/harness-inference-adapters test
+              pnpm --filter @open-managed-agents/inference-proxy test
+              pnpm --filter @open-managed-agents/acp-runtime test
+              pnpm --filter @open-managed-agents/runtime test
+              pnpm --filter @open-managed-agents/harbor-tasks test
+              pnpm --filter @open-managed-agents/evals-runner test
+              pnpm --filter @open-managed-agents/session-runtime test
+              pnpm --filter @open-managed-agents/session-outcomes test
+              pnpm --filter @open-managed-agents/session-subagents test
+              pnpm --filter @open-managed-agents/session-runtime-sql test
+              pnpm --filter @open-managed-agents/session-event-store-sql test
+              pnpm --filter @open-managed-agents/sandbox test
+              pnpm --filter @open-managed-agents/sandbox-port-kit test
+              pnpm --filter '@open-managed-agents/sandbox-adapter-*' test
+              pnpm --filter '@open-managed-agents/node-database-*' test
+              ;;
+            applications)
+              pnpm --filter @open-managed-agents/http-routes test:node
+              pnpm --filter @open-managed-agents/managed-credential-resolver test:node
+              pnpm --filter @openma/cli test
+              pnpm --filter @openma/sdk test
+              pnpm --filter @open-managed-agents/main-node test
+              pnpm --filter @open-managed-agents/main-fly test
+              pnpm --filter @open-managed-agents/main-vercel test
+              pnpm --filter @open-managed-agents/cap test
+              ;;
+            adapters)
+              pnpm --filter @open-managed-agents/integrations-adapters-node test
+              pnpm --filter @open-managed-agents/integrations-adapters-cf test
+              pnpm --filter @open-managed-agents/managed-agents-adapters-sql test
+              pnpm --filter @open-managed-agents/managed-agents-adapters-blob test
+              pnpm --filter @open-managed-agents/managed-agents-adapters-runtime test
+              ;;
+            openai)
+              pnpm run test:openai-agents
+              ;;
+            *)
+              echo "Unknown test group: ${{ matrix.group }}" >&2
+              exit 1
+              ;;
+          esac
+
+  # Playwright's official image includes the browser and OS libraries. Pin it
+  # to the version in pnpm-lock.yaml so this lane never runs apt-get online.
+  browser-e2e:
+    needs: [changes, node-preflight]
+    if: needs.changes.outputs.node == 'true' || needs.changes.outputs.parity_node == 'true'
+    runs-on: ubuntu-24.04
+    container: mcr.microsoft.com/playwright:v1.59.1-noble
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6.1.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Console Agent editor E2E
+        run: pnpm test:e2e:agent-editor
+
+  # Host-only integrations retain access to /dev/kvm and Docker. Browser
+  # binaries are installed without --with-deps; the runner supplies the OS
+  # libraries, and the Playwright container above owns the browser E2E lane.
+  node-integration:
+    needs: [changes, node-preflight]
+    if: needs.changes.outputs.node == 'true' || needs.changes.outputs.parity_node == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6.1.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install native storage test dependency
+        run: bash scripts/install-ci-rclone.sh
+
       - name: Native sandbox bootstrap safety
         timeout-minutes: 2
         working-directory: packages/sandbox-adapter-e2b
-        # ubuntu-24.04 runners block unprivileged user namespaces (AppArmor)
-        # until this sysctl is set; unshare -Ur then fails writing uid_map.
         run: |
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           unshare -Ur env OMA_REQUIRE_NATIVE_BOOTSTRAP=1 node ../../node_modules/vitest/vitest.mjs run --config vitest.config.ts test/managed-bootstrap.test.ts
 
-      - name: Node tests
-        run: pnpm test:ci:node
-
-      # `--with-deps` runs apt-get against azure.archive.ubuntu.com. On
-      # 2026-10-26 that mirror served ~39 kB/s and this step took 11 min while
-      # the Playwright CDN download took ~6 s. Bound apt with per-request
-      # timeouts and retries, and cap the whole step so a slow mirror fails
-      # fast instead of eating the job budget. (The official Playwright
-      # container image is not used because this job also needs host /dev/kvm
-      # for Litebox and the host database integration setup.)
-      - name: Install browser for Console E2E
-        timeout-minutes: 5
-        run: |
-          printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "20";' 'Acquire::https::Timeout "20";' \
-            | sudo tee /etc/apt/apt.conf.d/80-ci-retries >/dev/null
-          pnpm exec playwright install --with-deps chromium
-
-      - name: Console Agent editor E2E
-        run: pnpm test:e2e:agent-editor
+      - name: Install browser binary
+        run: pnpm exec playwright install chromium
 
       - name: Protocol coverage gate
         run: pnpm test:coverage:protocol
@@ -421,24 +559,9 @@ jobs:
       - name: Storage integration tests
         run: pnpm test:integration:storage
 
-      # The official two-owner persistence test runs real Litebox microVMs.
-      # Litebox aborts its host process when /dev/kvm is not accessible.
-      #
-      # ubuntu-24.04 runners expose /dev/kvm as root:kvm mode 0660, and the
-      # runner user is not in the kvm group. `udevadm trigger` applies a
-      # 0666 rule asynchronously: the access check failed ~26ms after
-      # trigger, while the mode change landed ~45ms later. `udevadm settle`
-      # can also return before that uevent is queued. chmod is synchronous.
-      # The udev rule keeps a later uevent from restoring 0660. A missing
-      # device fails this step with an explicit error, which fails the job.
-      # Script: .github/actions/enable-kvm (also used by release.yml).
       - name: Enable KVM for Litebox
         uses: ./.github/actions/enable-kvm
 
-      # ── Console browser E2E (domain-scoped; mock LLM only) ──────────────
-      # Never calls a real model provider: local specs need no model, and the
-      # certification lane points agents at the in-process mock LLM server.
-      # Throwaway API_KEY / PLATFORM_ROOT_SECRET are generated per run.
       - name: Domain-scoped tests (changed layer + one surrounding layer)
         if: needs.changes.outputs.domain_test_commands != ''
         timeout-minutes: 15
@@ -464,8 +587,7 @@ jobs:
           test/e2e/start-local-backend.sh
           export OMA_E2E_LOCAL_API_KEY="$(cat "$OMA_E2E_STATE_DIR/api-key")"
           trap 'kill "$(cat "$OMA_E2E_STATE_DIR/main-node.pid")" 2>/dev/null || true' EXIT
-          pnpm exec playwright test ${{ needs.changes.outputs.console_local_specs }} \
-            --config=playwright.config.ts --workers=1
+          pnpm exec playwright test ${{ needs.changes.outputs.console_local_specs }} --config=playwright.config.ts --workers=1
 
       - name: Console certification browser E2E
         if: needs.changes.outputs.console_e2e == 'true' && needs.changes.outputs.console_cert_specs != ''
@@ -489,8 +611,7 @@ jobs:
           container="openma-custom-authority-${GITHUB_RUN_ID}"
           cleanup() { docker rm -f "$container" >/dev/null 2>&1 || true; }
           trap cleanup EXIT
-          docker run --detach --name "$container" --publish 127.0.0.1:3307:3306 \
-            --env MYSQL_DATABASE="$MYSQL_DATABASE" --env MYSQL_ROOT_PASSWORD="$MYSQL_ROOT_PASSWORD" mysql:8.4
+          docker run --detach --name "$container" --publish 127.0.0.1:3307:3306 --env MYSQL_DATABASE="$MYSQL_DATABASE" --env MYSQL_ROOT_PASSWORD="$MYSQL_ROOT_PASSWORD" mysql:8.4
           for attempt in $(seq 1 60); do
             if docker exec "$container" mysqladmin ping --host=127.0.0.1 --user=root --password="$MYSQL_ROOT_PASSWORD" --silent; then break; fi
             if [ "$attempt" = 60 ]; then echo 'MySQL did not become ready' >&2; exit 1; fi
@@ -501,6 +622,28 @@ jobs:
 
       - name: PostgreSQL MCP access-loss integration
         run: pnpm --filter @open-managed-agents/main-node test:integration:postgres
+
+  # Required check name stays `node`; this aggregate lets failed lanes be
+  # retried independently while preserving a single branch-protection context.
+  node:
+    needs: [changes, node-preflight, node-unit, browser-e2e, node-integration]
+    if: always() && (needs.changes.outputs.node == 'true' || needs.changes.outputs.parity_node == 'true')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require all Node lanes
+        run: |
+          for lane in \
+            "preflight=${{ needs.node-preflight.result }}" \
+            "unit=${{ needs.node-unit.result }}" \
+            "browser=${{ needs.browser-e2e.result }}" \
+            "integration=${{ needs.node-integration.result }}"; do
+            echo "$lane"
+            if [[ "$lane" != *=success ]]; then
+              echo "Node lane did not pass: $lane" >&2
+              exit 1
+            fi
+          done
 
   # Separate from graded surfaces so it does not wait on the heavy suites and
   # does not use the Litebox /dev/kvm action. Checkout plus a Node script only.
