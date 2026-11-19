@@ -13,6 +13,7 @@ import type { NodeDatabase } from "@open-managed-agents/node-database";
 import type { DatabaseConfig } from "./config.js";
 import { loadBetterSqlite3 } from "./lib/better-sqlite3.js";
 import { reconcilePiModelConfigMigration } from "./lib/reconcile-pi-model-config-migration.js";
+import { reconcileWorkspaceBackupsMigration } from "./lib/reconcile-workspace-backups-migration.js";
 import { moveLegacyAgents } from "./lib/move-legacy-agents.js";
 
 export type {
@@ -60,13 +61,17 @@ async function connect(config: DatabaseConfig): Promise<NodeDatabase> {
  * applies the rest).
  */
 export async function migrateNodeDatabase(database: NodeDatabase): Promise<void> {
-  const { dialect, sql } = database;
-  const migrationsFolder = dialect === "postgres"
-    ? fileURLToPath(new URL("../migrations", import.meta.url))
-    : fileURLToPath(new URL("../migrations-sqlite", import.meta.url));
-  await reconcilePiModelConfigMigration(sql, dialect);
-  await moveLegacyAgents(sql, dialect);
-  await database.applyMigrations(migrationsFolder);
-  if(dialect === 'mysql') await ensureMysqlCustomInvocationSchema(sql);
-  if (dialect !== "mysql") await ensureEventLogSchema(sql, dialect);
+  const migrate = async () => {
+    const { dialect, sql } = database;
+    const migrationsFolder = dialect === "postgres"
+      ? fileURLToPath(new URL("../migrations", import.meta.url))
+      : fileURLToPath(new URL("../migrations-sqlite", import.meta.url));
+    await reconcilePiModelConfigMigration(sql, dialect);
+    await moveLegacyAgents(sql, dialect);
+    await database.applyMigrations(migrationsFolder);
+    await reconcileWorkspaceBackupsMigration(sql, dialect);
+    if (dialect === "mysql") await ensureMysqlCustomInvocationSchema(sql);
+    if (dialect !== "mysql") await ensureEventLogSchema(sql, dialect);
+  };
+  await (database.withMigrationLock ? database.withMigrationLock(migrate) : migrate());
 }

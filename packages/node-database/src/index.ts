@@ -20,6 +20,8 @@ export interface NodeDatabase {
   readonly description: string;
   /** Apply the Drizzle migrations in `migrationsFolder` with this dialect's migrator. */
   applyMigrations(migrationsFolder: string): Promise<void>;
+  /** Serialize the full startup migration sequence across server replicas. */
+  withMigrationLock?<T>(work: () => Promise<T>): Promise<T>;
   /**
    * Open the database Better Auth stores users and sessions in. Optional: a
    * caller-built NodeDatabase may omit it and supply its own auth component.
