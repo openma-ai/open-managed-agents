@@ -401,6 +401,10 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Install native storage test dependency
+        if: matrix.group == 'applications'
+        run: bash scripts/install-ci-rclone.sh
+
       - name: Node unit tests (${{ matrix.group }})
         shell: bash
         run: |
