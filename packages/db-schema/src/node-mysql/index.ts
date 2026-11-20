@@ -233,7 +233,19 @@ export async function migrateNodeMysqlSchema(
               WHERE fence.publication_json IS NOT NULL
                 AND work.runtime_publication_json IS NULL`);
           }
-          await sql.exec("DROP TABLE IF EXISTS runtime_resource_fences");
+          // Least-privilege deployment users may lack DROP. The fence rows were
+          // already backfilled into managed_environment_work above, so keeping
+          // the retired table is harmless; unexpected failures still abort.
+          try {
+            await sql.exec("DROP TABLE IF EXISTS runtime_resource_fences");
+          } catch (dropError) {
+            const denied = dropError as { code?: string; errno?: number } | null;
+            if (denied?.code === "ER_TABLEACCESS_DENIED_ERROR" || denied?.errno === 1142) {
+              console.warn("[db-schema] keeping runtime_resource_fences: DROP privilege denied");
+            } else {
+              throw dropError;
+            }
+          }
           installed = { snapshot_id: workClaimPublicationMigration.toSnapshot };
           continue;
         }

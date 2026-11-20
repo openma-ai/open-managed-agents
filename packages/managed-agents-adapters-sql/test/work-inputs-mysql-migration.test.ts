@@ -4,14 +4,33 @@ import { ensureMysqlWorkInputsSchema } from "../src/work-inputs";
 
 // Catalog/DDL contract, NOT a MySQL server. Stores definitions from actual DDL
 // so a duplicate contender must verify what the winning migration installed.
-function fixture(options: { wrongColumn?: boolean; wrongIndex?: boolean; functionalKey?: boolean; ddlError?: Error } = {}) {
- const columns=new Map<string,object>(),indexes=new Map<string,object>();let duplicates=0;
+function fixture(options: { wrongColumn?: boolean; wrongIndex?: boolean; functionalKey?: boolean; ddlError?: Error; tempTableError?: Error; lockAcquired?: number } = {}) {
+ const columns=new Map<string,object>(),indexes=new Map<string,object>();let duplicates=0;let probeAlterCount=0;let lockHeld=false;let lockReleased=0;
  const sql:SqlClient={rowLockTransactions:{
   capability:async()=>({supported:true,engine:'fixture',version:'fixture',reason:'contract only'}),
   run:async body=>{
    let expression='';
-   return body({prepare:text=>({bind(){return this;},all:async()=>({results:[]}),first:async()=>({'Create Table':'CREATE TEMPORARY TABLE probe (\n  `candidate` bigint GENERATED ALWAYS AS ('+expression+') STORED\n)'}) as never,run:async()=>{
-    if(text.startsWith('CREATE TEMPORARY'))expression=/GENERATED ALWAYS AS \(([\s\S]+)\) STORED\)$/.exec(text)![1];
+   return body({prepare:text=>({bind(){return this;},all:async()=>({results:[]}),first:async()=>{
+    if(text.includes('GET_LOCK')){
+     const acquired=options.lockAcquired??1;
+     if(acquired===1)lockHeld=true;
+     return {acquired} as never;
+    }
+    if(text.includes('RELEASE_LOCK')){
+     if(lockHeld){lockHeld=false;lockReleased++;}
+     return {released:1} as never;
+    }
+    return {'Create Table':'CREATE TABLE `oma_work_input_definition_probe` (\n  `candidate` bigint GENERATED ALWAYS AS ('+expression+') STORED\n)'} as never;
+   },run:async()=>{
+    if(text.startsWith('CREATE TEMPORARY')){
+     if(options.tempTableError)throw options.tempTableError;
+     expression=/GENERATED ALWAYS AS \(([\s\S]+)\) STORED\)$/.exec(text)![1];
+    }else if(text.startsWith('CREATE TABLE IF NOT EXISTS oma_work_input_definition_probe')){
+     expression=/GENERATED ALWAYS AS \(([\s\S]+)\) STORED\) ENGINE=InnoDB$/.exec(text)![1];
+    }else if(text.startsWith('ALTER TABLE oma_work_input_definition_probe MODIFY candidate')){
+     probeAlterCount++;
+     expression=/GENERATED ALWAYS AS \(([\s\S]+)\) STORED$/.exec(text)![1];
+    }
     return {meta:{changes:0}};
    }})});
   },
@@ -27,7 +46,7 @@ function fixture(options: { wrongColumn?: boolean; wrongIndex?: boolean; functio
     indexes.set(key,{columns:options.wrongIndex?"session_id":index[4],non_unique:index[1]?0:1,index_type:"BTREE",prefixes:0});return;}
    throw Error("Unexpected DDL: "+text);
  }};
- return {sql,columns,indexes,duplicates:()=>duplicates};
+ return {sql,columns,indexes,duplicates:()=>duplicates,probeAlterCount:()=>probeAlterCount,lockReleased:()=>lockReleased};
 }
 it("concurrent first starts verify duplicate column/index winners and both complete",async()=>{
  const f=fixture();const result=await Promise.allSettled([ensureMysqlWorkInputsSchema(f.sql),ensureMysqlWorkInputsSchema(f.sql)]);
@@ -60,4 +79,26 @@ it.each([1060,1061])("duplicate code %i without a verifiable winner is not succe
 it("rejects an additional functional key even when GROUP_CONCAT would omit its NULL column name",async()=>{
  const f=fixture({functionalKey:true});
  await expect(ensureMysqlWorkInputsSchema(f.sql)).rejects.toThrow(/definition/);
+});
+
+it.each([
+ { code: "ER_DBACCESS_DENIED_ERROR", errno: 1044 },
+ { code: "ER_TABLEACCESS_DENIED_ERROR", errno: 1142 },
+])("falls back to an advisory-locked probe table when CREATE TEMPORARY TABLE is denied (%j)",async denied=>{
+ const f=fixture({tempTableError:Object.assign(Error("CREATE TEMPORARY TABLE denied"),denied)});
+ await expect(ensureMysqlWorkInputsSchema(f.sql)).resolves.toBeUndefined();
+ expect(f.probeAlterCount()).toBe(4);
+ expect(f.lockReleased()).toBe(4);
+});
+
+it("propagates non-privilege errors from CREATE TEMPORARY TABLE without falling back",async()=>{
+ const failure=Error("connection lost");
+ const f=fixture({tempTableError:failure});
+ await expect(ensureMysqlWorkInputsSchema(f.sql)).rejects.toBe(failure);
+ expect(f.probeAlterCount()).toBe(0);
+});
+
+it("fails closed if the fallback probe advisory lock cannot be acquired",async()=>{
+ const f=fixture({tempTableError:Object.assign(Error("denied"),{code:"ER_DBACCESS_DENIED_ERROR",errno:1044}),lockAcquired:0});
+ await expect(ensureMysqlWorkInputsSchema(f.sql)).rejects.toThrow(/probe lock/);
 });

@@ -143,10 +143,13 @@ curl localhost:8787/health
 ```
 
 The MySQL adapter owns native DDL and optimistic CAS/transaction details;
-v1 stores use the same Ports as SQLite and Postgres. Bootstrap fails closed
-when an existing database needs a newer explicit migration. Until a shared
-realtime adapter is configured, run one main-node replica so SSE fanout is
-not split between in-process hubs.
+v1 stores use the same Ports as SQLite and Postgres. Least-privilege database
+users only need `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `CREATE`, `ALTER`,
+and `INDEX` (startup tolerates missing `DROP` and falls back from
+`CREATE TEMPORARY TABLES` to an advisory-locked probe table). Bootstrap fails
+closed when an existing database needs a newer explicit migration. Until a
+shared realtime adapter is configured, run one main-node replica so SSE fanout
+is not split between in-process hubs.
 
 ## Login
 
