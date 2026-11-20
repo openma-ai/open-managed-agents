@@ -132,15 +132,23 @@ export const zhCN: Messages = {
     getStarted: "开始使用 openma",
     handPlatformToAgent:
       "将平台交给你的智能体 — 安装 CLI、生成密钥、指向平台。",
-    installCli: "安装 CLI",
+    installCli: "安装并连接 CLI",
     installCliDesc:
-      "oma CLI 让你的智能体（或你）可以从终端驱动平台。",
+      "安装 oma CLI 并绑定当前服务域名（默认会指向 app.openma.ai）；登录后会按 profile 自动保存 base_url：",
+    installCliGlobalHint:
+      "提示：npm i -g 只会安装 oma 命令，还需执行上面的登录命令（多环境可加 --profile <name>），之后可用 oma whoami 验证。",
+    installCliNpxPrefix: "或免全局安装直接登录：",
     mintApiKey: "生成 API 密钥",
     mintApiKeyDesc: "你的智能体需要此密钥进行认证，请妥善保存。",
+    apiKeyEnvHint:
+      "无浏览器或 Agent 容器环境，导出当前域名与 API Key 即可：",
     generateApiKey: "生成 API 密钥",
     handItReins: "交付控制权",
     handItReinsDesc:
-      "将你的智能体指向 openma-cli 或 openma-api 技能，然后提出你的需求：",
+      "一键复制下方引导 Prompt 发给你的 Coding Agent（已包含当前域名、CLI 配置与 openma 技能指引），或安装 Skill：",
+    copyAgentPrompt: "一键复制 Agent 引导 Prompt",
+    previewPrompt: "展开查看 Prompt",
+    hidePrompt: "收起 Prompt",
     recentSessions: "最近会话",
     noSessionsYet: "还没有会话 — 马厩是空的。",
     visitSessionsPage: "会话页面",

@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { XCircleIcon } from "lucide-react";
 import { useApi } from "../lib/api";
 import { useApiQuery } from "../lib/useApiQuery";
+import { buildCliCommands } from "../lib/cli-onboarding";
 import { Button } from "@/components/ui/button";
 import { PopoverContent } from "@/components/ui/popover";
 import { Modal } from "../components/Modal";
@@ -51,6 +52,9 @@ const STATUS_OPTIONS: { value: StatusValue; label: string }[] = [
 export function RuntimesList() {
   const { api } = useApi();
   const [showInstructions, setShowInstructions] = useState(false);
+  const bridgeSetupCommand = buildCliCommands(
+    typeof window !== "undefined" ? window.location.origin : undefined,
+  ).bridgeSetupCommand;
   const [status, setStatus] = useState<StatusValue>("any");
 
   // Auto-refresh every 15s via TQ's `refetchInterval` so a freshly-attached
@@ -245,7 +249,7 @@ export function RuntimesList() {
       emptySubtitle={
         status === "any" ? (
           <>
-            Run <code className="text-xs bg-bg-surface px-1 py-0.5 rounded">npx @openma/cli bridge setup</code> on the machine you want to connect.
+            Run <code className="text-xs bg-bg-surface px-1 py-0.5 rounded">{bridgeSetupCommand}</code> on the machine you want to connect.
           </>
         ) : (
           "Try a different status filter."
@@ -264,7 +268,7 @@ export function RuntimesList() {
             On the machine you want to connect, run:
           </p>
           <div className="bg-bg-surface border border-border rounded-lg p-3 font-mono text-xs space-y-1">
-            <div className="text-fg select-all">npx @openma/cli bridge setup</div>
+            <div className="text-fg select-all">{bridgeSetupCommand}</div>
           </div>
           <HeadlessPairing />
           <p className="text-fg-muted text-xs">

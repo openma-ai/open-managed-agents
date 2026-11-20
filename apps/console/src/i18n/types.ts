@@ -146,11 +146,17 @@ export interface Messages {
     handPlatformToAgent: string;
     installCli: string;
     installCliDesc: string;
+    installCliGlobalHint: string;
+    installCliNpxPrefix: string;
     mintApiKey: string;
     mintApiKeyDesc: string;
+    apiKeyEnvHint: string;
     generateApiKey: string;
     handItReins: string;
     handItReinsDesc: string;
+    copyAgentPrompt: string;
+    previewPrompt: string;
+    hidePrompt: string;
     recentSessions: string;
     noSessionsYet: string;
     visitSessionsPage: string;

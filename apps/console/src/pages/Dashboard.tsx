@@ -15,6 +15,7 @@ import { EmptyState } from "../components/EmptyState";
 import { Skeleton } from "../components/Skeleton";
 import { useI18n } from "../i18n";
 import { useBranding } from "../lib/branding";
+import { buildAgentSetupPrompt, buildCliCommands, resolveConsoleOrigin } from "../lib/cli-onboarding";
 import { useApiQuery } from "../lib/useApiQuery";
 import type { BetaManagedAgentsSession } from "@anthropic-ai/sdk/resources/beta/sessions/sessions";
 
@@ -52,7 +53,8 @@ export function Dashboard() {
   const navigate = useNavigate();
   const branding = useBranding();
   const [copied, setCopied] = useState<string | null>(null);
-  const { t } = useI18n();
+  const [showPromptPreview, setShowPromptPreview] = useState(false);
+  const { t, locale } = useI18n();
   const statsQuery = useApiQuery<Stats>("/v1/oma/stats");
   const sessionsQuery = useApiQuery<{
     data: BetaManagedAgentsSession[];
@@ -83,10 +85,15 @@ export function Dashboard() {
     { label: t.nav.modelCards, value: stats?.model_cards, to: "/model-cards" },
   ];
 
-  const command = "npx -y -p @openma/cli oma";
-  const globalCommand = "npm i -g @openma/cli";
-  const examplePrompt =
-    "Use oma to create a research agent that monitors arXiv for new ML papers daily";
+  const consoleOrigin = resolveConsoleOrigin(
+    typeof window !== "undefined" ? window.location.origin : undefined,
+  );
+  const cliCommands = buildCliCommands(consoleOrigin);
+  const agentPrompt = buildAgentSetupPrompt({
+    origin: consoleOrigin,
+    productName: branding.productName,
+    locale,
+  });
 
   const copyIcon = (key: string) =>
     copied === key ? <CheckIcon className="size-3.5 text-success" /> : <CopyIcon className="size-3.5" />;
@@ -134,20 +141,21 @@ export function Dashboard() {
             variant="ghost"
             type="button"
             className="console-copy-control"
-            onClick={() => void copy(command, "command")}
+            onClick={() => void copy(cliCommands.globalQuickstart, "command")}
           >
-            <span>{command}</span>
+            <span>{cliCommands.globalQuickstart}</span>
             {copyIcon("command")}
           </Button>
-          <p className="mt-1.5 text-xs text-fg-subtle">
-            or globally:{" "}
+          <p className="mt-1.5 text-xs text-fg-subtle">{t.dashboard.installCliGlobalHint}</p>
+          <p className="mt-1 text-xs text-fg-subtle">
+            {t.dashboard.installCliNpxPrefix}{" "}
             <Button
               variant="ghost"
               type="button"
               className="font-mono text-fg-muted hover:text-brand"
-              onClick={() => void copy(globalCommand, "global-command")}
+              onClick={() => void copy(cliCommands.npxCommand, "npx-command")}
             >
-              {globalCommand}
+              {cliCommands.npxCommand}
             </Button>
           </p>
         </QuickstartStep>
@@ -162,18 +170,52 @@ export function Dashboard() {
             {t.dashboard.generateApiKey}
             <ArrowRightIcon className="size-3.5" />
           </Button>
+          <p className="mt-2.5 text-xs text-fg-subtle">{t.dashboard.apiKeyEnvHint}</p>
+          <Button
+            variant="ghost"
+            type="button"
+            className="console-copy-control"
+            onClick={() => void copy(cliCommands.envOneLiner, "env-command")}
+          >
+            <span>{cliCommands.envOneLiner}</span>
+            {copyIcon("env-command")}
+          </Button>
         </QuickstartStep>
 
         <QuickstartStep number="03" title={t.dashboard.handItReins}>
           <p>{t.dashboard.handItReinsDesc}</p>
-          <Button variant="ghost"
+          <Button
+            variant="ghost"
             type="button"
-            className="console-copy-control"
-            onClick={() => void copy(examplePrompt, "prompt")}
+            className="mt-1 inline-flex items-center gap-1.5 font-mono text-xs text-fg-muted hover:text-brand"
+            onClick={() => void copy(cliCommands.skillInstallCommand, "skill-command")}
           >
-            <span>{examplePrompt}</span>
-            {copyIcon("prompt")}
+            <span>{cliCommands.skillInstallCommand}</span>
+            {copyIcon("skill-command")}
           </Button>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <Button variant="ghost"
+              type="button"
+              className="console-copy-control !mt-0"
+              onClick={() => void copy(agentPrompt, "prompt")}
+            >
+              <span>{t.dashboard.copyAgentPrompt} ({consoleOrigin})</span>
+              {copyIcon("prompt")}
+            </Button>
+            <Button
+              variant="ghost"
+              type="button"
+              className="h-[var(--control-h)] px-2 text-xs text-fg-muted hover:text-brand"
+              onClick={() => setShowPromptPreview((prev) => !prev)}
+            >
+              {showPromptPreview ? t.dashboard.hidePrompt : t.dashboard.previewPrompt}
+            </Button>
+          </div>
+          {showPromptPreview && (
+            <pre className="mt-2 max-h-60 overflow-auto rounded-md border border-border bg-bg-surface p-3 font-mono text-xs whitespace-pre-wrap text-fg-muted select-all">
+              {agentPrompt}
+            </pre>
+          )}
         </QuickstartStep>
       </ConsolePanel>
 
