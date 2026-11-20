@@ -132,16 +132,24 @@ export const en: Messages = {
     getStarted: "Get started with openma",
     handPlatformToAgent:
       "Hand the platform to your agent — install the CLI, mint a key, point them at it.",
-    installCli: "Install the CLI",
+    installCli: "Install & connect the CLI",
     installCliDesc:
-      "The oma CLI lets your agent (or you) drive the platform from the terminal.",
+      "Install the oma CLI and point it at this server (defaults to app.openma.ai otherwise). Logging in saves base_url per profile:",
+    installCliGlobalHint:
+      "Note: npm i -g only installs the oma binary. Run the login step too (add --profile <name> for multiple servers), then verify with oma whoami.",
+    installCliNpxPrefix: "Or run without installing globally:",
     mintApiKey: "Mint an API key",
     mintApiKeyDesc:
       "Your agent needs this to authenticate. Keep it somewhere it can read.",
+    apiKeyEnvHint:
+      "For headless / agent environments without a browser, export the server URL and API key:",
     generateApiKey: "Generate API key",
     handItReins: "Hand it the reins",
     handItReinsDesc:
-      "Point your agent at the openma-cli or openma-api skill, then ask for what you want:",
+      "Copy this setup prompt to your coding agent (includes this server's URL, CLI setup, and openma skill guide), or install the skill:",
+    copyAgentPrompt: "Copy Agent setup prompt",
+    previewPrompt: "Preview prompt",
+    hidePrompt: "Hide prompt",
     recentSessions: "Recent sessions",
     noSessionsYet: "No sessions yet — the stable's empty.",
     visitSessionsPage: "Sessions page",
