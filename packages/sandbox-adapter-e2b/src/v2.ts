@@ -98,6 +98,9 @@ export interface E2BV2AdapterOptions {
    * them (the Node control plane). Omitted = those calls fail. */
   memoryBucket?: E2BSandboxOptions["memoryBucket"];
   managedBootstrap?: E2BSandboxOptions["managedBootstrap"];
+  /** Creation readiness probes; the 10 x 1s default can be too tight for
+   * providers whose envd rejects calls right after create. */
+  readiness?: E2BSandboxOptions["readiness"];
 }
 
 /** The Session scope storage calls receive (this package does not depend on
@@ -148,6 +151,7 @@ export function createE2BV2Adapter(options: E2BV2AdapterOptions): SandboxAdapter
   const executorOptions = {
     ...connection,
     ...(options.managedBootstrap === undefined ? {} : { managedBootstrap: options.managedBootstrap }),
+    ...(options.readiness === undefined ? {} : { readiness: options.readiness }),
     ...(options.user === undefined ? {} : { user: options.user }),
     ...(options.memoryBucket === undefined ? {} : { memoryBucket: options.memoryBucket }),
     lifetimeMs: options.leaseMs,

@@ -132,6 +132,33 @@ describe("E2B v2 lifecycle", () => {
     expect(fake.calls.commands.find((c) => c.cmd.includes("s3fs"))?.opts.user).toBe("root");
   });
 
+  it("forwards readiness options so slow-starting sandboxes exceed the 10-attempt default and readiness=false skips probing", async () => {
+    const fake = fakeSdk();
+    let probes = 0;
+    const baseCreate = fake.sdk.Sandbox.create.bind(fake.sdk.Sandbox);
+    fake.sdk.Sandbox.create = async (template, args) => {
+      const sb = await baseCreate(template, args);
+      const baseRun = sb.commands.run.bind(sb.commands);
+      sb.commands.run = async (cmd, opts) => {
+        if (cmd === "true") {
+          probes += 1;
+          if (probes <= 12) throw new Error("[unavailable] envd starting");
+        }
+        return baseRun(cmd, opts);
+      };
+      return sb;
+    };
+
+    const acquired = await adapter(fake, { readiness: { attempts: 15, delayMs: 0 } }).lifecycle.acquire({ scope, plan, signal });
+    expect(acquired).toMatchObject({ handle: { provider: "e2b", runtimeId: "sbx-1" } });
+    expect(probes).toBe(13);
+
+    const probesBeforeSkip = probes;
+    const skipped = await adapter(fake, { readiness: false }).lifecycle.acquire({ scope, plan, signal });
+    expect(skipped).toMatchObject({ handle: { provider: "e2b", runtimeId: "sbx-2" } });
+    expect(probes).toBe(probesBeforeSkip);
+  });
+
   it("requires maxLifetimeMs at assembly and keeps every plan's idle window below it (design §0.0 rule 11)", async () => {
     const fake = fakeSdk();
     expect(adapter(fake).lifecycle.maxLifetimeMs).toBe(3_600_000);
