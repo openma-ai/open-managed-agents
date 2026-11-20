@@ -147,7 +147,12 @@ export class NodeWorkspaceBackupService implements WorkspaceBackupService {
       const parsed = JSON.parse(row.backup_handle) as OrchestratorBackupHandle;
       return parsed;
     } catch {
-      return null;
+      // Rows from the original baseline stored the raw blob key in
+      // `blob_key`. The migration repair copies it into `backup_handle` so
+      // those rows remain restorable without rewriting their payload.
+      return row.backup_handle
+        ? { id: String(row.id), dir: row.backup_handle }
+        : null;
     }
   }
 
