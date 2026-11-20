@@ -5,7 +5,7 @@ image. **It does NOT deploy any worker to a Cloudflare account.**
 
 | Workflow | Purpose |
 |---|---|
-| `ci.yml` | Graded impact-surface CI (#417). `changes` classifies the diff; `docs` / `web` / `cf` / `node` run only when needed; `release-check` stays a cheap PR job; `verify` is the branch-protection gate (skipped surfaces count as success) |
+| `ci.yml` | Graded impact-surface CI (#417). `changes` classifies the diff; `docs` / `web` / `cf` / `node` run only when needed; `release-check` and `console-token-gate` stay cheap jobs; `verify` is the branch-protection gate (skipped surfaces count as success) |
 | `release.yml` | Frozen `release` cut (~every 2 days / `workflow_dispatch`) → Version Packages targets `release`; `publish` on Version Packages merge to `release` (`scripts/release-check.mjs --publish` then `pnpm release`) publishes `@openma/cli` / `@openma/sdk` to npm via changesets + OIDC trusted publisher, then sync PR `release` → `main` |
 | `build-sandbox-image.yml` | builds the agent sandbox base image for OSS users to pull |
 | `build-server-image.yml` | verifies and publishes the Node/Console server image to GHCR under an immutable full-Git-SHA tag; release tags add a human version alias |
@@ -32,6 +32,14 @@ lockfile skips **`cf`**. Lockfile alone still runs both.
 Branch protection requires the check named **`verify`**. That job always
 runs (`if: always()`) and passes when every needed job is `success` or
 `skipped`.
+
+`console-token-gate` (#502) runs on every event with plain Node (no install,
+under a minute): `node --test apps/console/scripts/token-audit.test.mjs`, then
+`apps/console/scripts/token-audit.mjs --check` (`--base origin/<base>` on pull
+requests). It fails on new `console-tokens.css` `:root` names, on Console
+hardcode budgets that went up (or down without lowering the baseline), and on
+unapproved new component files. Rules and the Owner-approval label are in
+[`apps/console/token-gate/README.md`](../../apps/console/token-gate/README.md).
 
 ## Why no deploy workflows?
 
