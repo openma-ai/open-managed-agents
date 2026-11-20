@@ -135,6 +135,18 @@ function minimalEvent(type: string): SessionEventView {
     case "span.outcome_evaluation_start":
     case "span.outcome_evaluation_ongoing":
       return { ...base, type, iteration: 1, outcomeId: "out_1" };
+    case "aux.model_call":
+      return {
+        ...base,
+        type,
+        modelId: "main-model",
+        modelRole: "main",
+        task: "permission_judge",
+        parentToolUseId: "tool_1",
+        durationMs: 12,
+        tokens: { input: 10, output: 4 },
+        status: "ok",
+      };
     default:
       return { ...base, type } as SessionEventView;
   }

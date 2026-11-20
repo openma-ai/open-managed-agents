@@ -89,6 +89,31 @@ describe("Managed session runtime codec", () => {
       message: "deprecated harness",
       processedAt: "2026-08-26T00:00:01.000Z",
     });
+    expect(
+      decodeRuntimeProducedSessionEvent({
+        id: "event_aux_01",
+        type: "aux.model_call",
+        model_id: "main-model",
+        model_role: "main",
+        task: "permission_judge",
+        parent_tool_use_id: "call_01",
+        duration_ms: 12,
+        tokens: { input: 10, output: 4 },
+        status: "ok",
+        processed_at: "2026-08-26T00:00:01.000Z",
+      }),
+    ).toEqual({
+      id: "event_aux_01",
+      type: "aux.model_call",
+      modelId: "main-model",
+      modelRole: "main",
+      task: "permission_judge",
+      parentToolUseId: "call_01",
+      durationMs: 12,
+      tokens: { input: 10, output: 4 },
+      status: "ok",
+      processedAt: "2026-08-26T00:00:01.000Z",
+    });
   });
 
 

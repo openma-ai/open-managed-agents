@@ -612,6 +612,28 @@ const historySessionEventSchema = z.discriminatedUnion("type", [
   z
     .object({
       id: z.string().min(1),
+      type: z.literal("aux.model_call"),
+      model_id: z.string(),
+      model_role: z.enum(["aux", "main"]).optional(),
+      task: z.string(),
+      parent_tool_use_id: z.string().optional(),
+      duration_ms: z.number(),
+      tokens: z
+        .object({
+          input: z.number(),
+          output: z.number(),
+          cache_read: z.number().optional(),
+        })
+        .strict(),
+      status: z.enum(["ok", "failed"]),
+      error: z.string().optional(),
+      session_thread_id: z.string().nullable().optional(),
+      processed_at: z.string(),
+    })
+    .strict(),
+  z
+    .object({
+      id: z.string().min(1),
       type: z.literal("session.deleted"),
       processed_at: z.string(),
     })

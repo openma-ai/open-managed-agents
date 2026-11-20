@@ -3,6 +3,7 @@ import { Type, type ImageContent, type TextContent } from "@earendil-works/pi-ai
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { z } from "zod";
 import type { HarnessContext } from "./interface";
+import { AUTO_PERMISSION_ASK } from "./tools";
 
 export function toolsToPi(ctx: HarnessContext): AgentTool[] {
   return Object.entries(ctx.tools).map(([name, raw]) => {
@@ -31,6 +32,29 @@ export function toolsToPi(ctx: HarnessContext): AgentTool[] {
         }
         try {
           const value = await tool.execute(params, { toolCallId, messages: [], abortSignal: signal });
+          const record = value && typeof value === "object" ? value as Record<string, any> : undefined;
+          const nestedDetails = record?.details && typeof record.details === "object"
+            ? record.details as Record<string, any>
+            : undefined;
+          if (record?.[AUTO_PERMISSION_ASK] === "ask" || nestedDetails?.openmaPendingConfirmation === true) {
+            if (!ctx.runtime.pendingConfirmations?.includes(toolCallId)) {
+              ctx.runtime.pendingConfirmations ??= [];
+              ctx.runtime.pendingConfirmations.push(toolCallId);
+            }
+            const reason = typeof record?.openmaPermissionReason === "string"
+              ? record.openmaPermissionReason
+              : typeof nestedDetails?.openmaPermissionReason === "string"
+                ? nestedDetails.openmaPermissionReason
+                : "Tool confirmation required";
+            const content = Array.isArray(record?.content)
+              ? record.content
+              : [{ type: "text", text: reason }];
+            return {
+              content,
+              details: { openmaPendingConfirmation: true, openmaPermissionDecision: "ask", openmaPermissionReason: reason },
+              terminate: true,
+            };
+          }
           return { content: valueToPiContent(value), details: value };
         } catch (error) {
           if (!isDispatchedUnknown(error)) throw error;

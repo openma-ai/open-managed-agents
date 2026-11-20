@@ -31,7 +31,7 @@ OMA 真正的平台杠杆**不是**「统一的 scorer 接口」——而是 **a
 | Outcome | `user.define_outcome`、`outcome.evaluation_end`、`session.outcome_evaluated`、`span.outcome_evaluation_*` | Supervisor 模式的修订 loop |
 | 生命周期 | `session.status_running`、`session.status_idle`、`session.status_rescheduled`、`session.status_terminated`、`session.error` | session 状态 |
 | Span | `span.model_request_start`、`span.model_request_end`、`span.outcome_evaluation_*` | 可观测性（耗时、token 用量）。`span.model_request_end` 还带 `finish_reason` + `final_text_length`，便于发现「静默截断」 |
-| Aux | `aux.model_call` | 工具内部的 LLM 调用，按 `agent.aux_model` 计费（如 `web_fetch` 的页面摘要）。与 `span.model_request_*` 区分，方便成本看板单独归类 |
+| Aux | `aux.model_call` | 工具内部的 LLM 调用（如 `web_fetch` 页面摘要或 auto 权限 reviewer）。`model_role` 区分显式 aux 模型和主模型 fallback；与 `span.model_request_*` 区分，方便成本看板单独归类 |
 
 `StoredEvent`（`types.ts:495`）是持久化信封：`{seq, type, data, ts}`。
 
