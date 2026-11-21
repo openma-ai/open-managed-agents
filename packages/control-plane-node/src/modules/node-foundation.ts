@@ -415,6 +415,7 @@ export async function createNodeFoundation(
     buildTools: async (agent, sandbox, tenantId, sessionId) => {
       assertRuntimeAgentSnapshot(agent);
       const creds = await resolveNodeModelCreds(tenantId, agent.model);
+      const mainModel = await buildNodeLanguageModel(tenantId, agent.model);
       return buildTools(agent, sandbox, {
         ANTHROPIC_API_KEY: creds.apiKey,
         ANTHROPIC_BASE_URL: creds.baseURL,
@@ -422,6 +423,9 @@ export async function createNodeFoundation(
         tenantId,
         sessionId,
         mcpBinding: legacySessionMcpProxy,
+        mainModel,
+        mainModelInfo: { model_id: typeof agent.model === "string" ? agent.model : agent.model.id },
+        mainProviderOptions: typeof agent.model === "string" ? undefined : agent.model.provider_options,
       });
     },
     buildHarness: (agent) => {

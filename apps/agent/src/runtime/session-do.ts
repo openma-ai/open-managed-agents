@@ -19,7 +19,7 @@ import {
   type FileResolver, HarnessLease, resolveHarness, composeSystemPrompt,
   resolveRepositoryLocalPath, createPiModelRuntime, toAiSdkLanguageModel,
   bindStoredModelCardCredentials, delegationCredentials, type ResolvedModelCardCredentials,
-  buildTools, disposeTools, ToolFailureError, resolveProxiedToolCall, resolveSkills,
+  buildTools, disposeTools, mainModelToolOptions, ToolFailureError, resolveProxiedToolCall, resolveSkills,
   resolveCustomSkills, resolveCustomSkillMounts, type SkillMountDescriptor, getSkillFiles,
   getSkillFilesFromManagedSource, mountSkillFiles, agentUsesAssemblySkillMount,
   resolveSkillAssemblyConfig, skillMountsShouldFetchBodies, resolveAppendablePrompts,
@@ -5409,6 +5409,24 @@ export class SessionDO extends DurableObject<Env> {
     const subModelId = typeof subAgent.model === "string" ? subAgent.model : subAgent.model?.id;
     if (!subModelId) throw new Error("Incomplete runtime agent snapshot: missing model");
     const subCreds = await this.resolveModelCardCredentials(subModelId);
+    const subPiRuntime = createPiModelRuntime({
+      model: subCreds.model,
+      apiKey: subCreds.apiKey,
+      provider: subCreds.provider,
+      baseURL: subCreds.baseURL,
+      customHeaders: subCreds.customHeaders,
+      piConfig: subCreds.piConfig,
+      providerOptions:
+        typeof subAgent.model !== "string" &&
+        subAgent.model.provider_options?.pi &&
+        typeof subAgent.model.provider_options.pi === "object" &&
+        !Array.isArray(subAgent.model.provider_options.pi)
+          ? subAgent.model.provider_options.pi as Record<string, unknown>
+          : undefined,
+      thinkingLevel: typeof subAgent.model === "string" ? undefined : subAgent.model.effort,
+      speed: typeof subAgent.model === "string" ? undefined : subAgent.model.speed,
+    });
+    const subModel = toAiSdkLanguageModel(subPiRuntime);
     const subTools = await buildTools(subAgent, childSandbox, {
       ...delegationCredentials(subCreds),
       TAVILY_API_KEY: this.env.TAVILY_API_KEY,
@@ -5421,6 +5439,7 @@ export class SessionDO extends DurableObject<Env> {
       auxModel: subAuxResolved?.model,
       auxModelInfo: subAuxResolved?.modelInfo,
       auxProviderOptions: subAuxResolved?.providerOptions,
+      ...mainModelToolOptions(subModel, subModelId, typeof subAgent.model !== "string" ? subAgent.model.provider_options : undefined),
       broadcastEvent: (event) => this.persistAndBroadcastEvent(
         event,
         parentThreadId,
@@ -5442,24 +5461,6 @@ export class SessionDO extends DurableObject<Env> {
         return this.runSubAgent(nestedAgentId, nestedMessage, parentHistory, childSandbox, threadId, childSignal);
       },
     });
-    const subPiRuntime = createPiModelRuntime({
-      model: subCreds.model,
-      apiKey: subCreds.apiKey,
-      provider: subCreds.provider,
-      baseURL: subCreds.baseURL,
-      customHeaders: subCreds.customHeaders,
-      piConfig: subCreds.piConfig,
-      providerOptions:
-        typeof subAgent.model !== "string" &&
-        subAgent.model.provider_options?.pi &&
-        typeof subAgent.model.provider_options.pi === "object" &&
-        !Array.isArray(subAgent.model.provider_options.pi)
-          ? subAgent.model.provider_options.pi as Record<string, unknown>
-          : undefined,
-      thinkingLevel: typeof subAgent.model === "string" ? undefined : subAgent.model.effort,
-      speed: typeof subAgent.model === "string" ? undefined : subAgent.model.speed,
-    });
-    const subModel = toAiSdkLanguageModel(subPiRuntime);
 
     const skillBinding = this.env.MAIN_MCP;
     const subSkillFiles = await resolveRuntimeSkillFiles(subAgent,
@@ -5723,38 +5724,6 @@ export class SessionDO extends DurableObject<Env> {
     // model-card credentials rather than any platform key.
     const effectiveHandle = this.agentModelHandle(agent);
     const creds = await this.resolveModelCardCredentials(effectiveHandle);
-
-    // Build tools from agent config
-    const auxResolved = await this.resolveAuxModel(agent);
-    const allTools = await buildTools(agent, sandbox, {
-      ...delegationCredentials(creds),
-      TAVILY_API_KEY: this.env.TAVILY_API_KEY,
-      toMarkdown: cfWorkersAiToMarkdown(this.env.AI),
-      environmentConfig,
-      mcpBinding: this.env.MAIN_MCP,
-      tenantId: this.state.tenant_id,
-      sessionId: this.state.session_id,
-      browser: this.getBrowserHarness() ?? undefined,
-      auxModel: auxResolved?.model,
-      auxModelInfo: auxResolved?.modelInfo,
-      auxProviderOptions: auxResolved?.providerOptions,
-      broadcastEvent: (event) => this.persistAndBroadcastEvent(event, turnThreadId, activeFence),
-      scheduleWakeup: (a) => this.scheduleWakeup(a),
-      cancelWakeup: (id) => this.cancelWakeup(id),
-      listWakeups: () => this.listWakeups(),
-      delegateToAgent: async (agentId: string, message: string) => {
-        // turnThreadId is captured from the enclosing processUserMessage
-        // scope (declared at the top of the function) — closure evals
-        // lazily at harness.run time, so TDZ isn't a concern.
-        return this.runSubAgent(agentId, message, history, sandbox, turnThreadId, effectiveAbortSignal);
-      },
-      watchBackgroundTask: (taskId: string, pid: string, outputFile: string, proc: ProcessHandle | null) => {
-        this.watchBackgroundTask(taskId, pid, outputFile, proc, sandbox);
-      },
-    });
-
-    const memoryStoreIds = this.mountedMemoryFacts.map((fact) => fact.storeId);
-
     const piRuntime = createPiModelRuntime({
       model: creds.model,
       apiKey: creds.apiKey,
@@ -5773,6 +5742,37 @@ export class SessionDO extends DurableObject<Env> {
       speed: typeof agent.model === "string" ? undefined : agent.model.speed,
     });
     const model = toAiSdkLanguageModel(piRuntime);
+
+    const auxResolved = await this.resolveAuxModel(agent);
+    const allTools = await buildTools(agent, sandbox, {
+      ...delegationCredentials(creds),
+      TAVILY_API_KEY: this.env.TAVILY_API_KEY,
+      toMarkdown: cfWorkersAiToMarkdown(this.env.AI),
+      environmentConfig,
+      mcpBinding: this.env.MAIN_MCP,
+      tenantId: this.state.tenant_id,
+      sessionId: this.state.session_id,
+      browser: this.getBrowserHarness() ?? undefined,
+      auxModel: auxResolved?.model,
+      auxModelInfo: auxResolved?.modelInfo,
+      auxProviderOptions: auxResolved?.providerOptions,
+      ...mainModelToolOptions(model, effectiveHandle, typeof agent.model !== "string" ? agent.model.provider_options : undefined),
+      broadcastEvent: (event) => this.persistAndBroadcastEvent(event, turnThreadId, activeFence),
+      scheduleWakeup: (a) => this.scheduleWakeup(a),
+      cancelWakeup: (id) => this.cancelWakeup(id),
+      listWakeups: () => this.listWakeups(),
+      delegateToAgent: async (agentId: string, message: string) => {
+        // turnThreadId is captured from the enclosing processUserMessage
+        // scope (declared at the top of the function) — closure evals
+        // lazily at harness.run time, so TDZ isn't a concern.
+        return this.runSubAgent(agentId, message, history, sandbox, turnThreadId, effectiveAbortSignal);
+      },
+      watchBackgroundTask: (taskId: string, pid: string, outputFile: string, proc: ProcessHandle | null) => {
+        this.watchBackgroundTask(taskId, pid, outputFile, proc, sandbox);
+      },
+    });
+
+    const memoryStoreIds = this.mountedMemoryFacts.map((fact) => fact.storeId);
 
     // Build system prompt: agent.system + platform guidance + skill /
     // memory_store / appendable_prompt content (the latter passed in as

@@ -33,7 +33,7 @@ import { buildOpenAISubagentTools, nodeOpenAISubagentPolicy, openAISubagentSessi
 import { createNodeOpenAIArtifactPublisher, withReportedArtifactPublication } from "../openai-artifact-publication.js";
 
 import {
-  buildTools, disposeTools, composeSystemPrompt, agentUsesAssemblySkillMount, type HarnessContext,
+  buildTools, disposeTools, mainModelToolOptions, composeSystemPrompt, agentUsesAssemblySkillMount, type HarnessContext,
   readHarnessAgentModelSettings, createPiModelRuntime, resolveHarness,
 } from "@open-managed-agents/agent-harness";
 
@@ -463,10 +463,10 @@ export async function createManagedNodeRuntime(
     },
     buildTools: async ({ workspaceId, session, environment, sandbox, subagents, delegateToAgent }) => {
       const agent = toLegacyHarnessAgentConfig(session);
-      // ACP owns its tool clients inside the sandbox; do not eagerly open
-      // a second host-side MCP connection or resolve unrelated tool models.
+      // ACP owns its tool clients inside the sandbox; do not eagerly open a second host-side MCP connection or resolve unrelated tool models.
       if (agent.harness === "acp-sandbox") return {};
       const creds = await resolveNodeModelCreds(workspaceId, agent.model);
+      const mainModel = await buildNodeLanguageModel(workspaceId, agent.model);
       const auxiliary = await resolveNodeManagedAuxiliaryToolModel(
         session,
         (model) => buildNodeLanguageModel(workspaceId, model),
@@ -482,6 +482,7 @@ export async function createManagedNodeRuntime(
         auxModel: auxiliary?.model,
         auxModelInfo: auxiliary?.modelInfo,
         auxProviderOptions: auxiliary?.providerOptions,
+        ...mainModelToolOptions(mainModel, typeof agent.model === "string" ? agent.model : agent.model.id, typeof agent.model === "string" ? undefined : agent.model.provider_options),
         delegateToAgent,
       });
       if (subagents && (await readManagedSessionMappingMetadata(session, openAIAgentsSecrets))?.agent.multi_agent?.enabled) {
@@ -501,8 +502,7 @@ export async function createManagedNodeRuntime(
           if (ctx.agent.harness === "acp-sandbox") await harness.onSessionInit?.(ctx, ctx.runtime);
           await harness.run(ctx);
         } finally {
-          // A Node execution owns this process; retain native state for the
-          // next attempt but never retain a process with an expired bearer.
+          // Retain native state for the next attempt, never an expired bearer.
           if (ctx.agent.harness === "acp-sandbox") await harness.dispose?.("shutdown");
         }
       },

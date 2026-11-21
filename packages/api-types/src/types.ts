@@ -484,7 +484,7 @@ export interface AgentToolUseEvent extends EventBase {
   id: string;
   name: string;
   input: Record<string, unknown>;
-  evaluated_permission?: "allow" | "ask";
+  evaluated_permission?: "allow" | "ask" | "deny";
 }
 
 export interface AgentToolResultEvent extends EventBase {
@@ -521,6 +521,7 @@ export interface AgentMcpToolUseEvent extends EventBase {
   mcp_server_name: string;
   name: string;
   input: Record<string, unknown>;
+  evaluated_permission?: "allow" | "ask" | "deny";
 }
 
 export interface AgentMcpToolResultEvent extends EventBase {
@@ -846,14 +847,15 @@ export interface SpanOutcomeEvaluationEndEvent extends EventBase {
   };
 }
 
-// Aux events — platform-internal LLM calls made on behalf of a tool
-// (e.g. web_fetch summarization). Distinct from `span.model_request_*`,
-// which track the main agent loop's model calls. These let consumers
-// (cost dashboards, trajectory viewers) attribute aux usage separately.
+// Tool-internal LLM calls made on behalf of a tool (e.g. web_fetch
+// summarization or the auto-permission reviewer). Distinct from
+// `span.model_request_*`, which track the main agent loop's model calls.
 export interface AuxModelCallEvent extends EventBase {
   type: "aux.model_call";
-  /** Resolved model identifier (the agent's `aux_model.id` handle). */
+  /** Resolved model identifier for the actual reviewer/tool-internal call. */
   model_id: string;
+  /** Whether the call used the explicit aux model or the main-model fallback. */
+  model_role?: "aux" | "main";
   /** What the aux model was used for. Extensible — first user is "web_summarize". */
   task: "web_summarize" | string;
   /** Tool-use event that triggered this aux call (for trajectory linking). */

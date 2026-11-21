@@ -15,6 +15,28 @@ export const isBuiltinTool = (name: string): boolean =>
   || name === MCP_INVOKE_TOOL_NAME
   || name.startsWith("call_agent_");
 
+/** Bind permission telemetry and history before the first tool can execute.
+ *
+ * The Pi loop builds tools before it starts the Agent. If the sink is only
+ * bound while projecting the later `agent.tool_use` event, the cached judge
+ * result has already been produced and its `aux.model_call` telemetry is
+ * lost. Binding at the loop boundary keeps the execution and event paths on
+ * the same live runtime.
+ */
+export function bindHarnessToolPermissionRuntime(
+  runtime: HarnessContext["runtime"],
+  tools: Record<string, any>,
+): void {
+  for (const target of Object.values(tools)) {
+    const permission = target?.metadata?.openmaPermission as {
+      bindEventSink?: (broadcast: (event: SessionEvent) => void) => void;
+      bindHistory?: (getHistory: () => SessionEvent[]) => void;
+    } | undefined;
+    permission?.bindEventSink?.(runtime.broadcast.bind(runtime));
+    permission?.bindHistory?.(() => runtime.history.getEvents());
+  }
+}
+
 function extractMcpServerName(toolName: string): string {
   if (toolName.startsWith("mcp__")) {
     const withoutPrefix = toolName.slice("mcp__".length);
@@ -30,13 +52,35 @@ function extractMcpServerName(toolName: string): string {
 }
 
 /** Shared wire projection for Pi and ACP tool-call events. */
-export function emitHarnessToolUseFromCall(
+export async function emitHarnessToolUseFromCall(
   runtime: HarnessContext["runtime"],
   tools: Record<string, any>,
   toolCallId: string,
   toolName: string,
   input: Record<string, unknown>,
-): void {
+): Promise<void> {
+  const resolved = resolveProxiedToolCall(toolName, input);
+  const target = tools[resolved.toolName] as {
+    execute?: unknown;
+    metadata?: { openmaPermission?: {
+      policy?: string;
+      bindEventSink?: (broadcast: (event: SessionEvent) => void) => void;
+      bindHistory?: (getHistory: () => SessionEvent[]) => void;
+      evaluate?: (id: string, args: Record<string, unknown>, signal?: AbortSignal) => Promise<{ decision: "allow" | "deny" | "ask"; reason?: string }>;
+    } };
+  } | undefined;
+  const permission = target?.metadata?.openmaPermission;
+  permission?.bindEventSink?.(runtime.broadcast);
+  permission?.bindHistory?.(() => runtime.history.getEvents());
+  const evaluated = permission?.policy === "auto" && permission.evaluate
+    ? await permission.evaluate(
+      toolCallId,
+      resolved.args && typeof resolved.args === "object" && !Array.isArray(resolved.args)
+        ? resolved.args as Record<string, unknown>
+        : {},
+      runtime.abortSignal,
+    )
+    : undefined;
   if (isMcpTool(toolName)) {
     const registeredServerName = tools[toolName]?.metadata?.serverName;
     runtime.broadcast({
@@ -48,6 +92,7 @@ export function emitHarnessToolUseFromCall(
           : extractMcpServerName(toolName),
       name: toolName,
       input,
+      ...(evaluated ? { evaluated_permission: evaluated.decision } : {}),
     });
     return;
   }
@@ -57,7 +102,9 @@ export function emitHarnessToolUseFromCall(
         id: toolCallId,
         name: toolName,
         input,
-        ...(tools[resolveProxiedToolCall(toolName, input).toolName]?.execute ? {} : { evaluated_permission: "ask" as const }),
+        ...(evaluated
+          ? { evaluated_permission: evaluated.decision }
+          : (tools[resolved.toolName]?.execute ? {} : { evaluated_permission: "ask" as const })),
       }
     : {
         type: "agent.custom_tool_use",

@@ -215,6 +215,21 @@ export interface SpanModelUsageView {
   speed?: "standard" | "fast" | null;
 }
 
+export interface AuxModelCallEventView {
+  id: string;
+  type: "aux.model_call";
+  modelId: string;
+  modelRole?: "aux" | "main";
+  task: string;
+  parentToolUseId?: string;
+  durationMs: number;
+  tokens: { input: number; output: number; cacheRead?: number };
+  status: "ok" | "failed";
+  error?: string;
+  processedAt: string;
+  sessionThreadId?: string | null;
+}
+
 export type HistorySessionEvent =
   | {
       id: string;
@@ -393,6 +408,7 @@ export type HistorySessionEvent =
       result: string;
       usage: SpanModelUsageView;
     }
+  | AuxModelCallEventView
   | { id: string; type: "session.deleted"; processedAt: string }
   | {
       id: string;
