@@ -624,6 +624,7 @@ export async function createManagedNodeRuntime(
         await managedRuntimeDriver.accept({
           ...input,
           executionFence: fence,
+          ...(hooks !== undefined && { markProgress: () => hooks.markProgress() }),
           ...(hooks !== undefined && { takeSteeringInputs: () => hooks.takeSteeringInputs() }),
         });
       },
@@ -641,6 +642,7 @@ export async function createManagedNodeRuntime(
     clock: { now: () => new Date() },
     ids: { nextAttemptId: () => `attempt_${nanoid()}` },
     leaseTtlMs: config.execution.leaseTtlMs,
+    progressTimeoutMs: config.execution.progressTimeoutMs,
     maxConcurrent: config.execution.concurrency,
     eventProcessing: {
       storeFor: () => new SqlSessionEventPersistence(sql,{dialect:foundation.dialect}),
