@@ -28,3 +28,36 @@ export interface HarnessCatalog {
    * registered literally as `default` resolves to itself. null means unset. */
   default_harness_id: string | null;
 }
+
+/** Shared wire metadata for the harnesses shipped by the platform. */
+export const PI_HARNESS_DESCRIPTOR: HarnessDescriptor = {
+  id: "pi",
+  label: "Pi",
+  description: "Pi agent loop in the control-plane host.",
+  execution: { placement: "host" },
+  capabilities: { runtime_binding: false },
+  requirements: [],
+};
+
+export const ACP_SANDBOX_HARNESS_DESCRIPTOR: HarnessDescriptor = {
+  id: "acp-sandbox",
+  label: "ACP Sandbox",
+  description: "ACP agent loop in the session sandbox; requires duplex process support.",
+  execution: { placement: "sandbox" },
+  capabilities: { runtime_binding: false },
+  requirements: ["acp.agent.command|acp.agent.registry"],
+};
+
+export const ACP_PROXY_HARNESS_DESCRIPTOR: HarnessDescriptor = {
+  id: "acp-proxy",
+  label: "ACP Proxy",
+  description: "ACP agent loop delegated to a connected OpenMA Runtime.",
+  execution: { placement: "runtime" },
+  capabilities: { runtime_binding: true },
+  requirements: ["runtime_binding.runtime_id", "runtime_binding.acp_agent_id"],
+};
+
+export const CORE_HARNESS_DESCRIPTORS: readonly HarnessDescriptor[] = [
+  PI_HARNESS_DESCRIPTOR,
+  ACP_SANDBOX_HARNESS_DESCRIPTOR,
+];

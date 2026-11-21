@@ -51,7 +51,7 @@ import {
 
 import { listAuthProviders } from "@open-managed-agents/shared";
 
-import { buildAgentRoutes as buildLegacyAgentRoutes, buildVaultRoutes as buildLegacyVaultRoutes, buildModelCardRoutes, buildEnvironmentRoutes as buildLegacyEnvironmentRoutes, buildSessionRoutes, buildMemoryRoutes as buildLegacyMemoryRoutes, buildDreamRoutes, buildTenantRoutes, buildMeRoutes, buildApiKeyRoutes, buildEvalRoutes, buildIntegrationsRoutes, buildIntegrationsGatewayRoutes, buildSandboxImageRoutes, type InstallProxyForwarder, mintApiKeyOnStorage, sha256Hex } from "@open-managed-agents/http-routes";
+import { buildAgentRoutes as buildLegacyAgentRoutes, buildVaultRoutes as buildLegacyVaultRoutes, buildModelCardRoutes, buildEnvironmentRoutes as buildLegacyEnvironmentRoutes, buildSessionRoutes, buildMemoryRoutes as buildLegacyMemoryRoutes, buildDreamRoutes, buildTenantRoutes, buildMeRoutes, buildApiKeyRoutes, buildEvalRoutes, buildIntegrationsRoutes, buildIntegrationsGatewayRoutes, buildSandboxImageRoutes, buildHarnessCatalogRoutes, type InstallProxyForwarder, mintApiKeyOnStorage, sha256Hex } from "@open-managed-agents/http-routes";
 import { buildAgentRoutes as buildManagedAgentRoutes, buildManagedSessionsApi } from "@open-managed-agents/managed-agents-api";
 import { EMPTY_SANDBOX_IMAGE_CATALOG, isNoEnvironmentSandbox } from "@open-managed-agents/sandbox";
 import { SessionRuntimeHistoryApplicationService, SessionRuntimeProjectionApplicationService } from "@open-managed-agents/managed-agents-application";
@@ -709,7 +709,7 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
       };
     },
   }));
-  v1.get("/oma/harnesses", (c) => c.json(getHarnessCatalog()));
+  v1.route("/oma/harnesses", buildHarnessCatalogRoutes(() => getHarnessCatalog()));
   // Operator SANDBOX_IMAGES catalog for `_oma.sandbox_image`; aliases only.
   v1.route("/oma/sandbox_images", buildSandboxImageRoutes(config.sandbox.images ?? EMPTY_SANDBOX_IMAGE_CATALOG));
   v1.get("/oma/runtimes", (c) => c.json({ data: [] }));

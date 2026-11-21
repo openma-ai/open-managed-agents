@@ -16,11 +16,11 @@ import { missingS3fsFolderMarker } from "./runtime/s3-folder-marker-compat";
 
 // --- Register harnesses ---
 import {
-  registerHarness, registerCoreHarnesses, AcpProxyHarness,
+  registerHarness, registerCoreHarnesses, AcpProxyHarness, ACP_PROXY_HARNESS_DESCRIPTOR,
 } from "@open-managed-agents/agent-harness";
 import { reclaimCloudflareOrphanSandboxes, SANDBOX_ORPHAN_RECLAIM_PATH } from "./runtime/sandbox-orphan-reclaim";
 registerCoreHarnesses();
-registerHarness("acp-proxy", () => new AcpProxyHarness());
+registerHarness(ACP_PROXY_HARNESS_DESCRIPTOR, () => new AcpProxyHarness());
 
 // --- Export DO classes (required by wrangler) ---
 export { SessionDO } from "./runtime/session-do";

@@ -35,6 +35,8 @@ export type {
   SandboxImageListingView,
 } from "./sandbox-images";
 
+export { buildHarnessCatalogRoutes } from "./harnesses";
+
 export { buildSessionRoutes } from "./sessions";
 export type {
   SessionRoutesDeps,
