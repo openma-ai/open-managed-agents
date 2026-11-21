@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { buildWorkFinalizationRoutes } from "../../http-routes/src/work-finalization.js";
 import { WorkFinalizationApplication } from "../../managed-agents-application/src/work-finalization/application.js";
 import { createWorkFinalizationHttpClient } from "../src/work-finalization-http.js";
@@ -67,6 +67,29 @@ it("re-reads a consumed turn and retries one checkpoint revision race", async ()
   await expect(client.checkpoint({ turnId: "turn", revision: 3 }, new AbortController().signal))
     .resolves.toEqual({ type: "prepared", turnId: "turn", revision: 4 });
   expect(actions).toEqual(["work-checkpoint", "work-recovery", "work-checkpoint"]);
+});
+
+it("retries transient checkpoint failures without retrying terminal mutations", async () => {
+  vi.useFakeTimers();
+  try {
+    let attempts = 0;
+    const client = createWorkFinalizationHttpClient({
+      apiBaseUrl: "https://host", sessionId: "s", sessionsToken: "scoped",
+      fetch: async (raw) => {
+        const url = raw instanceof Request ? raw.url : String(raw);
+        if (new URL(url).pathname.endsWith("/work-checkpoint") && attempts++ < 3) {
+          return Response.json({ type: "failed", phase: "finalization" }, { status: 502 });
+        }
+        return Response.json({ type: "prepared", turnId: "turn", revision: 3 });
+      },
+    });
+    const pending = client.checkpoint({ turnId: "turn", revision: 3 }, new AbortController().signal);
+    await vi.runAllTimersAsync();
+    await expect(pending).resolves.toEqual({ type: "prepared", turnId: "turn", revision: 3 });
+    expect(attempts).toBe(4);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it("keeps non-JSON gateway responses diagnosable without replaying the mutation", async () => {

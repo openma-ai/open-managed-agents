@@ -19,7 +19,7 @@ export function createWorkTurnFinalizer(options:{apiBaseUrl:string;sessionId:str
  const requestTimeoutMs=options.requestTimeoutMs??30_000;
  if(!Number.isSafeInteger(requestTimeoutMs)||requestTimeoutMs<=0)throw new TypeError("Work finalization request timeout must be a positive integer");
  async function wait(ms:number){await new Promise<void>((resolve,reject)=>{let settled=false;const timer=setTimeout(()=>{settled=true;options.signal.removeEventListener("abort",abort);resolve();},ms);const abort=()=>{if(settled)return;settled=true;clearTimeout(timer);reject(options.signal.reason??new Error("Work finalization aborted"));};if(options.signal.aborted)abort();else options.signal.addEventListener("abort",abort,{once:true});});}
- async function post(action:string,body:object,allowGap=false,allowStaleTerminalRevision=false,allowCheckpointRevisionRace=false):Promise<Record<string,unknown>> {
+ async function post(action:string,body:object,allowGap=false,allowStaleTerminalRevision=false,allowCheckpointRevisionRace=false,allowTransientCheckpointFailure=false):Promise<Record<string,unknown>> {
   options.signal.throwIfAborted();
   let response:Response;
   const startedAt=Date.now();
@@ -38,7 +38,8 @@ export function createWorkTurnFinalizer(options:{apiBaseUrl:string;sessionId:str
    options.signal.throwIfAborted();
    if(!record(value)||(!response.ok&&!(allowGap&&response.status===409&&value.type==="gap"&&value.reason==="consumed_turn_without_terminal")
      &&!(allowStaleTerminalRevision&&response.status===409&&value.type==="rejected"&&(value.reason==="terminal_revision"||value.reason==="authority_changed"))
-     &&!(allowCheckpointRevisionRace&&response.status===409&&value.type==="rejected"&&(value.reason==="turn_revision"||value.reason==="authority_changed")))) {
+     &&!(allowCheckpointRevisionRace&&response.status===409&&value.type==="rejected"&&(value.reason==="turn_revision"||value.reason==="authority_changed"))
+     &&!(allowTransientCheckpointFailure&&((response.status===502&&value.type==="failed"&&value.phase==="finalization")||(response.status===503&&value.type==="unavailable"&&value.phase==="finalization"))))) {
     const reason=record(value)&&typeof value.reason==="string"?`: ${value.reason}`:"";
     throw new Error(`Work ${action} rejected (${response.status})${reason}`);
    }
@@ -48,12 +49,27 @@ export function createWorkTurnFinalizer(options:{apiBaseUrl:string;sessionId:str
   }
  }
  async function postCheckpoint(body:object){
-  for(let attempt=0;attempt<2;attempt++){
-   try{return await post("work-checkpoint",body,false,false,true);}
+  // A checkpoint is an idempotent physical snapshot preparation. A reverse
+  // proxy or sandbox network can return an unknown response while the host is
+  // still applying it, so give the same request a bounded recovery window.
+  // Terminal finalization remains single-shot because it creates the durable
+  // user-visible stop receipt.
+  for(let attempt=0;attempt<4;attempt++){
+   try{
+    const result=await post("work-checkpoint",body,false,false,true,true);
+    if(result.type!=="failed"&&result.type!=="unavailable")return result;
+    if(attempt===3)return result;
+    const retry=attempt+1;
+    const delayMs=1_000 * 2 ** attempt;
+    console.warn(JSON.stringify({op:"work.finalization.input_http",action:"work-checkpoint",session_id:options.sessionId,retry,reason:result.type,delay_ms:delayMs}));
+    await wait(delayMs);
+   }
    catch(error){
-    if(!(error instanceof WorkFinalizationTransportError)||attempt!==0||options.signal.aborted)throw error;
-    console.warn(JSON.stringify({op:"work.finalization.input_http",action:"work-checkpoint",session_id:options.sessionId,retry:1,reason:"response_unknown"}));
-    await wait(250);
+    if(!(error instanceof WorkFinalizationTransportError)||attempt===3||options.signal.aborted)throw error;
+    const retry=attempt+1;
+    const delayMs=1_000 * 2 ** attempt;
+    console.warn(JSON.stringify({op:"work.finalization.input_http",action:"work-checkpoint",session_id:options.sessionId,retry,reason:"response_unknown",delay_ms:delayMs}));
+    await wait(delayMs);
    }
   }
   throw new Error("Unreachable checkpoint retry state");
