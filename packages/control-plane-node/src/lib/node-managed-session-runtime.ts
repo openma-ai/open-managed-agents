@@ -56,6 +56,7 @@ import { ScopedSessionMap } from "./scoped-session-map.js";
 import { managedEventThread } from "./node-managed-subagents.js";
 import { outstandingRequiresAction, rejectMessageForRequiresActionBatch } from "@open-managed-agents/session-runtime-contract/requires-action";
 import { encodeRuntimeHistoryEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
+import type { NodeSessionExecutionRuntime } from "./node-session-execution-worker.js";
 
 export type StartNodeManagedSessionRuntime = StartSessionExecution & {
   executionFence?: SessionExecutionFence;
@@ -92,6 +93,37 @@ export interface NodeManagedSessionRuntimeDriver {
   accept(input: ExecuteNodeManagedSessionEvents): Promise<void>;
   archiveThread(input: ArchiveNodeManagedSessionThread): Promise<void>;
   subscribe(input: SubscribeNodeManagedSessionRuntime): AsyncIterable<unknown>;
+}
+
+export function createNodeSessionExecutionRuntime(
+  driver: Pick<DefaultNodeManagedSessionRuntimeDriver, "accept" | "cancel">,
+  cancelRunner: (input: { workspaceId: string; sessionId: string; reason: string }) => void,
+): NodeSessionExecutionRuntime {
+  return {
+    run: async ({ executionId: _executionId, fence, ...input }, hooks) => {
+      await driver.accept({
+        ...input,
+        executionFence: fence,
+        ...(hooks !== undefined && {
+          markProgress: hooks.markProgress,
+          takeSteeringInputs: hooks.takeSteeringInputs,
+        }),
+      });
+    },
+    cancel: async (input) => {
+      driver.cancel({
+        workspaceId: input.workspaceId,
+        sessionId: input.sessionId,
+        reason: input.reason,
+        attemptId: input.fence.attemptId,
+      });
+      cancelRunner({
+        workspaceId: input.workspaceId,
+        sessionId: input.sessionId,
+        reason: input.reason,
+      });
+    },
+  };
 }
 
 export interface NodeManagedSessionRuntimeCoordination
