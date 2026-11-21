@@ -18,13 +18,18 @@
     "@types/node": "^26.6.6",
     "vitest": "^5.0.5",
     "@open-managed-agents/managed-runtime-sandbox": "workspace:*",
-    "@alibaba-group/opensandbox": "1.1.1"
+    "@alibaba-group/opensandbox": "1.2.1",
+    "undici": "8.12.4"
   },
   "peerDependencies": {
-    "@alibaba-group/opensandbox": "^1.1.1"
+    "@alibaba-group/opensandbox": "^1.2.1",
+    "undici": "^8.12.4"
   },
   "peerDependenciesMeta": {
     "@alibaba-group/opensandbox": {
+      "optional": true
+    },
+    "undici": {
       "optional": true
     }
   }

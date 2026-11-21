@@ -28,6 +28,8 @@ export interface SendMcpUpstreamInput {
   readonly body: BodyInit | null;
   /** Vault bearer, or explicit null for an authorized anonymous target. */
   readonly accessToken: string | null;
+  /** Abort the upstream request when the inbound caller disconnects. */
+  readonly signal?: AbortSignal | null;
   readonly fetcher?: typeof fetch;
 }
 
@@ -41,6 +43,7 @@ export function sendMcpUpstream(input: SendMcpUpstreamInput): Promise<Response> 
     ...(input.accessToken !== null && { set: { authorization: `Bearer ${input.accessToken}` } }),
     drop: MCP_PROXY_WITHHELD_HEADERS,
     dropPrefixes: MCP_PROXY_WITHHELD_PREFIXES,
+    ...(input.signal !== undefined ? { signal: input.signal } : {}),
     ...(input.fetcher ? { fetcher: input.fetcher } : {}),
   });
 }

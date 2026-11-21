@@ -16,11 +16,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "ai": "^7.0.164",
+    "ai": "^7.0.173",
     "zod": "^4.3.6"
   },
   "peerDependencies": {
-    "@cloudflare/playwright": "^1.3.0",
+    "@cloudflare/playwright": "^1.4.0",
     "playwright-core": "^1.49.0"
   },
   "peerDependenciesMeta": {
@@ -32,7 +32,7 @@
     }
   },
   "devDependencies": {
-    "@cloudflare/playwright": "^1.3.0",
+    "@cloudflare/playwright": "^1.4.0",
     "playwright-core": "^1.49.0",
     "vitest": "^5.0.5"
   }

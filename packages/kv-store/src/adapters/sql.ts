@@ -14,6 +14,7 @@ import {
   asBuilder,
   getAll,
   getOne,
+  insertUpsert,
   type OmaDb,
   type OmaDbBuilder,
   runOnce,
@@ -100,21 +101,27 @@ export class SqlKvStore implements KvStore {
     }
     // UPSERT on (tenant_id, key) PK — second write wins, including TTL reset.
     await runOnce(
-      this.db
-        .insert(kv_entries)
-        .values({
-          tenant_id: this.opts.tenantId,
-          key,
-          value,
-          expires_at: expiresAt,
-        })
-        .onConflictDoUpdate({
-          target: [kv_entries.tenant_id, kv_entries.key],
-          set: {
-            value: sql`excluded.value`,
-            expires_at: sql`excluded.expires_at`,
+      insertUpsert(
+        this.db
+          .insert(kv_entries)
+          .values({
+            tenant_id: this.opts.tenantId,
+            key,
+            value,
+            expires_at: expiresAt,
+          }),
+        {
+          conflict: {
+            target: [kv_entries.tenant_id, kv_entries.key],
+            set: {
+              value: sql`excluded.value`,
+              expires_at: sql`excluded.expires_at`,
+            },
           },
-        }),
+          // MySQL has no `excluded`; re-send the inserted values.
+          duplicate: { set: { value, expires_at: expiresAt } },
+        },
+      ),
     );
   }
 

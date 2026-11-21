@@ -335,6 +335,30 @@ describe("OpenSandbox official SDK adapter", () => {
     expect(creation!.body).not.toHaveProperty("image");
   });
 
+  it("hands active duplex relays off before a snapshot and resumes them after", async () => {
+    const server = mockSdkServer();
+    const sandbox = await create();
+    const order: string[] = [];
+    const resume = vi.fn(async () => { order.push("resume"); });
+    const suspend = vi.fn(async () => { order.push("suspend"); return resume; });
+    const active = (sandbox as unknown as {
+      activeDuplexProcesses: Set<{ suspendForCheckpoint(): Promise<() => Promise<void>> }>;
+    }).activeDuplexProcesses;
+    active.add({ suspendForCheckpoint: suspend });
+    const snapshot = (state: string) => Response.json({ id: "snap-active", sandboxId: "sb-1", status: { state }, createdAt: "2026-10-26T08:00:00Z" });
+    server.override = call => {
+      if (call.method === "POST" && call.url.pathname.endsWith("/snapshots")) {
+        order.push("snapshot");
+        return snapshot("Ready");
+      }
+      return undefined;
+    };
+    await expect(sandbox.checkpoint({ kind: "filesystem" })).resolves.toMatchObject({ checkpointId: "snap-active" });
+    expect(order).toEqual(["suspend", "snapshot", "resume"]);
+    expect(suspend).toHaveBeenCalledOnce();
+    expect(resume).toHaveBeenCalledOnce();
+  });
+
   it("reports failed and timed-out snapshots without SDK error details", async () => {
     const server = mockSdkServer();
     const sandbox = await create({ OPENSANDBOX_SNAPSHOT_POLL_MS: "1", OPENSANDBOX_SNAPSHOT_TIMEOUT_MS: "1" });

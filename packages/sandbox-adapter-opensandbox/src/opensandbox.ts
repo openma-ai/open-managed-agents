@@ -9,7 +9,7 @@ import type {
   SandboxRuntimeHandle, SandboxRuntimePort, SandboxRuntimeStatus,
 } from "@open-managed-agents/sandbox";
 import { DEFAULT_WORKSPACE_ROOT, PLATFORM_ROOT, workspaceRootFromProbe } from "@open-managed-agents/sandbox";
-import { spawnBridge } from "./stdio-bridge";
+import { spawnBridge, type CheckpointableDuplexProcess } from "./stdio-bridge";
 
 export interface OpenSandboxOptions {
   domain: string;
@@ -184,6 +184,7 @@ function configuration(sdk: Awaited<ReturnType<typeof loadSdk>>, options: OpenSa
 export class OpenSandbox implements SandboxPort, SandboxRuntimePort, SandboxDuplexProcessPort {
   private env: Record<string, string> = {};
   private secrets: Array<{ prefix: string; values: Record<string, string> }> = [];
+  private readonly activeDuplexProcesses = new Set<CheckpointableDuplexProcess>();
   private destroyed = false;
   readonly id: string;
 
@@ -283,7 +284,17 @@ export class OpenSandbox implements SandboxPort, SandboxRuntimePort, SandboxDupl
     if (this.destroyed) throw new Error("OpenSandbox has been destroyed");
     const sdk = await loadSdk();
     const manager = sdk.SandboxManager.create({ connectionConfig: configuration(sdk, this.options) });
+    const resumes: Array<() => Promise<void>> = [];
+    let resumeFailure: unknown;
+    let operationFailure: unknown;
+    let closeFailure: unknown;
+    let result: SandboxCheckpointHandle | undefined;
     try {
+      // Snapshotting briefly pauses the source runtime and invalidates service
+      // routes. Detach every live ACP relay stream first; its bridge resumes
+      // the same relay after the route is ready and drains bytes buffered in
+      // the relay while the snapshot was being taken.
+      for (const process of this.activeDuplexProcesses) resumes.push(await process.suspendForCheckpoint());
       let snapshot = await manager.createSnapshot(this.id, name === undefined ? {} : { name })
         .catch((error: unknown) => { throw providerError("snapshot", error); });
       const deadline = Date.now() + this.options.snapshotTimeoutMs;
@@ -298,11 +309,27 @@ export class OpenSandbox implements SandboxPort, SandboxRuntimePort, SandboxDupl
         // The artifact can become Ready before the source route has recovered.
         await this.call(() => this.client.waitUntilReady({ readyTimeoutSeconds: this.options.readyTimeoutMs / 1000, pollingIntervalMillis: 500 }));
       }
-      return {
+      result = {
         provider: "opensandbox", checkpointId: snapshot.id, sourceRuntimeId: this.id,
         kind: "filesystem", scope: "portable",
       };
-    } finally { await manager.close(); }
+    } catch (error) {
+      operationFailure = error;
+    } finally {
+      for (const resume of resumes.reverse()) {
+        try { await resume(); }
+        catch (error) { resumeFailure ??= error; }
+      }
+      try { await manager.close(); }
+      catch (error) { closeFailure = error; }
+    }
+    // Preserve the snapshot/provider error when resuming the relay or closing
+    // the manager also fails; those are secondary diagnostics, not a false
+    // replacement for the operation that was requested.
+    if (operationFailure !== undefined) throw operationFailure;
+    if (resumeFailure !== undefined) throw new Error("OpenSandbox stdio relay did not reconnect after checkpoint", { cause: resumeFailure });
+    if (closeFailure !== undefined) throw closeFailure;
+    return result!;
   }
 
   async resolveWorkspaceRoot(): Promise<string> { return this.workspaceRoot; }
@@ -358,7 +385,13 @@ export class OpenSandbox implements SandboxPort, SandboxRuntimePort, SandboxDupl
     await this.call(() => this.client.files.deleteDirectories([this.resolvePath(dir)]));
   }
   async spawnDuplexProcess(spec: SandboxDuplexProcessSpec) {
-    return spawnBridge(this, spec, randomInt(45000, 65000));
+    const process = await spawnBridge(this, spec, randomInt(45000, 65000));
+    this.activeDuplexProcesses.add(process);
+    void process.exited.then(
+      () => { this.activeDuplexProcesses.delete(process); },
+      () => { this.activeDuplexProcesses.delete(process); },
+    );
+    return process;
   }
   async destroy(): Promise<void> {
     if (this.destroyed) return;

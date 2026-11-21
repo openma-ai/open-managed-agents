@@ -12,6 +12,8 @@ export interface McpProxyExchange {
   method: string;
   headers: Headers;
   body: ReplayableBody;
+  /** Abort the upstream request when the inbound caller disconnects. */
+  signal?: AbortSignal | null;
   /** Log correlation only. */
   audit: { sessionId?: string; serverName?: string; callerKind: "http" | "rpc-mcp" | "rpc-outbound" };
   /** Sees the final upstream response (access-loss classification). The
@@ -37,6 +39,7 @@ export async function forwardMcpProxyTarget(
     headers: exchange.headers,
     body: exchange.body,
     accessToken,
+    signal: exchange.signal,
     ...(ports.fetch !== undefined && { fetcher: ports.fetch }),
   });
   const outcome = target.upstreamToken === null

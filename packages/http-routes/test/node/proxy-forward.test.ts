@@ -121,4 +121,22 @@ describe("proxyUpstream", () => {
       expect(seen.body).toBe('{"n":1}');
     }
   });
+
+  it("keeps a post-header body termination observable to the caller", async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("partial"));
+        queueMicrotask(() => controller.error(new TypeError("terminated")));
+      },
+    });
+    const response = await proxyUpstream({
+      url: "https://mcp.example/rpc",
+      method: "POST",
+      headers: new Headers(),
+      body: "{}",
+      fetcher: (async () => new Response(body, { status: 200 })) as typeof fetch,
+    });
+    expect(response.status).toBe(200);
+    await expect(response.text()).rejects.toThrow("terminated");
+  });
 });

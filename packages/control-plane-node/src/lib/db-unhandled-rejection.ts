@@ -3,6 +3,7 @@ import {
   isLeaseSafeFailure,
   processFailureRecord,
 } from "@open-managed-agents/sql-client";
+import { isFetchAbortRejection } from "./fetch-abort-rejection";
 
 export interface DbUnhandledRejectionNet {
   logger: Logger;
@@ -50,6 +51,9 @@ export function handleProcessFailure(
   deps.logger.fatal({ ...record, op: record.op }, line);
   deps.metrics?.counter("oma_db_unhandled_rejections_total", 1, { tag: record.errorTag });
   if (isLeaseSafeFailure(reason)) return;
+  // Long-lived proxy sockets can terminate after a response has resolved.
+  // Keep the evidence in the fatal log, but do not take down other sessions.
+  if (isFetchAbortRejection(reason)) return;
   if (process.env.NODE_ENV === "test") return;
   exit(1);
 }

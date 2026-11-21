@@ -123,6 +123,49 @@ export async function runOnce(query: PromiseLike<unknown> | SqliteRunChain): Pro
 }
 
 // ──────────────────────────────────────────────────────────────────────
+// Dialect-neutral upsert — Drizzle's INSERT builder is dialect-shaped:
+// SQLite / PG chains expose `.onConflictDoUpdate(config)`, MySQL chains
+// expose `.onDuplicateKeyUpdate(config)` instead, and calling the wrong
+// one throws "… is not a function" at runtime. Adapters pass both
+// configs; the helper invokes whichever the builder actually has.
+// ──────────────────────────────────────────────────────────────────────
+
+interface PgSqliteUpsertChain<T> {
+  onConflictDoUpdate(config: { target: unknown; set: Record<string, unknown> }): T;
+}
+interface MysqlUpsertChain<T> {
+  onDuplicateKeyUpdate(config: { set: Record<string, unknown> }): T;
+}
+
+/**
+ * UPSERT one INSERT chain.
+ *
+ * - `conflict`: SQLite / PG `onConflictDoUpdate` config. `sql\`excluded.col\``
+ *   references the row that was about to be inserted.
+ * - `duplicate`: MySQL `onDuplicateKeyUpdate` config. Plain values are
+ *   re-sent as-is (there is no `excluded` alias in MySQL; pass the values
+ *   you already put in `.values(...)`).
+ */
+export function insertUpsert<TChain>(
+  query: TChain,
+  upsert: {
+    conflict: { target: unknown; set: Record<string, unknown> };
+    duplicate: { set: Record<string, unknown> };
+  },
+): TChain {
+  const chain = query as unknown as Partial<PgSqliteUpsertChain<TChain> & MysqlUpsertChain<TChain>>;
+  if (typeof chain.onConflictDoUpdate === "function") {
+    return chain.onConflictDoUpdate(upsert.conflict);
+  }
+  if (typeof chain.onDuplicateKeyUpdate === "function") {
+    return chain.onDuplicateKeyUpdate(upsert.duplicate);
+  }
+  throw new Error(
+    "insertUpsert: drizzle insert builder supports neither onConflictDoUpdate (sqlite/pg) nor onDuplicateKeyUpdate (mysql)",
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────
 // Atomic batch — single canonical helper, replacing the 4 copy-pasted
 // `atomicWrite` impls subagents accidentally emitted in adapter files.
 // Adapters call `atomicWrite(db, [q1, q2, q3])`; helper internally

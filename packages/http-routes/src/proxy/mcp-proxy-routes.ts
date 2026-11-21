@@ -11,6 +11,8 @@ export interface McpProxyRequest extends McpProxyTargetRequest {
   headers: Headers;
   /** Read only once the target resolves: a refused call is not buffered. */
   body: () => Promise<ReplayableBody>;
+  /** The caller's lifecycle signal, if the host exposes one. */
+  signal?: AbortSignal | null;
   callerKind: "http" | "rpc-mcp";
 }
 
@@ -42,6 +44,7 @@ export async function forwardMcpProxyRequest(
     method: request.method,
     headers: request.headers,
     body: selection?.body ?? body,
+    signal: request.signal,
     audit: { sessionId: request.sessionId, serverName: request.serverName, callerKind: request.callerKind },
     ...(hooks !== undefined && { onFinal: (result) => hooks.onFinal(result) }),
   });
@@ -69,6 +72,7 @@ export function createMcpProxyRoutes<E extends Env>(
       method: request.method,
       headers: request.headers,
       body: () => bufferRequestBody(request),
+      signal: request.signal,
       callerKind: "http",
     });
   });
@@ -105,6 +109,7 @@ export function createMcpProxyBinding(
         method: request.method,
         headers: request.headers,
         body: () => bufferRequestBody(request),
+        signal: request.signal,
         callerKind: "rpc-mcp",
       });
     },

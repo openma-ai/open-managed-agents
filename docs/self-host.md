@@ -568,6 +568,26 @@ The same demo works on the Postgres compose unchanged.
 | `BoxRunSandbox` | Remote BoxLite REST endpoint (no KVM on the OMA host) | `SANDBOX_PROVIDER=boxrun`, `BOXRUN_URL=http://host:8100/v1/default`, optional `BOXRUN_TOKEN`. No mount primitive — bake a custom image with s3fs preinstalled if you need `/mnt/memory`. |
 | `CloudflareSandbox` | If you happen to deploy on CF Workers + Containers | Use the regular `apps/agent` worker, not main-node. |
 
+Attached Runtime sandbox placement supports the same two BoxLite modes. Leave
+`SANDBOX_PROVIDER` unset (or set it to `litebox`) for an embedded local VM. To
+use a cloud or remote BoxLite service, set `SANDBOX_PROVIDER=boxrun` and point
+`BOXLITE_URL` at the REST API, for example
+`BOXLITE_URL=https://api.example.com/v1/acme BOXLITE_API_KEY=…`. The existing
+`BOXRUN_URL`/`BOXRUN_TOKEN` names remain accepted; a `/v1/<prefix>` URL is
+normalized to the current BoxLite SDK's `url` plus `pathPrefix` arguments.
+
+Attached Runtime BoxLite also accepts an explicit operator proxy. Set
+`SANDBOX_PROXY_URL` to use one proxy for HTTP and HTTPS, or set
+`SANDBOX_HTTP_PROXY` and `SANDBOX_HTTPS_PROXY` separately; optionally set
+`SANDBOX_NO_PROXY`. The daemon copies only these explicit values into the
+guest command environment (both upper- and lower-case spellings), and the
+configured proxy wins over per-process ACP values. Point this at a proxy that
+owns Vault lookup or upstream authentication. The proxy variables are
+advisory inside a VM, so this supplies credential routing without claiming
+network isolation. The attached Runtime path does not yet mint the ordinary
+Session-scoped OMA Vault relay pass from the Runtime token; use the explicit
+proxy configuration until that binding is added.
+
 Every provider installs an Environment's `packages` when a sandbox starts: pip into `/workspace/.venv` (with `uv`, installed from pip when the image lacks it; the venv is created with `--system-site-packages`, so packages installed into the image's system Python stay importable), npm into `/workspace/.npm-global`, cargo into `/workspace/.cargo`, go into `/workspace/.go`, apt system-wide. Those directories are put on `PATH` for the agent's commands. A container that already ran the same list, or whose restored `/workspace` carries it, skips the install; a failed install fails the session with the installer's output. Set `SANDBOX_PIP_INDEX_URL` to install pip packages from a mirror when the sandbox network reaches one faster than pypi.org.
 
 ### Pre-built images per Environment (`SANDBOX_IMAGES`)
@@ -618,6 +638,8 @@ Vault credentials of type `environment_variable` are set in the sandbox of every
 | `CloudflareSandbox` | ✓ | ✓ | ✓ | ✓ (R2 + FUSE) | ✓ | ✓ (interceptHttps + outboundHandlers) | ✓ (squashfs to R2 backup bucket) |
 
 Read-only memory mounts: Daytona and E2B enforce read-only on their mounted view. LiteBox honors the `readOnly` flag on its volume mount. CloudflareSandbox does not enforce ro at the FS layer — the harness's write tool checks `assertWritable` and refuses writes regardless of provider.
+
+The BoxLite REST driver also keeps the provider's native 0.13 surface available through the typed BoxLite extension. It includes managed volumes, box network updates and tunnels, provider-side HTTPS secrets, live execution inventory and attach, image and registry management, organization domains, snapshots, guest SSH, and the BoxLite agent API. The provider-neutral Sandbox v2 Ports use the lifecycle, file, process, storage, and egress projections, while callers that need BoxLite-specific operations use the extension without putting vendor fields into Session state.
 
 On the Node server these native mounts are opt-in: by default every provider gets Memory Stores through file sync (copied into `/mnt/memory/<name>/` before the turn, written back at the turn barrier), which needs no mount primitive and therefore also works on BoxRun and OpenSandbox. A composed sandbox factory turns native mounts on by declaring `nativeMemoryStoreMount`. See [Memory Stores in a sandbox](./memory-stores.md).
 
