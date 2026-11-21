@@ -146,7 +146,7 @@
       "containers": [
         {
           "class_name": "Sandbox",
-          "name": "sandbox-default-do-v1-production",
+          "name": "sandbox-default-do-v1-production-hosted",
           "scheduling_policy": "durable_object",
           "images": {
             "sandbox": {
@@ -203,7 +203,7 @@
       "containers": [
         {
           "class_name": "Sandbox",
-          "name": "sandbox-default-do-v1-production",
+          "name": "sandbox-default-do-v1-staging",
           "scheduling_policy": "durable_object",
           "images": {
             "sandbox": {
