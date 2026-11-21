@@ -564,6 +564,9 @@ importers:
       '@open-managed-agents/acp-runtime':
         specifier: workspace:*
         version: link:../../packages/acp-runtime
+      '@open-managed-agents/api-types':
+        specifier: workspace:*
+        version: link:../../packages/api-types
       '@open-managed-agents/app':
         specifier: workspace:*
         version: link:../../packages/managed-agents-app

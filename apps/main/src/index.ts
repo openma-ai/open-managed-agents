@@ -28,7 +28,9 @@ import {
   buildTenantRoutes,
   mintApiKeyOnStorage,
   buildSandboxImageRoutes,
+  buildHarnessCatalogRoutes,
 } from "@open-managed-agents/http-routes";
+import { CLOUDFLARE_HARNESS_CATALOG } from "./routes/harnesses";
 import {
   buildAgentRoutes as buildManagedAgentRoutes,
   buildCapCliDeviceFlowRoutes,
@@ -1706,6 +1708,7 @@ app.route("/v1/oma/runtimes", runtimesRoutes);
 app.route("/v1/oma/oauth/cli", managedMcpOAuthCliRoutes);
 app.route("/v1/oma/oauth", managedMcpOAuthRoutes);
 app.route("/v1/oma/model_cards", modelCardsRoutes);
+app.route("/v1/oma/harnesses", buildHarnessCatalogRoutes(() => CLOUDFLARE_HARNESS_CATALOG));
 // Operator SANDBOX_IMAGES catalog: each alias is a container class the
 // operator declared in apps/agent/wrangler.jsonc (docs/cloudflare-sandbox-images.md).
 // Empty when unset, in which case `_oma.sandbox_image` is rejected.

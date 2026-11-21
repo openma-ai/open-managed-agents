@@ -31,6 +31,12 @@ export {
   type HarnessFactory,
 } from "./registry";
 export { registerCoreHarnesses } from "./builtins";
+export {
+  ACP_PROXY_HARNESS_DESCRIPTOR,
+  ACP_SANDBOX_HARNESS_DESCRIPTOR,
+  CORE_HARNESS_DESCRIPTORS,
+  PI_HARNESS_DESCRIPTOR,
+} from "@open-managed-agents/api-types";
 export { PiHarness } from "./pi-loop";
 export { rebuildAcpContext, type AcpSemanticRecoveryReason } from "./acp-recovery";
 export { answerAcpPermission, type AcpPermissionRequest, type AcpPermissionResponse } from "./acp-permission";

@@ -36,6 +36,16 @@ try {
     assert.equal(response.status, 200);
   });
 
+  await step("deployment exposes the harness catalog", async () => {
+    const response = await omaFetch("/v1/oma/harnesses");
+    const catalog = await response.json();
+    assert.equal(response.status, 200, JSON.stringify(catalog));
+    assert.equal(catalog.object, "list");
+    assert.ok(Array.isArray(catalog.data));
+    assert.ok(catalog.data.some(({ id }) => id === "pi"));
+    assert.equal(catalog.default_harness_id, "pi");
+  });
+
   if (!authDisabled) {
     await step("authentication is mandatory", async () => {
       const response = await fetch(`${baseURL}/v1/agents`, {

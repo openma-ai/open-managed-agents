@@ -1,5 +1,9 @@
 import { PiHarness } from "./pi-loop";
 import { AcpSandboxHarness } from "./acp-sandbox-loop";
+import {
+  ACP_SANDBOX_HARNESS_DESCRIPTOR,
+  PI_HARNESS_DESCRIPTOR,
+} from "@open-managed-agents/api-types";
 import { getHarnessCatalog, registerHarness, setDefaultHarness, type HarnessDescriptor, type HarnessFactory } from "./registry";
 
 /**
@@ -12,15 +16,7 @@ export function registerCoreHarnesses(): void {
   const add = (descriptor: HarnessDescriptor, factory: HarnessFactory) => {
     if (!existing.data.some(({ id }) => id === descriptor.id)) registerHarness(descriptor, factory);
   };
-  add({
-    id: "pi", label: "Pi", description: "Pi agent loop in the control-plane host.",
-    execution: { placement: "host" }, capabilities: { runtime_binding: false }, requirements: [],
-  }, () => new PiHarness());
-  add({
-    id: "acp-sandbox", label: "ACP Sandbox", description: "ACP agent loop in the session sandbox; requires duplex process support.",
-    execution: { placement: "sandbox" }, capabilities: { runtime_binding: false },
-    // `a|b`: either path satisfies the requirement (explicit command or pinned registry agent).
-    requirements: ["acp.agent.command|acp.agent.registry"],
-  }, () => new AcpSandboxHarness());
+  add(PI_HARNESS_DESCRIPTOR, () => new PiHarness());
+  add(ACP_SANDBOX_HARNESS_DESCRIPTOR, () => new AcpSandboxHarness());
   if (existing.default_harness_id === null) setDefaultHarness("pi");
 }
