@@ -3,6 +3,7 @@ import type { ManagedAcpExecutionChannels, ManagedAcpExecutionChannelsRequest, M
 
 export interface Env {
   OMA_SESSION_EXECUTION_LEASE_TTL_MS?: string;
+  OMA_SESSION_EXECUTION_PROGRESS_TIMEOUT_MS?: string;
   CONFIG_KV: KVNamespace;
   /** @deprecated Pre-shard binding. Equivalent to AUTH_DB_00 (the original
    *  openma-auth database) for back-compat during the shard rollout. New

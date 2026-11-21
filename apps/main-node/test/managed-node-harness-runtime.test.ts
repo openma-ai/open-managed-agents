@@ -26,6 +26,7 @@ interface ManagedHarnessRuntimeConstructor {
     output(frame: unknown): Promise<void>;
     clock: { now(): Date };
     ids: { nextEventId(): string };
+    markProgress?: () => void;
   }): ManagedHarnessRuntime;
 }
 
@@ -55,6 +56,7 @@ describe("ManagedNodeHarnessRuntime", () => {
       },
     ];
     const output: unknown[] = [];
+    let progress = 0;
     const runtime = new Runtime({
       initialEvents,
       events,
@@ -62,6 +64,7 @@ describe("ManagedNodeHarnessRuntime", () => {
       output: async (frame) => { output.push(frame); },
       clock: { now: () => new Date("2026-08-26T02:00:00.000Z") },
       ids: { nextEventId: () => "event_message_01" },
+      markProgress: () => { progress += 1; },
     });
 
     expect(runtime.history.getEvents()).toEqual([
@@ -96,6 +99,7 @@ describe("ManagedNodeHarnessRuntime", () => {
       },
     ]);
     expect(runtime.history.getEvents()).toHaveLength(3);
+    expect(progress).toBe(2);
   });
 
   it("reportUsage emits session.usage for managed projection", async () => {

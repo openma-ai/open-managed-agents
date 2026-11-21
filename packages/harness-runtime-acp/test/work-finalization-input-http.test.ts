@@ -1,4 +1,4 @@
-import {expect,it} from "vitest";
+import {expect,it,vi} from "vitest";
 import {createWorkTurnFinalizer} from "../src/work-finalization-input-http";
 it("uses current consumed-turn recovery revision, joins checkpoint and terminal ACK before publish",async()=>{
  const calls:unknown[]=[];
@@ -102,6 +102,22 @@ it("retries a checkpoint only after an unknown response, never a terminal mutati
  }});
  f.admitted("t");await f.checkpoint("t");await f.complete("t");await f.publish("t");
  expect(calls).toEqual(["work-recovery","work-checkpoint","work-checkpoint","work-finalize","work-publish"]);
+});
+it("retries structured transient checkpoint failures before terminal finalization",async()=>{
+ vi.useFakeTimers();
+ try {
+  const calls:string[]=[];let checkpointAttempts=0;
+  const f=createWorkTurnFinalizer({apiBaseUrl:"https://host",sessionId:"s",sessionsToken:"token",signal:new AbortController().signal,fetch:async url=>{
+   const action=String(url).split('/').at(-1)!;calls.push(action);
+   if(action==="work-recovery")return Response.json({type:"gap",reason:"consumed_turn_without_terminal",revision:8},{status:409});
+   if(action==="work-checkpoint"&&checkpointAttempts++<3)return Response.json({type:"failed",phase:"finalization"},{status:502});
+   if(action==="work-checkpoint")return Response.json({type:"prepared",turnId:"t",revision:8});
+   const terminal={eventId:"terminal",turnId:"t",workId:"w",generation:2,revision:9,stopReason:{type:"end_turn"}};
+   return Response.json({type:action==="work-finalize"?"committed":"published",revision:9,terminal});
+  }});
+  f.admitted("t");const pending=f.checkpoint("t");await vi.runAllTimersAsync();await pending;await f.complete("t");await f.publish("t");
+  expect(calls).toEqual(["work-recovery","work-checkpoint","work-checkpoint","work-checkpoint","work-checkpoint","work-finalize","work-publish"]);
+ } finally { vi.useRealTimers(); }
 });
 it.each(["rejected","lost"])("never refreshes or retries a %s terminal mutation",async mode=>{
  let calls=0;const finalizer=createWorkTurnFinalizer({apiBaseUrl:"https://host",sessionId:"s",sessionsToken:"token",signal:new AbortController().signal,fetch:async(url)=>{
