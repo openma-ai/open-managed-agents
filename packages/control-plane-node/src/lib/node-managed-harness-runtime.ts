@@ -261,6 +261,8 @@ export interface ManagedNodeHarnessRuntimeInput {
    *  absent the harness does not advertise steering and mid-run inputs fall
    *  back to drain-after-idle (their queued execution runs next). */
   takeSteeringInputs?: () => Promise<SessionEventView[]>;
+  /** Marks an emitted or persisted runtime frame as forward progress. */
+  markProgress?: () => void;
   /** The Session's persisted usage. Token totals continue from it, so the
    *  projected Session.usage stays cumulative across executions (as on
    *  Cloudflare). Omitted for child threads, whose totals start at 0. */
@@ -517,7 +519,10 @@ export class ManagedNodeHarnessRuntime implements HarnessRuntime {
   }
 
   private enqueue(frame: unknown): Promise<void> {
-    const output = this.outputChain.then(() => this.input.output(frame));
+    const output = this.outputChain.then(async () => {
+      await this.input.output(frame);
+      this.input.markProgress?.();
+    });
     this.outputChain = output;
     return output;
   }

@@ -807,6 +807,7 @@ export class DefaultNodeManagedSessionRunner
       sessionScope: { workspaceId: input.workspaceId, sessionId: input.sessionId },
       sessionClocks: this.dependencies.sessionClocks,
       ...(input.takeSteeringInputs !== undefined && { takeSteeringInputs: input.takeSteeringInputs }),
+      ...(input.markProgress !== undefined && { markProgress: input.markProgress }),
       usage: input.session.usage,
     });
     const parkedStill = (remainingAfterAnswers?.length ?? 0) > 0;

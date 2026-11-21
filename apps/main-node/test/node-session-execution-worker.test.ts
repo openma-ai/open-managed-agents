@@ -548,6 +548,58 @@ describe("NodeSessionExecutionWorker", () => {
     })).resolves.toMatchObject({ state: "completed" });
   });
 
+  it("fences and cancels a turn that stops making progress", async () => {
+    let release: (() => void) | undefined;
+    const running = new Promise<void>((resolve) => { release = resolve; });
+    runtime.run = async (input) => {
+      runs.push(structuredClone(input));
+      await running;
+    };
+    const executor = worker("node_01", {
+      heartbeatIntervalMs: 5,
+      progressTimeoutMs: 10,
+      leaseTtlMs: 50,
+    });
+
+    await executor.sessionEventsAccepted(accepted("event_stalled"));
+    now = new Date(now.getTime() + 20);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    expect(cancellations).toContain("lease_lost");
+    release?.();
+    await executor.waitForIdle();
+    await expect(coordinator.find({
+      workspaceId: "workspace_01",
+      executionId: "event_stalled",
+    })).resolves.toMatchObject({ state: "running" });
+  });
+
+  it("keeps renewing while the runtime reports progress", async () => {
+    let release: (() => void) | undefined;
+    const running = new Promise<void>((resolve) => { release = resolve; });
+    runtime.run = async (input, hooks) => {
+      runs.push(structuredClone(input));
+      hooks?.markProgress();
+      await running;
+    };
+    const executor = worker("node_01", {
+      heartbeatIntervalMs: 5,
+      progressTimeoutMs: 25,
+      leaseTtlMs: 50,
+    });
+
+    await executor.sessionEventsAccepted(accepted("event_progress"));
+    await new Promise((resolve) => setTimeout(resolve, 12));
+
+    expect(cancellations).not.toContain("lease_lost");
+    release?.();
+    await executor.waitForIdle();
+    await expect(coordinator.find({
+      workspaceId: "workspace_01",
+      executionId: "event_progress",
+    })).resolves.toMatchObject({ state: "completed" });
+  });
+
   it("supervised fibers keep a turn alive across deadlock and connection loss", async () => {
     const rejections: unknown[] = [];
     const onRejection = (reason: unknown) => { rejections.push(reason); };

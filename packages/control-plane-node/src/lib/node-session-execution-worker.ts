@@ -50,6 +50,8 @@ export interface NodeSessionExecutionRunHooks {
    *  yet stamped (the caller stamps processed_at at consume). Harnesses that
    *  never poll leave the rows queued: drain-after-idle fallback. */
   takeSteeringInputs(): Promise<AcceptedSessionEvents["events"]>;
+  /** Mark observable forward progress for the attempt lease watchdog. */
+  markProgress(): void;
 }
 
 export interface NodeSessionExecutionRuntime {
@@ -68,6 +70,8 @@ export interface NodeSessionExecutionWorkerDependencies {
   ids: { nextAttemptId(): string };
   leaseTtlMs?: number;
   heartbeatIntervalMs?: number;
+  /** Abort a live attempt that has made no observable progress for this long. */
+  progressTimeoutMs?: number;
   pollIntervalMs?: number;
   maxConcurrent?: number;
   onError?(error: Error): void;
@@ -83,6 +87,7 @@ interface ActiveExecution {
   cancelled: boolean;
   leaseLost: boolean;
   promise: Promise<void>;
+  lastProgressAtMs: number;
 }
 
 function errorMessage(error: unknown): string {
@@ -97,6 +102,7 @@ function errorMessage(error: unknown): string {
 export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
   readonly #leaseTtlMs: number;
   readonly #heartbeatIntervalMs: number;
+  readonly #progressTimeoutMs: number;
   readonly #pollIntervalMs: number;
   readonly #maxConcurrent: number;
   readonly #active = new Map<string, ActiveExecution>();
@@ -108,10 +114,14 @@ export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
   ) {
     this.#leaseTtlMs = sessionExecutionLeaseTtlMs(dependencies.leaseTtlMs);
     this.#heartbeatIntervalMs = dependencies.heartbeatIntervalMs ?? Math.floor(this.#leaseTtlMs / 3);
+    this.#progressTimeoutMs = dependencies.progressTimeoutMs ?? this.#leaseTtlMs;
     this.#pollIntervalMs = dependencies.pollIntervalMs ?? 1_000;
     this.#maxConcurrent = dependencies.maxConcurrent ?? 8;
     if (this.#heartbeatIntervalMs >= this.#leaseTtlMs) {
       throw new Error("Session Execution heartbeat must be shorter than its lease");
+    }
+    if (!Number.isFinite(this.#progressTimeoutMs) || this.#progressTimeoutMs <= 0) {
+      throw new Error("Session Execution progress timeout must be positive");
     }
     if (this.#maxConcurrent < 1 || !Number.isInteger(this.#maxConcurrent)) {
       throw new Error("Session Execution maxConcurrent must be a positive integer");
@@ -307,6 +317,7 @@ export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
         cancelled: false,
         leaseLost: false,
         promise: Promise.resolve(),
+        lastProgressAtMs: this.dependencies.clock.now().getTime(),
       };
       this.#active.set(key, active);
       const fiber = runSupervised(
@@ -361,6 +372,7 @@ export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
         sessionId: active.execution.sessionId,
       });
       active.context = context;
+      this.#markProgress(active);
       if (context === null) {
         throw new Error(`Session ${active.execution.sessionId} execution context was not found`);
       }
@@ -368,26 +380,30 @@ export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
       // loaded already reached the runtime's cancel; never start the turn.
       if (active.cancelled || active.leaseLost) {
         outcome = "cancelled";
-      } else await this.dependencies.runtime.run({
-        executionId: active.execution.id,
-        workspaceId: active.execution.workspaceId,
-        sessionId: active.execution.sessionId,
-        session: context.session,
-        environment: context.environment,
-        events: active.execution.events,
-        fence: active.fence,
-      }, {
-        takeSteeringInputs: async () => {
-          if (active.cancelled || active.leaseLost) return [];
-          return takeQueuedSteeringInputs(this.dependencies.coordinator, {
-            workspaceId: active.execution.workspaceId,
-            sessionId: active.execution.sessionId,
-            laneId: active.execution.laneId,
-            steeredAt: this.dependencies.clock.now().toISOString(),
-            consumer: active.fence,
-          });
-        },
-      });
+      } else {
+        this.#markProgress(active);
+        await this.dependencies.runtime.run({
+          executionId: active.execution.id,
+          workspaceId: active.execution.workspaceId,
+          sessionId: active.execution.sessionId,
+          session: context.session,
+          environment: context.environment,
+          events: active.execution.events,
+          fence: active.fence,
+        }, {
+          markProgress: () => this.#markProgress(active),
+          takeSteeringInputs: async () => {
+            if (active.cancelled || active.leaseLost) return [];
+            return takeQueuedSteeringInputs(this.dependencies.coordinator, {
+              workspaceId: active.execution.workspaceId,
+              sessionId: active.execution.sessionId,
+              laneId: active.execution.laneId,
+              steeredAt: this.dependencies.clock.now().toISOString(),
+              consumer: active.fence,
+            });
+          },
+        });
+      }
       if (active.cancelled) outcome = "cancelled";
     } catch (error) {
       if (error instanceof SessionExecutionLostError && !active.cancelled) return;
@@ -420,6 +436,10 @@ export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
 
   async #heartbeat(active: ActiveExecution): Promise<void> {
     if (active.leaseLost) return;
+    if (this.dependencies.clock.now().getTime() - active.lastProgressAtMs > this.#progressTimeoutMs) {
+      await this.#expireStalledAttempt(active);
+      return;
+    }
     let renewed: Awaited<ReturnType<NodeSessionExecutionWorkerDependencies["coordinator"]["renew"]>>;
     try {
       renewed = await withDbBoundary({
@@ -479,6 +499,23 @@ export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
       await this.#cancel(active, "lease_lost");
     } catch (cancelError) {
       this.#reportError(cancelError);
+    }
+  }
+
+  #markProgress(active: ActiveExecution): void {
+    if (!active.leaseLost) active.lastProgressAtMs = this.dependencies.clock.now().getTime();
+  }
+
+  async #expireStalledAttempt(active: ActiveExecution): Promise<void> {
+    if (active.leaseLost) return;
+    active.leaseLost = true;
+    this.#reportError(new Error(
+      `Session Execution ${active.execution.id} made no progress before its watchdog expired`,
+    ));
+    try {
+      await this.#cancel(active, "lease_lost");
+    } catch (error) {
+      this.#reportError(error);
     }
   }
 

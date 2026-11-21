@@ -95,7 +95,7 @@ import { builtinSpecs, createSpecRegistry } from "@open-managed-agents/cap";
 import { createNodeRepositoryEgress } from "../lib/node-repository-egress.js";
 import { sendDirectHttps } from "@open-managed-agents/sandbox-egress/direct-https";
 import { buildCredentialEgressRoutes } from "@open-managed-agents/managed-agents-adapters-http";
-import { ApplicationBackedNodeManagedSessionRuntimeEngine, DefaultNodeManagedSessionRuntimeDriver, NodeManagedSessionRuntimeAdapter } from "../lib/node-managed-session-runtime.js";
+import { ApplicationBackedNodeManagedSessionRuntimeEngine, createNodeSessionExecutionRuntime, DefaultNodeManagedSessionRuntimeDriver, NodeManagedSessionRuntimeAdapter } from "../lib/node-managed-session-runtime.js";
 import { DefaultNodeManagedSessionRunner } from "../lib/node-managed-session-runner.js";
 import {
   nodeManagedMemoryFacts,
@@ -619,28 +619,12 @@ export async function createManagedNodeRuntime(
   const managedSessionExecutionWorker = new NodeSessionExecutionWorker({
     coordinator: managedSessionExecutionCoordinator,
     context: managedRuntimeReaders.executionContext,
-    runtime: {
-      run: async ({ executionId: _executionId, fence, ...input }, hooks) => {
-        await managedRuntimeDriver.accept({
-          ...input,
-          executionFence: fence,
-          ...(hooks !== undefined && { takeSteeringInputs: () => hooks.takeSteeringInputs() }),
-        });
-      },
-      cancel: async (input) => {
-        managedRuntimeDriver.cancel({
-          workspaceId: input.workspaceId,
-          sessionId: input.sessionId,
-          reason: input.reason,
-          attemptId: input.fence.attemptId,
-        });
-        managedRuntimeRunner.cancel({ workspaceId: input.workspaceId, sessionId: input.sessionId, reason: input.reason });
-      },
-    },
+    runtime: createNodeSessionExecutionRuntime(managedRuntimeDriver, (input) => managedRuntimeRunner.cancel(input)),
     ownerId: config.execution.ownerId,
     clock: { now: () => new Date() },
     ids: { nextAttemptId: () => `attempt_${nanoid()}` },
     leaseTtlMs: config.execution.leaseTtlMs,
+    progressTimeoutMs: config.execution.progressTimeoutMs,
     maxConcurrent: config.execution.concurrency,
     eventProcessing: {
       storeFor: () => new SqlSessionEventPersistence(sql,{dialect:foundation.dialect}),
