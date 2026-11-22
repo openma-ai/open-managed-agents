@@ -222,7 +222,6 @@ export class SessionToolDispatchController {
 
   private async publish(request: ToolRequest): Promise<void> {
     if (request.result === null) return;
-    const state = this.host.state;
     const content = request.result.content;
     const threadId = request.sessionThreadId ?? "sthr_primary";
     const event = {
