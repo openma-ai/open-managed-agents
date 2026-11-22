@@ -82,6 +82,8 @@ function resolveToolConfig(
       return { ...common, name: input.name, type: input.name };
     case "grep":
       return { ...common, name: input.name, type: input.name };
+    case "codemode":
+      return { ...common, name: input.name, type: input.name };
   }
 }
 

@@ -323,15 +323,20 @@ function buildMessages(
         break;
       }
       case "agent.tool_result":
-      case "agent.mcp_tool_result": {
+      case "agent.mcp_tool_result":
+      case "user.tool_result": {
         flushAssistant();
-        const e = event as AgentToolResultEvent | AgentMcpToolResultEvent;
-        const toolCallId = event.type === "agent.tool_result"
-          ? (e as AgentToolResultEvent).tool_use_id
-          : (e as AgentMcpToolResultEvent).mcp_tool_use_id;
+        const e = event as {
+          content?: string | ContentBlock[];
+          is_error?: boolean;
+          isError?: boolean;
+        };
+        const toolCallId = event.type === "agent.mcp_tool_result"
+          ? (event as AgentMcpToolResultEvent).mcp_tool_use_id
+          : (event as AgentToolResultEvent).tool_use_id;
         const toolName = toolNameById.get(toolCallId) ?? "unknown";
-        const contentOutput = wireContentToToolOutput((e as AgentToolResultEvent).content);
-        const output = e.is_error
+        const contentOutput = wireContentToToolOutput(e.content ?? "");
+        const output = (e.is_error || e.isError)
           ? { type: contentOutput.type === "text" ? "error-text" : "error-json", value: contentOutput.value }
           : contentOutput;
         pendingToolContent.push({
@@ -444,15 +449,20 @@ async function buildMessagesAsync(
         break;
       }
       case "agent.tool_result":
-      case "agent.mcp_tool_result": {
+      case "agent.mcp_tool_result":
+      case "user.tool_result": {
         flushAssistant();
-        const e = event as AgentToolResultEvent | AgentMcpToolResultEvent;
-        const toolCallId = event.type === "agent.tool_result"
-          ? (e as AgentToolResultEvent).tool_use_id
-          : (e as AgentMcpToolResultEvent).mcp_tool_use_id;
+        const e = event as {
+          content?: string | ContentBlock[];
+          is_error?: boolean;
+          isError?: boolean;
+        };
+        const toolCallId = event.type === "agent.mcp_tool_result"
+          ? (event as AgentMcpToolResultEvent).mcp_tool_use_id
+          : (event as AgentToolResultEvent).tool_use_id;
         const toolName = toolNameById.get(toolCallId) ?? "unknown";
-        const contentOutput = wireContentToToolOutput((e as AgentToolResultEvent).content);
-        const output = e.is_error
+        const contentOutput = wireContentToToolOutput(e.content ?? "");
+        const output = (e.is_error || e.isError)
           ? { type: contentOutput.type === "text" ? "error-text" : "error-json", value: contentOutput.value }
           : contentOutput;
         pendingToolContent.push({

@@ -26,6 +26,7 @@ const QUEUE_TYPES = new Set([
   "user.message",
   "user.tool_confirmation",
   "user.custom_tool_result",
+  "user.tool_result",
 ]);
 
 export class InMemoryEventLog implements EventLogRepo {

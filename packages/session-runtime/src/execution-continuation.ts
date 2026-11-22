@@ -11,7 +11,7 @@ export function executionContinuationEvents(history: readonly Event[], input: { 
     const resultId = event.tool_use_id ?? event.toolUseId ?? event.mcp_tool_use_id ?? event.mcpToolUseId;
     if (typeof resultId !== "string") continue;
     if (event.type === "user.tool_confirmation") confirmed.add(resultId);
-    else if (event.type === "agent.tool_result" || event.type === "agent.mcp_tool_result") resolved.add(resultId);
+    else if (event.type === "agent.tool_result" || event.type === "agent.mcp_tool_result" || event.type === "user.tool_result") resolved.add(resultId);
   }
   const events: Event[] = [];
   const pendingRetryIds = new Set<string>();

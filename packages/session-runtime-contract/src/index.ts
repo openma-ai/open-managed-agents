@@ -3,6 +3,12 @@ export type * from "./context";
 export type * from "./coordination";
 export { sessionExecutionId } from "./coordination";
 export type * from "./dispatch";
+export {
+  InMemoryToolRequestStore,
+  ToolRequestDispatcher,
+  ToolRequestWorker,
+} from "./tool-dispatch";
+export type * from "./tool-dispatch";
 export type * from "./history";
 export type * from "./lifecycle";
 export type * from "./stream";
@@ -14,6 +20,25 @@ export {
   settleOnlyRejectMessage,
 } from "./settle-events";
 export type { SettleOnlyReason } from "./settle-events";
+export {
+  acceptedEarlyCustomToolResults,
+  historyForRequiresAction,
+  pendingCallFromEvent,
+  planAcceptedWorkerBatch,
+  planEarlyCustomContinuation,
+  planWorkerContinuation,
+  toolUseIsAnswered,
+  workerContinuationIdleEvent,
+  workerContinuationStopIds,
+  workerContinuationAction,
+  workerToolResultTranscript,
+  type PendingWorkerCallEvent,
+  type EarlyCustomToolResultEvent,
+  type EarlyCustomContinuationPlan,
+  type AcceptedWorkerBatchPlan,
+  type WorkerPendingCall,
+  type WorkerToolResultEvent,
+} from "./worker-continuation";
 export {
   idleStopReasonForCancelledTurn,
   interruptedTurnStopReason,

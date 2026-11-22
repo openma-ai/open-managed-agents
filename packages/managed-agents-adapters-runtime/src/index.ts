@@ -295,7 +295,7 @@ export function decodeRuntimeEvent(
     decoded.usage = listCostPico === undefined ? usage : { ...usage, list_cost_pico: listCostPico };
   }
   if (
-    (raw.type === "agent.tool_result" || raw.type === "agent.mcp_tool_result")
+    (raw.type === "agent.tool_result" || raw.type === "agent.mcp_tool_result" || raw.type === "user.tool_result")
     && typeof raw.content === "string"
   ) {
     // The legacy harness wire emits scalar tool output while the official
@@ -378,7 +378,6 @@ const ACCEPTED_INPUT_EVENT_TYPES = new Set([
   "user.tool_confirmation",
   "user.custom_tool_result",
   "user.define_outcome",
-  "user.tool_result",
   "system.message",
 ]);
 

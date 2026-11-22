@@ -16,7 +16,7 @@ const heldAfterExhaustedSnapshot = "173fcc90-140f-4d11-92d5-9c8d917213e9";
 const runtimeResourceTablesSnapshot = "a569ec0b-0d55-4c2a-bd30-401b50191e4b";
 const sandboxTokenHashesSnapshot = "b328314c-2463-496b-9428-8396e54e5a8c";
 const previousWorkSnapshot = "6f23cfa4-a1c3-4c7a-8efa-040a495a1191";
-const currentSnapshot = "7a941c58-b1de-4d32-83e6-545034000001";
+const currentSnapshot = "ea72d2bf-9ff1-4794-a1b2-b9d90ea80927";
 const migrations = resolve(import.meta.dirname, "../migrations-sqlite");
 
 describe("main-node MySQL snapshot migrations", () => {
@@ -34,6 +34,7 @@ describe("main-node MySQL snapshot migrations", () => {
     expect(sql.snapshotId).toBe(currentSnapshot);
     expect(sql.indexColumns).toEqual(["tenant_id", "created_at", "id"]);
     expect(sql.createdAttributionIndex).toBe(initialIndex.length === 0);
+    expect(sql.createdTables).not.toContain("managed_custom_invocations");
   });
 
   it("upgrades the previous member schema to invitations", async () => {

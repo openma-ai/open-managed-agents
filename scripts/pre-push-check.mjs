@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 
 const checks = [
   ["whitespace", ["git", "diff", "--check"]],
+  ["lint", ["pnpm", "run", "lint"]],
   ["typecheck", ["pnpm", "exec", "tsc", "--noEmit"]],
   ["test wiring", ["node", "scripts/check-test-wiring.mjs"]],
   ["architecture", ["pnpm", "run", "test:architecture"]],

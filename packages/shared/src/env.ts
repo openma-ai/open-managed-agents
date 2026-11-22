@@ -30,6 +30,8 @@ export interface Env {
   // SESSION_DO and SANDBOX are only in sandbox workers
   SESSION_DO?: DurableObjectNamespace;
   SANDBOX?: DurableObjectNamespace;
+  /** Remote QuickJS Durable Object deployed in the dedicated code-mode Worker. */
+  CODEMODE_SANDBOX?: DurableObjectNamespace;
   WORKSPACE_BUCKET?: R2Bucket;
   FILES_BUCKET?: R2Bucket;
   /** Memory store content bucket (Anthropic Managed Agents Memory model).

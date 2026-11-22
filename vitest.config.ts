@@ -234,11 +234,13 @@ export default defineConfig({
       { find: "@open-managed-agents/session-runtime-contract/context", replacement: "./packages/session-runtime-contract/src/context.ts" },
       { find: "@open-managed-agents/session-runtime-contract/coordination", replacement: "./packages/session-runtime-contract/src/coordination.ts" },
       { find: "@open-managed-agents/session-runtime-contract/dispatch", replacement: "./packages/session-runtime-contract/src/dispatch.ts" },
+      { find: "@open-managed-agents/session-runtime-contract/tool-dispatch", replacement: "./packages/session-runtime-contract/src/tool-dispatch.ts" },
       { find: "@open-managed-agents/session-runtime-contract/history", replacement: "./packages/session-runtime-contract/src/history.ts" },
       { find: "@open-managed-agents/session-runtime-contract/lifecycle", replacement: "./packages/session-runtime-contract/src/lifecycle.ts" },
       { find: "@open-managed-agents/session-runtime-contract/stream", replacement: "./packages/session-runtime-contract/src/stream.ts" },
       { find: "@open-managed-agents/session-runtime-contract/settle-events", replacement: "./packages/session-runtime-contract/src/settle-events.ts" },
       { find: "@open-managed-agents/session-runtime-contract/requires-action", replacement: "./packages/session-runtime-contract/src/requires-action.ts" },
+      { find: "@open-managed-agents/session-runtime-contract/worker-continuation", replacement: "./packages/session-runtime-contract/src/worker-continuation.ts" },
       { find: "@open-managed-agents/session-runtime-contract", replacement: "./packages/session-runtime-contract/src/index.ts" },
       { find: "@open-managed-agents/session-runtime-sql/context", replacement: "./packages/session-runtime-sql/src/context.ts" },
       { find: "@open-managed-agents/session-runtime-sql/coordination", replacement: "./packages/session-runtime-sql/src/coordination.ts" },
@@ -250,6 +252,10 @@ export default defineConfig({
       { find: "@open-managed-agents/sandbox-gateway", replacement: "./packages/sandbox-gateway/src/index.ts" },
       { find: "@open-managed-agents/session-realtime", replacement: "./packages/session-realtime/src/index.ts" },
       { find: "@open-managed-agents/session-realtime-memory", replacement: "./packages/session-realtime-memory/src/index.ts" },
+      // The Node code-mode adapter lives behind its own subpath export. It is
+      // listed before the barrel alias so the string alias cannot rewrite the
+      // subpath onto the barrel path.
+      { find: "@open-managed-agents/agent-harness/codemode-node", replacement: "./packages/agent-harness/src/codemode-node.ts" },
       { find: "@open-managed-agents/agent-harness", replacement: "./packages/agent-harness/src/index.ts" },
       { find: "@open-managed-agents/session-outcomes", replacement: "./packages/session-outcomes/src/index.ts" },
       { find: "@open-managed-agents/session-subagents", replacement: "./packages/session-subagents/src/index.ts" },
@@ -530,6 +536,10 @@ export default defineConfig({
       "apps/main-node/**",
       "apps/matter/**",
       "packages/control-plane-node/**",
+      // Node-only: the code-mode adapter keeps QuickJS in a worker thread
+      // (node:worker_threads), which workerd has no module for. The Node pool
+      // runs it (apps/main-node/vitest.config.ts).
+      "packages/agent-harness/test/codemode.test.ts",
       "apps/main-fly/**",
       "apps/main-vercel/**",
       "packages/auth/**",

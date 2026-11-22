@@ -45,3 +45,46 @@ export const managed_session_executions = pgTable(
     ),
   ],
 );
+
+/** Durable dispatcher outbox for externally executed tools. */
+export const managed_tool_requests = pgTable(
+  "managed_tool_requests",
+  {
+    id: text("id").primaryKey(),
+    idempotency_key: text("idempotency_key").notNull().unique(),
+    workspace_id: text("workspace_id").notNull(),
+    session_id: text("session_id").notNull(),
+    session_thread_id: text("session_thread_id"),
+    tool_use_id: text("tool_use_id").notNull(),
+    tool_name: text("tool_name").notNull(),
+    args_json: text("args_json").notNull(),
+    concurrency: text("concurrency").notNull(),
+    resource_key: text("resource_key"),
+    created_at_ms: bigint("created_at_ms", { mode: "number" }).notNull(),
+    available_at_ms: bigint("available_at_ms", { mode: "number" }).notNull(),
+    state: text("state").notNull(),
+    attempt_count: bigint("attempt_count", { mode: "number" }).notNull().default(0),
+    revision: bigint("revision", { mode: "number" }).notNull().default(1),
+    owner_id: text("owner_id"),
+    attempt_id: text("attempt_id"),
+    generation: bigint("generation", { mode: "number" }),
+    claimed_at_ms: bigint("claimed_at_ms", { mode: "number" }),
+    lease_expires_at_ms: bigint("lease_expires_at_ms", { mode: "number" }),
+    result_json: text("result_json"),
+    cancelled_at_ms: bigint("cancelled_at_ms", { mode: "number" }),
+  },
+  (table) => [
+    index("managed_tool_requests_poll_idx").on(
+      table.state,
+      table.available_at_ms,
+      table.created_at_ms,
+      table.id,
+    ),
+    index("managed_tool_requests_scope_idx").on(
+      table.workspace_id,
+      table.session_id,
+      table.state,
+      table.lease_expires_at_ms,
+    ),
+  ],
+);

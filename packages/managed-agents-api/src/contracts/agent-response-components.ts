@@ -1,7 +1,6 @@
 import type {
   BetaManagedAgentsAdvisor,
   BetaManagedAgentsAgent,
-  BetaManagedAgentsAgentToolset20260401,
   BetaManagedAgentsAnthropicSkill,
   BetaManagedAgentsCustomSkill,
   BetaManagedAgentsCustomTool,
@@ -19,7 +18,7 @@ const permissionPolicySchema = z.discriminatedUnion("type", [
 ]);
 
 const resolvedSimpleToolSchema = <
-  const Name extends "bash" | "edit" | "read" | "write" | "glob" | "grep",
+  const Name extends "bash" | "edit" | "read" | "write" | "glob" | "grep" | "codemode",
 >(
   name: Name,
 ) =>
@@ -49,6 +48,7 @@ const resolvedAgentToolConfigSchema = z.discriminatedUnion("type", [
   resolvedSimpleToolSchema("write"),
   resolvedSimpleToolSchema("glob"),
   resolvedSimpleToolSchema("grep"),
+  resolvedSimpleToolSchema("codemode"),
   z
     .object({
       enabled: z.boolean(),
@@ -87,7 +87,7 @@ const resolvedAgentToolsetSchema = z
     default_config: resolvedDefaultToolConfigSchema,
     type: z.literal("agent_toolset_20260401"),
   })
-  .strict() satisfies z.ZodType<BetaManagedAgentsAgentToolset20260401>;
+  .strict();
 
 const resolvedMcpToolsetSchema = z
   .object({

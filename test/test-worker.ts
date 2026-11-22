@@ -110,6 +110,9 @@ import workClaimPublicationSchema from "../apps/main/migrations/0029_work_claim_
 // @ts-expect-error vitest resolves SQL via ?raw
 import customInvocationsSchema from "../apps/main/migrations/0032_custom_invocations.sql?raw";
 
+// @ts-expect-error vitest resolves SQL via ?raw
+import toolRequestsSchema from "../apps/main/migrations/0033_lumpy_captain_britain.sql?raw";
+
 const MIGRATIONS_RAW: string[] = [
   authSchema as string,
   managedAgentsSchema as string,
@@ -146,6 +149,10 @@ const MIGRATIONS_RAW: string[] = [
   sandboxTokenHashesSchema as string,
   workClaimPublicationSchema as string,
   customInvocationsSchema as string,
+  // The durable tool-request store the agent worker uses for every Pi tool
+  // call. Without it the CF tool dispatch path fails with
+  // "D1_ERROR: no such table: managed_tool_requests".
+  toolRequestsSchema as string,
 ];
 
 const INTEGRATIONS_MIGRATIONS_RAW: string[] = [integrationsSchema as string];

@@ -22,11 +22,12 @@
 
 import type { SessionEvent } from "@open-managed-agents/shared";
 
-/** The three turn-input event types that can sit in the single-table queue. */
+/** The four turn-input event types that can sit in the single-table queue. */
 export type QueueInputType =
   | "user.message"
   | "user.tool_confirmation"
-  | "user.custom_tool_result";
+  | "user.custom_tool_result"
+  | "user.tool_result";
 
 /**
  * One queued turn-input row, projected from the canonical `events` table
@@ -61,7 +62,7 @@ export interface EventLogRepo {
    * processing for agent/system/span events).
    *
    * Queue-input events (user.message / user.tool_confirmation /
-   * user.custom_tool_result) should be inserted through
+   * user.custom_tool_result / user.tool_result) should be inserted through
    * `enqueueQueueInput` instead: that path writes `processed_at = NULL`
    * and leaves the JSON payload unstamped until `stampProcessed` promotes
    * the same row/id at drain time. Calling `append` for a queue-input
