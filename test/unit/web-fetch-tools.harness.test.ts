@@ -408,6 +408,49 @@ describe("web_search timeouts and wiring", () => {
   });
 });
 
+describe("codemode wiring", () => {
+  it("requires a configured QuickJS runtime", async () => {
+    const agent = makeAgentConfig({
+      tools: [{
+        type: "agent_toolset_20260401",
+        configs: [{ name: "codemode", enabled: true }],
+      } as any],
+    });
+    await expect(buildTools(agent, new TestSandbox())).rejects.toThrow(
+      "The codemode tool requires a configured remote QuickJS runtime",
+    );
+  });
+
+  it("wires codemode with only executable host tools", async () => {
+    let received: Array<{ name: string }> | undefined;
+    const agent = makeAgentConfig({
+      tools: [{
+        type: "agent_toolset_20260401",
+        configs: [
+          { name: "codemode", enabled: true },
+          { name: "bash", permission_policy: { type: "always_ask" } },
+        ],
+      } as any],
+    });
+    const tools = await buildTools(agent, new TestSandbox(), {
+      codeMode: {
+        createSandbox: (hostTools) => {
+          received = hostTools as unknown as Array<{ name: string }>;
+          return {
+            execute: async () => ({ ok: true, output: [{ type: "text", text: "ok" }] }),
+            close: async () => undefined,
+          };
+        },
+      },
+    });
+
+    expect(tools.codemode).toBeDefined();
+    await expect(tools.codemode.execute({ code: "text('ok')" }, TOOL_EXEC_OPTS)).resolves.toContain("ok");
+    expect(received?.some((tool) => tool.name === "read")).toBe(true);
+    expect(received?.some((tool) => tool.name === "bash")).toBe(false);
+  });
+});
+
 describe("glob / grep default directory (ADR 0016)", () => {
   function recordingSandbox(root?: string) {
     const commands: string[] = [];
