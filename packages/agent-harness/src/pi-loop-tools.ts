@@ -45,7 +45,6 @@ export function toolsToPi(ctx: HarnessContext): AgentTool[] {
           // event and close exactly once. Durable worker execution is used for
           // tools whose state can be reconstructed from the durable request.
           if (ctx.runtime.toolDispatcher && !name.startsWith("mcp__")) {
-            ctx.runtime.toolDispatcher.registerExecution?.(toolCallId, tool.execute);
             const result = await ctx.runtime.toolDispatcher.dispatch({
               toolCallId,
               toolName: name,
