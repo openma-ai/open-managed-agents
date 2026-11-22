@@ -8,6 +8,7 @@
     "./coordination": "./src/coordination.ts",
     "./context": "./src/context.ts",
     "./dispatch": "./src/dispatch.ts",
+    "./tool-dispatch": "./src/tool-dispatch.ts",
     "./history": "./src/history.ts",
     "./lifecycle": "./src/lifecycle.ts",
     "./stream": "./src/stream.ts",

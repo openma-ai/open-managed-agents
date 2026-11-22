@@ -50,3 +50,48 @@ export const managed_session_executions = sqliteTable(
     ),
   ],
 );
+
+/** Durable dispatcher outbox for tools that execute outside SessionDO.  The
+ * request body and result stay in the control plane so a worker can reclaim a
+ * lease without asking the model loop to remember in-flight state. */
+export const managed_tool_requests = sqliteTable(
+  "managed_tool_requests",
+  {
+    id: text("id").primaryKey(),
+    idempotency_key: text("idempotency_key").notNull().unique(),
+    workspace_id: text("workspace_id").notNull(),
+    session_id: text("session_id").notNull(),
+    session_thread_id: text("session_thread_id"),
+    tool_use_id: text("tool_use_id").notNull(),
+    tool_name: text("tool_name").notNull(),
+    args_json: text("args_json").notNull(),
+    concurrency: text("concurrency").notNull(),
+    resource_key: text("resource_key"),
+    created_at_ms: integer("created_at_ms").notNull(),
+    available_at_ms: integer("available_at_ms").notNull(),
+    state: text("state").notNull(),
+    attempt_count: integer("attempt_count").notNull().default(0),
+    revision: integer("revision").notNull().default(1),
+    owner_id: text("owner_id"),
+    attempt_id: text("attempt_id"),
+    generation: integer("generation"),
+    claimed_at_ms: integer("claimed_at_ms"),
+    lease_expires_at_ms: integer("lease_expires_at_ms"),
+    result_json: text("result_json"),
+    cancelled_at_ms: integer("cancelled_at_ms"),
+  },
+  (table) => [
+    index("managed_tool_requests_poll_idx").on(
+      table.state,
+      table.available_at_ms,
+      table.created_at_ms,
+      table.id,
+    ),
+    index("managed_tool_requests_scope_idx").on(
+      table.workspace_id,
+      table.session_id,
+      table.state,
+      table.lease_expires_at_ms,
+    ),
+  ],
+);

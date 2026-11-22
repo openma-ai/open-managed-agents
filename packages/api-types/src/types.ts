@@ -369,6 +369,14 @@ export interface UserCustomToolResultEvent extends EventBase {
   is_error?: boolean;
 }
 
+/** Result published by an external tool worker for a previously emitted tool use. */
+export interface UserToolResultEvent extends EventBase {
+  type: "user.tool_result";
+  tool_use_id: string;
+  content: ContentBlock[];
+  is_error?: boolean;
+}
+
 export interface AgentMessageEvent extends EventBase {
   type: "agent.message";
   content: ContentBlock[];
@@ -915,6 +923,7 @@ export type SessionEvent =
   | UserInterruptEvent
   | UserToolConfirmationEvent
   | UserCustomToolResultEvent
+  | UserToolResultEvent
   | UserDefineOutcomeEvent
   | AgentMessageEvent
   | AgentMessageStreamStartEvent
@@ -979,6 +988,7 @@ export const SPEC_EVENT_TYPES: ReadonlySet<string> = new Set([
   "user.message",
   "user.interrupt",
   "user.custom_tool_result",
+  "user.tool_result",
   "user.tool_confirmation",
   "user.define_outcome",
   // Agent events

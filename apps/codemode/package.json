@@ -1,0 +1,14 @@
+{
+  "name": "@open-managed-agents/codemode-sandbox",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "dependencies": {
+    "@earendil-works/pi-codemode": "1.5.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261114.1",
+    "wrangler": "^4.162.0"
+  }
+}

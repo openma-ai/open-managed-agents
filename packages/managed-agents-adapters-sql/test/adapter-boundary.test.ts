@@ -47,6 +47,7 @@ describe("Managed Agents SQL adapter boundary", () => {
       "../src/session-threads-sql-persistence.ts",
       "../src/sessions-sql-persistence.ts",
       "../src/skills-sql-persistence.ts",
+      "../src/tool-dispatch-sql.ts",
       "../src/tunnels-sql-persistence.ts",
       "../src/user-profiles-sql-persistence.ts",
       "../src/vaults-sql-persistence.ts",

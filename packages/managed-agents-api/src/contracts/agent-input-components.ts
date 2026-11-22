@@ -7,7 +7,6 @@ import { z } from "zod";
 
 import { webFetchURLSourcesParamsSchema } from "./agent-web-fetch-url-sources";
 
-type AgentToolInput = NonNullable<AgentCreateParams["tools"]>[number];
 type AgentMultiagentInput = Exclude<
   AgentCreateParams["multiagent"],
   null | undefined
@@ -20,7 +19,7 @@ const permissionPolicyInputSchema = z.discriminatedUnion("type", [
 ]);
 
 const simpleToolConfigInputSchema = <
-  const Name extends "bash" | "edit" | "read" | "write" | "glob" | "grep",
+  const Name extends "bash" | "edit" | "read" | "write" | "glob" | "grep" | "codemode",
 >(
   name: Name,
 ) =>
@@ -50,6 +49,7 @@ const agentToolConfigInputSchema = z.discriminatedUnion("name", [
   simpleToolConfigInputSchema("write"),
   simpleToolConfigInputSchema("glob"),
   simpleToolConfigInputSchema("grep"),
+  simpleToolConfigInputSchema("codemode"),
   z
     .object({
       name: z.literal("web_fetch"),
@@ -130,7 +130,8 @@ export const agentToolInputSchema = z.discriminatedUnion("type", [
   agentToolsetInputSchema,
   mcpToolsetInputSchema,
   customToolSchema,
-]) satisfies z.ZodType<AgentToolInput>;
+]);
+export type AgentToolInput = z.infer<typeof agentToolInputSchema>;
 
 export const agentMcpServerInputSchema = z.discriminatedUnion("type", [
     z

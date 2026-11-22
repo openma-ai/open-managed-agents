@@ -28,6 +28,7 @@ import {
   WEB_FETCH_TIMEOUT_MS,
   type WebFetchNetworking,
 } from "./web-fetch-http";
+import { CODEMODE_TOOL_NAME, createCodemodeTool, type CodemodeRuntime } from "./codemode";
 
 // Source of truth for which tool names are part of the agent_toolset_20260401
 // built-in suite. Used by buildTools() below to decide which tool entries to
@@ -49,7 +50,7 @@ export const DEFAULT_TOOLS = ["bash", "read", "write", "edit", "glob", "grep", "
  *    the LLM otherwise tends to reach for browser even for simple lookups
  *    because the description sounds more "agentic". Make it opt-in so the
  *    default tool list nudges toward the cheaper path. */
-export const OPT_IN_TOOLS = ["browser"];
+export const OPT_IN_TOOLS = ["browser", CODEMODE_TOOL_NAME];
 
 /** Backwards-compat union — used as the recognised-tool-name set for
  *  validation. New callers should prefer DEFAULT_TOOLS or OPT_IN_TOOLS. */
@@ -466,6 +467,8 @@ export async function buildTools(
       prompt: string;
       kind: "one_shot" | "cron";
     }>;
+    /** Optional remote QuickJS runtime used by the Pi-compatible codemode tool. */
+    codeMode?: CodemodeRuntime;
   },
   options?: {
     /**
@@ -1359,6 +1362,19 @@ export async function buildTools(
         return output;
       },
     });
+  }
+
+  if (enabled.has(CODEMODE_TOOL_NAME)) {
+    if (!env?.codeMode) {
+      throw new Error("The codemode tool requires a configured remote QuickJS runtime");
+    }
+    // A code-mode script can make several nested calls without returning to the
+    // model loop. Do not place approval-gated tools inside that capability, or a
+    // script could turn one approved code-mode call into an unreviewed side effect.
+    const codemodeHostTools = Object.fromEntries(
+      Object.entries(tools).filter(([name]) => getToolPermission(agentConfig, name) !== "always_ask"),
+    );
+    tools[CODEMODE_TOOL_NAME] = createCodemodeTool(codemodeHostTools, env.codeMode);
   }
 
   // Strip execute from always_ask tools so AI SDK returns them as pending calls

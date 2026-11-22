@@ -34,7 +34,7 @@ import { createNodeOpenAIArtifactPublisher, withReportedArtifactPublication } fr
 
 import {
   buildTools, disposeTools, composeSystemPrompt, agentUsesAssemblySkillMount, type HarnessContext,
-  readHarnessAgentModelSettings, createPiModelRuntime, resolveHarness,
+  readHarnessAgentModelSettings, createPiModelRuntime, resolveHarness, createNodeCodemodeRuntime,
 } from "@open-managed-agents/agent-harness";
 
 import { generateText } from "ai";
@@ -197,6 +197,15 @@ export async function createManagedNodeRuntime(
     budget: nodeSessionModelEgress,
   };
   const nodeMcpProxyBinding = createMcpProxyBinding(() => mcpProxyPorts);
+  // QuickJS is loaded once per Node control-plane process and each tool call
+  // receives its own worker-thread sandbox. This keeps code-mode available on
+  // the direct Node path without coupling it to the Cloudflare Worker.
+  let nodeCodemodeRuntime: ReturnType<typeof createNodeCodemodeRuntime> | undefined;
+  const getNodeCodemodeRuntime = () =>
+    nodeCodemodeRuntime ??= createNodeCodemodeRuntime({
+      timeoutMs: 300_000,
+      memoryLimitBytes: 32 * 1024 * 1024,
+    });
 
   const managedSessionResourceSecrets = new SqlSessionResourceSecretSource(sql, {
     open: async (value) => {
@@ -482,6 +491,7 @@ export async function createManagedNodeRuntime(
         auxModel: auxiliary?.model,
         auxModelInfo: auxiliary?.modelInfo,
         auxProviderOptions: auxiliary?.providerOptions,
+        codeMode: await getNodeCodemodeRuntime(),
         delegateToAgent,
       });
       if (subagents && (await readManagedSessionMappingMetadata(session, openAIAgentsSecrets))?.agent.multi_agent?.enabled) {

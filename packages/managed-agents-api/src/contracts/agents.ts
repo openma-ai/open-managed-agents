@@ -27,6 +27,7 @@ type OfficialAgentCreateBody = Omit<AgentCreateParams, "betas">;
 export type AgentListQuery = Omit<AgentListParams, "betas">;
 export type AgentRetrieveQuery = Omit<AgentRetrieveParams, "betas">;
 type OfficialAgentUpdateBody = Omit<AgentUpdateParams, "betas">;
+export type OpenMaAgentToolBody = z.infer<typeof agentToolInputSchema>;
 export type AgentVersionListQuery = Omit<VersionListParams, "betas">;
 
 type AgentModelConfig = Exclude<OfficialAgentCreateBody["model"], string>;
@@ -136,16 +137,18 @@ type OpenMaAgentMultiagentBody = {
   workflows?: { type: "disabled" } | null;
 };
 
-export type AgentCreateBody = Omit<OfficialAgentCreateBody, "model" | "mcp_servers" | "multiagent"> & {
+export type AgentCreateBody = Omit<OfficialAgentCreateBody, "model" | "mcp_servers" | "multiagent" | "tools"> & {
   model: OpenMaAgentModelBody;
   mcp_servers?: OpenMaMcpServerBody[];
   multiagent?: OpenMaAgentMultiagentBody | null;
+  tools?: OpenMaAgentToolBody[];
   _oma?: OpenMaAgentExtensionBody;
 };
-export type AgentUpdateBody = Omit<OfficialAgentUpdateBody, "model" | "mcp_servers" | "multiagent"> & {
+export type AgentUpdateBody = Omit<OfficialAgentUpdateBody, "model" | "mcp_servers" | "multiagent" | "tools"> & {
   model?: OpenMaAgentModelBody;
   mcp_servers?: OpenMaMcpServerBody[] | null;
   multiagent?: OpenMaAgentMultiagentBody | null;
+  tools?: OpenMaAgentToolBody[] | null;
   _oma?: OpenMaAgentExtensionBody;
 };
 

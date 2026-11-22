@@ -45,7 +45,7 @@ export function answeredToolCallIds(events: readonly WireEvent[]): Set<string> {
 export function toolResultIds(events: readonly WireEvent[]): Set<string> {
   const ids = new Set<string>();
   for (const e of events) {
-    if (e.type === "agent.tool_result" && typeof e.tool_use_id === "string") ids.add(e.tool_use_id);
+    if ((e.type === "agent.tool_result" || e.type === "user.tool_result") && typeof e.tool_use_id === "string") ids.add(e.tool_use_id);
   }
   return ids;
 }
@@ -83,7 +83,7 @@ export function knownToolCallIds(events: readonly WireEvent[]): Set<string> {
 }
 
 /** Built-in toolset calls: parked only for always_ask confirmation. */
-const BUILTIN_TOOLS = new Set(["bash", "read", "write", "edit", "glob", "grep", "web_fetch", "web_search"]);
+const BUILTIN_TOOLS = new Set(["bash", "read", "write", "edit", "glob", "grep", "web_fetch", "web_search", "codemode"]);
 
 /** A pending call the client must answer with user.custom_tool_result, by
  * its resolved tool name (a call proxied through mcp_invoke is named by its

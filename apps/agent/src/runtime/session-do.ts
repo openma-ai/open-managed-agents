@@ -23,7 +23,8 @@ import {
   resolveCustomSkills, resolveCustomSkillMounts, type SkillMountDescriptor, getSkillFiles,
   getSkillFilesFromManagedSource, mountSkillFiles, agentUsesAssemblySkillMount,
   resolveSkillAssemblyConfig, skillMountsShouldFetchBodies, resolveAppendablePrompts,
-  InMemoryHistory, INTERRUPTED_TOOL_RESULT_TEXT,
+  InMemoryHistory, INTERRUPTED_TOOL_RESULT_TEXT, type CodemodeCheckpoint,
+  type CodemodeRuntime,
 } from "@open-managed-agents/agent-harness";
 import { SessionSubagents, type SubagentTurnInput, type SubagentTurnResult } from "@open-managed-agents/session-subagents";
 import { cloudflareSubagentThreadId, cloudflareSubagentWireEvents } from "./subagents";
@@ -94,7 +95,16 @@ import {
 } from "@open-managed-agents/session-runtime-contract/requires-action";
 import { executionContinuationEvents, sessionExecutionLeaseTtlMs, decideExpiredExecution, decideLeaseRenewal, decideRecoveryFromCanonicalStream, evaluateCoordinationPolicy, type ActiveTurnRecord, type CanonicalTurnEvidence, type CoordinationAction, type ExecutionLeaseRecord, type QueuedInputRecord, type ScheduleWakeRecord, SessionExecutionHost, SessionSandboxRuntime, sessionSandboxWarningEvent, type SessionExecutionRunResult } from "@open-managed-agents/session-runtime";
 import { applyCapCliPlaceholderEnvironment } from "./cap-placeholder-env";
-import { interruptedTurnStopReason, linkAbort } from "@open-managed-agents/session-runtime-contract";
+import {
+  interruptedTurnStopReason,
+  linkAbort,
+  ToolRequestDispatcher,
+  ToolRequestWorker,
+  type ToolRequest,
+  type ToolRequestStorePort,
+  type ToolDispatcherPort,
+  type ToolRequestResult,
+} from "@open-managed-agents/session-runtime-contract";
 import {
   ensureSessionExecutionCoordinatorSchema,
   SqlSessionExecutionStore,
@@ -140,6 +150,7 @@ import type {
   UserMessageEvent,
   UserInterruptEvent,
   UserToolConfirmationEvent,
+  UserToolResultEvent,
   UserCustomToolResultEvent,
   UserDefineOutcomeEvent,
   AgentMessageEvent,
@@ -163,6 +174,7 @@ import {
   type OutcomeEvaluationRecord,
 } from "./outcome-supervisor";
 import { buildCfServices, buildCfTenantDbProvider, getCfServicesForTenant } from "@open-managed-agents/services";
+import { SqlToolRequestStore } from "@open-managed-agents/managed-agents-adapters-sql";
 import { toEnvironmentConfig } from "@open-managed-agents/environments-store";
 import { ensureEnvironmentPackages, environmentCommandPath } from "@open-managed-agents/sandbox";
 import { createCfBrowserHarness } from "@open-managed-agents/browser-harness/cf";
@@ -500,9 +512,160 @@ export class SessionDO extends DurableObject<Env> {
   // instance scoped to this DO's session.
   private _runtimeAdapter: RuntimeAdapter | null = null;
   private readonly _primaryHarness = new HarnessLease();
+  /** Prevent duplicate alarm/wake executions for the same session worker. */
+  private readonly _toolWorkerRuns = new Map<string, Promise<void>>();
+  private readonly _toolWorkerWakePending = new Set<string>();
   private _managedProjectionChain: Promise<void> = Promise.resolve();
   private readonly _wakeupScheduler: CloudflareSessionWakeupScheduler;
   private readonly _wakeups: SessionWakeupApplication;
+
+  private codemodeRuntime(): CodemodeRuntime | undefined {
+    const namespace = this.env.CODEMODE_SANDBOX;
+    if (!namespace) return undefined;
+    return {
+      remote: () => namespace.getByName(this.state.session_id) as unknown as ReturnType<NonNullable<CodemodeRuntime["remote"]>>,
+      interruptBudget: 100_000,
+      timeoutMs: 300_000,
+      memoryLimitBytes: 32 * 1024 * 1024,
+      checkpointStore: {
+        load: (key) => this.ctx.storage.get<CodemodeCheckpoint>(key).then((value) => value ?? null),
+        save: (key, checkpoint) => this.ctx.storage.put(key, checkpoint),
+        clear: (key) => this.ctx.storage.delete(key).then(() => undefined),
+      },
+      checkpointKey: (toolCallId) => `codemode-checkpoint:${this.state.session_id}:${toolCallId}`,
+    };
+  }
+
+  /**
+   * CMA-style model-loop dispatcher. The model process only persists a
+   * request and parks its turn. A short worker tick claims and executes it,
+   * then feeds a durable user.tool_result back through the normal queue.
+   */
+  private toolDispatcher(threadId: string): ToolDispatcherPort | undefined {
+    if (!this.state.tenant_id || !this.state.session_id) return undefined;
+    const store = {
+      resolve: async (): Promise<ToolRequestStorePort> => {
+        const db = await buildCfTenantDbProvider(this.env).resolve(this.state.tenant_id);
+        return new SqlToolRequestStore(new CfD1SqlClient(db), { dialect: "sqlite" });
+      },
+    };
+    return {
+      dispatch: async (input, signal) => {
+        const durable = await store.resolve();
+        return new ToolRequestDispatcher({
+          store: durable,
+          workspaceId: this.state.tenant_id,
+          sessionId: this.state.session_id,
+          sessionThreadId: threadId,
+          parkAfterEnqueue: true,
+          onEnqueued: (request) => this.wakeToolWorker(request),
+        }).dispatch(input, signal);
+      },
+    };
+  }
+
+  private wakeToolWorker(request: ToolRequest): void {
+    const existing = this._toolWorkerRuns.get(request.sessionId);
+    if (existing) {
+      this._toolWorkerWakePending.add(request.sessionId);
+      return;
+    }
+    const run = Promise.resolve().then(() => this.runToolWorkerOnce(request.sessionId));
+    this._toolWorkerRuns.set(request.sessionId, run);
+    this.ctx.waitUntil(run.catch((error) => {
+      console.error("[session_do] tool worker tick failed", error);
+    }).finally(() => {
+      if (this._toolWorkerRuns.get(request.sessionId) !== run) return;
+      this._toolWorkerRuns.delete(request.sessionId);
+      if (this._toolWorkerWakePending.delete(request.sessionId)) {
+        this.wakeToolWorker(request);
+      }
+    }));
+  }
+
+  private async runToolWorkerOnce(sessionId: string): Promise<void> {
+    const db = await buildCfTenantDbProvider(this.env).resolve(this.state.tenant_id);
+    const store = new SqlToolRequestStore(new CfD1SqlClient(db), { dialect: "sqlite" });
+    const worker = new ToolRequestWorker({
+      store,
+      workerId: `session-worker:${this.state.session_id}`,
+      leaseTtlMs: 60_000,
+      pollLimit: 1,
+      pollIntervalMs: 1,
+      execute: (request, signal) => this.executeToolRequest(request, signal),
+      onCompleted: (request) => this.publishToolRequestResult(request),
+    });
+    const signal = new AbortController().signal;
+    while (await worker.runOnce(signal, { sessionId })) {
+      // Drain the currently admitted batch. Admission still enforces
+      // parallel/resource-serial/exclusive constraints across each tick.
+    }
+  }
+
+  private async executeToolRequest(
+    request: ToolRequest,
+    signal: AbortSignal,
+  ): Promise<Pick<ToolRequestResult, "status" | "content" | "isError">> {
+    const threadId = request.sessionThreadId ?? "sthr_primary";
+    const agent = await this.getThreadAgentConfig(threadId);
+    if (!agent) throw new Error("Agent not found for tool request");
+    const sandbox = this.bindSandboxToExecution(
+      await this.getOrCreateSandbox(), signal, undefined, threadId,
+    );
+    const credentials = await this.resolveModelCardCredentials(this.agentModelHandle(agent));
+    const environmentConfig = this.state.environment_id
+      ? (await this.getEnvConfig(this.state.environment_id))?.config
+      : undefined;
+    const tools = await buildTools(agent, sandbox, {
+      ...delegationCredentials(credentials),
+      TAVILY_API_KEY: this.env.TAVILY_API_KEY,
+      toMarkdown: cfWorkersAiToMarkdown(this.env.AI),
+      environmentConfig,
+      mcpBinding: this.env.MAIN_MCP,
+      tenantId: this.state.tenant_id,
+      sessionId: this.state.session_id,
+      codeMode: this.codemodeRuntime(),
+      browser: this.getBrowserHarness() ?? undefined,
+      broadcastEvent: (event) => this.persistAndBroadcastEvent(event, threadId),
+      scheduleWakeup: (a) => this.scheduleWakeup(a),
+      cancelWakeup: (id) => this.cancelWakeup(id),
+      listWakeups: () => this.listWakeups(),
+    }, { enforcePermissions: false });
+    try {
+      const target = resolveProxiedToolCall(request.toolName, request.args);
+      const tool = tools[target.toolName];
+      if (!tool?.execute) throw new Error(`Tool ${target.toolName} is not executable`);
+      const value = await tool.execute(target.args, {
+        toolCallId: request.toolUseId,
+        messages: [],
+        abortSignal: signal,
+      });
+      return { status: "succeeded", content: value, isError: false };
+    } finally {
+      await disposeTools(tools);
+    }
+  }
+
+  private async publishToolRequestResult(request: ToolRequest): Promise<void> {
+    if (request.result === null) return;
+    const content = request.result.content;
+    const resultThreadId = request.sessionThreadId ?? "sthr_primary";
+    const resultEvent = {
+      id: `tool-result:${request.id}`,
+      type: "user.tool_result" as const,
+      tool_use_id: request.toolUseId,
+      content: [{ type: "text" as const, text: typeof content === "string" ? content : JSON.stringify(content) ?? String(content) }],
+      is_error: request.result.isError,
+      session_thread_id: resultThreadId,
+    } as unknown as UserToolResultEvent & { id: string; processed_at?: string };
+    if (this.toolUseAlreadyAnswered(request.toolUseId, this.openHistory())) return;
+    resultEvent.processed_at = this.processedClock.nowIso();
+    const queued = this.enqueueQueueInputIfNew(resultEvent);
+    if (!queued) return;
+    this._broadcastPendingFrame(resultEvent, resultThreadId);
+    try { await this.schedule(5, "recoverEventQueue"); } catch {}
+    await this.dispatchEventQueue(resultThreadId);
+  }
 
   /**
    * Set of turn ids currently in flight in THIS DO isolate.
@@ -1859,7 +2022,8 @@ export class SessionDO extends DurableObject<Env> {
     if (
       event.type !== "user.message" &&
       event.type !== "user.tool_confirmation" &&
-      event.type !== "user.custom_tool_result"
+      event.type !== "user.custom_tool_result" &&
+      event.type !== "user.tool_result"
     ) return null;
     const eventId = (event as unknown as { id?: string }).id ?? "";
     // A queue row already exists (normal POST /event path): promote that
@@ -1869,7 +2033,7 @@ export class SessionDO extends DurableObject<Env> {
     if (this.localEventExists(eventId)) return null;
     // custom_tool_result is processed on receipt (official CMA): keep/set
     // its JSON stamp. message / tool_confirmation stay null until drain.
-    if (event.type === "user.custom_tool_result") {
+    if (event.type === "user.custom_tool_result" || event.type === "user.tool_result") {
       const e = event as SessionEvent & { id?: string; processed_at?: string };
       if (!e.id) e.id = `sevt_${generateEventId()}`;
       if (!e.processed_at) e.processed_at = this.processedClock.nowIso();
@@ -1902,7 +2066,7 @@ export class SessionDO extends DurableObject<Env> {
     // Official CMA: custom_tool_result is stamped on receipt — do not replace
     // that stamp at drain. message / tool_confirmation stay null until here.
     const stamp =
-      event.type === "user.custom_tool_result" && typeof event.processed_at === "string"
+      (event.type === "user.custom_tool_result" || event.type === "user.tool_result") && typeof event.processed_at === "string"
         ? event.processed_at
         : nowIso;
     const stampMs = Date.parse(stamp);
@@ -2971,6 +3135,32 @@ export class SessionDO extends DurableObject<Env> {
           } catch {}
         }
         if (enqueued) await this.dispatchEventQueue(ctrThread);
+        return new Response(null, { status: 202 });
+      }
+
+      if (body.type === "user.tool_result") {
+        const toolResult = body as UserToolResultEvent;
+        const resultThread =
+          (toolResult as unknown as { session_thread_id?: string }).session_thread_id ??
+          "sthr_primary";
+        if (this.toolUseAlreadyAnswered(toolResult.tool_use_id, history)) {
+          return this.acceptNoEffectAnswer(toolResult, history);
+        }
+        if (!this.toolUseExists(toolResult.tool_use_id, history)) {
+          return new Response(JSON.stringify({ type: "error", error: { type: "invalid_request_error",
+            message: `tool_use_id ${toolResult.tool_use_id} does not match any tool use in this session` } }),
+            { status: 400, headers: { "content-type": "application/json" } });
+        }
+        const stamped = toolResult as UserToolResultEvent & { id?: string; processed_at?: string };
+        if (!stamped.id) stamped.id = `sevt_${generateEventId()}`;
+        stamped.processed_at = this.processedClock.nowIso();
+        this.markAcceptedEventsProcessed([stamped.id], stamped.processed_at);
+        const enqueued = this.enqueueQueueInputIfNew(toolResult);
+        if (enqueued) this._broadcastPendingFrame(toolResult, resultThread);
+        if (enqueued) {
+          try { await this.schedule(5, "recoverEventQueue"); } catch {}
+        }
+        if (enqueued) await this.dispatchEventQueue(resultThread);
         return new Response(null, { status: 202 });
       }
 
@@ -4749,6 +4939,7 @@ export class SessionDO extends DurableObject<Env> {
           mcpBinding: this.env.MAIN_MCP,
           tenantId: this.state.tenant_id,
           sessionId: this.state.session_id,
+          codeMode: this.codemodeRuntime(),
           browser: this.getBrowserHarness() ?? undefined,
           auxModel: auxResolved?.model,
           auxModelInfo: auxResolved?.modelInfo,
@@ -5041,6 +5232,9 @@ export class SessionDO extends DurableObject<Env> {
         answeredNow.add(customResult.custom_tool_use_id);
         if (this.toolUseAlreadyAnswered(customResult.custom_tool_use_id, history)) continue;
         history.append(this.customToolResultTranscriptEvent(customResult));
+      } else if (event.type === "user.tool_result") {
+        const toolResult = event as UserToolResultEvent;
+        answeredNow.add(toolResult.tool_use_id);
       }
     }
     if (answeredNow.size > 0) {
@@ -5417,6 +5611,7 @@ export class SessionDO extends DurableObject<Env> {
       mcpBinding: this.env.MAIN_MCP,
       tenantId: this.state.tenant_id,
       sessionId: this.state.session_id,
+      codeMode: this.codemodeRuntime(),
       browser: this.getBrowserHarness() ?? undefined,
       auxModel: subAuxResolved?.model,
       auxModelInfo: subAuxResolved?.modelInfo,
@@ -5540,6 +5735,7 @@ export class SessionDO extends DurableObject<Env> {
             parentHistory, this._executionFences.get(parentThreadId), threadId,
           );
         },
+        toolDispatcher: this.toolDispatcher(threadId),
         abortSignal: abortController.signal,
         // Sub-agent runs inside supervisor's harness.run, which is
         // wrapped by adapter.beginTurn → sessions.status='running' for
@@ -5734,6 +5930,7 @@ export class SessionDO extends DurableObject<Env> {
       mcpBinding: this.env.MAIN_MCP,
       tenantId: this.state.tenant_id,
       sessionId: this.state.session_id,
+      codeMode: this.codemodeRuntime(),
       browser: this.getBrowserHarness() ?? undefined,
       auxModel: auxResolved?.model,
       auxModelInfo: auxResolved?.modelInfo,
@@ -6015,6 +6212,7 @@ export class SessionDO extends DurableObject<Env> {
               history, activeFence,
             );
           },
+          toolDispatcher: this.toolDispatcher(turnThreadId),
           pendingConfirmations: [],
           consumePendingConfirmation: (requestId) => {
             if (activeFence !== undefined && !this.isExecutionFenceCurrent(activeFence)) {
@@ -6055,7 +6253,8 @@ export class SessionDO extends DurableObject<Env> {
         for (const e of history.getEvents()) {
           if (((e as { session_thread_id?: string }).session_thread_id ?? "sthr_primary") !== turnThreadId) continue;
           if (e.type === "user.interrupt" || e.type === "user.message" ||
-              e.type === "user.tool_confirmation" || e.type === "user.custom_tool_result") lastUserType = e.type;
+              e.type === "user.tool_confirmation" || e.type === "user.custom_tool_result" ||
+              e.type === "user.tool_result") lastUserType = e.type;
         }
         if (lastUserType === "user.interrupt") {
           this._interruptIdleOwned.add(turnThreadId);
@@ -6106,7 +6305,7 @@ export class SessionDO extends DurableObject<Env> {
       if (ctx.runtime.pendingConfirmations?.length) {
         const answered = new Set<string>();
         for (const e of history.getEvents()) {
-          if (e.type === "agent.tool_result") {
+          if (e.type === "agent.tool_result" || e.type === "user.tool_result") {
             const id = (e as unknown as { tool_use_id?: string }).tool_use_id;
             if (id) answered.add(id);
           }
@@ -7017,7 +7216,8 @@ export class SessionDO extends DurableObject<Env> {
             exhaustedAt !== undefined && row.enqueued_at <= exhaustedAt;
           const isContinuation =
             row.type === "user.tool_confirmation" ||
-            row.type === "user.custom_tool_result";
+            row.type === "user.custom_tool_result" ||
+            row.type === "user.tool_result";
           let blocked = false;
           let blockedReason: "requires_action" | "budget_reached" | undefined;
           if (!heldAfterExhausted && !isContinuation) {
@@ -7626,7 +7826,7 @@ export class SessionDO extends DurableObject<Env> {
     try {
       const cursor = this.ctx.storage.sql.exec(
         `SELECT data FROM events
-          WHERE type IN ('agent.tool_result','agent.mcp_tool_result')`,
+          WHERE type IN ('agent.tool_result','agent.mcp_tool_result','user.tool_result')`,
       );
       for (const row of cursor) {
         try {

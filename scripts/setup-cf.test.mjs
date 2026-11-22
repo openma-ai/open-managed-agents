@@ -7,7 +7,7 @@ import test from "node:test";
 import { parse } from "jsonc-parser";
 
 const repositoryRoot = resolve(import.meta.dirname, "..");
-const configs = ["main", "agent", "integrations"].map(app => `apps/${app}/wrangler.jsonc`);
+const configs = ["main", "agent", "integrations", "codemode"].map(app => `apps/${app}/wrangler.jsonc`);
 const shared = ["PLATFORM_ROOT_SECRET", "INTEGRATIONS_INTERNAL_SECRET"];
 
 async function fixture(t, options = {}) {

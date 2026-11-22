@@ -234,6 +234,7 @@ export default defineConfig({
       { find: "@open-managed-agents/session-runtime-contract/context", replacement: "./packages/session-runtime-contract/src/context.ts" },
       { find: "@open-managed-agents/session-runtime-contract/coordination", replacement: "./packages/session-runtime-contract/src/coordination.ts" },
       { find: "@open-managed-agents/session-runtime-contract/dispatch", replacement: "./packages/session-runtime-contract/src/dispatch.ts" },
+      { find: "@open-managed-agents/session-runtime-contract/tool-dispatch", replacement: "./packages/session-runtime-contract/src/tool-dispatch.ts" },
       { find: "@open-managed-agents/session-runtime-contract/history", replacement: "./packages/session-runtime-contract/src/history.ts" },
       { find: "@open-managed-agents/session-runtime-contract/lifecycle", replacement: "./packages/session-runtime-contract/src/lifecycle.ts" },
       { find: "@open-managed-agents/session-runtime-contract/stream", replacement: "./packages/session-runtime-contract/src/stream.ts" },

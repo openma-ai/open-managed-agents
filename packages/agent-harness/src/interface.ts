@@ -7,6 +7,7 @@ import type { FileResolver } from "./history/user-content-parts";
 import type { PiModelRuntime } from "./pi-provider";
 import type { LlmLogObjectStorePort } from "./llm-logging-middleware";
 import type { SkillCatalogKvPort } from "./skills";
+import type { ToolDispatcherPort } from "@open-managed-agents/session-runtime-contract/tool-dispatch";
 
 // SandboxPort + ProcessHandle live in @open-managed-agents/sandbox so
 // non-CF runtimes (apps/main-node, future deployments) can implement the
@@ -237,6 +238,9 @@ export interface HarnessRuntime {
   ) => Promise<void>;
   reportUsage?: (input_tokens: number, output_tokens: number) => Promise<void>;
   pendingConfirmations?: string[];
+  /** Optional CMA-style dispatcher. When set, Pi tool calls are enqueued and
+   * the model turn parks until the durable worker publishes a result. */
+  toolDispatcher?: ToolDispatcherPort;
   /** Release a completed runner callback from the existing pending-action
    * state after the execution host acknowledges its response. */
   consumePendingConfirmation?: (requestId: string) => void;

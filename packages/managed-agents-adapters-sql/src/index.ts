@@ -57,4 +57,5 @@ export { SqlWorkFinalization } from "./work-finalization";
 
 export * from "./work-bootstrap";
 export { SqlCustomToolInvocations, customInvocationSchema, customInvocationMysqlSchema, ensureMysqlCustomInvocationSchema } from './custom-tool-invocations';
+export { SqlToolRequestStore, managedToolRequestSchema, type SqlToolRequestStoreOptions } from './tool-dispatch-sql';
 export { resolveSqlCoreCustomTools } from './core-custom-tools';

@@ -52,6 +52,7 @@ const ALLOWED_EVENT_TYPES = new Set<string>([
   "user.interrupt",
   "user.tool_confirmation",
   "user.custom_tool_result",
+  "user.tool_result",
   "user.define_outcome",
 ]);
 

@@ -42,6 +42,7 @@
     "bindings": [
       { "name": "SESSION_DO", "class_name": "SessionDO" },
       { "name": "SANDBOX", "class_name": "Sandbox" },
+      { "name": "CODEMODE_SANDBOX", "class_name": "CodemodeSandbox", "script_name": "managed-agents-codemode-sandbox" },
       // Cross-script DO binding for RuntimeRoom. The class lives in the main
       // worker (apps/main/wrangler.jsonc), but DOs are namespace-level and
       // any worker in the account can bind the same class via `script_name`.
@@ -159,6 +160,7 @@
         "bindings": [
           { "name": "SESSION_DO", "class_name": "SessionDO" },
           { "name": "SANDBOX", "class_name": "Sandbox" },
+          { "name": "CODEMODE_SANDBOX", "class_name": "CodemodeSandbox", "script_name": "managed-agents-codemode-sandbox" },
           { "name": "RUNTIME_ROOM", "class_name": "RuntimeRoom", "script_name": "managed-agents" }
         ]
       },
@@ -222,6 +224,7 @@
         "bindings": [
           { "name": "SESSION_DO", "class_name": "SessionDO" },
           { "name": "SANDBOX", "class_name": "Sandbox" },
+          { "name": "CODEMODE_SANDBOX", "class_name": "CodemodeSandbox", "script_name": "managed-agents-codemode-sandbox" },
           { "name": "RUNTIME_ROOM", "class_name": "RuntimeRoom", "script_name": "managed-agents-staging" }
         ]
       },

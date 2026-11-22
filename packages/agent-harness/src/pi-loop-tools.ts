@@ -3,6 +3,15 @@ import { Type, type ImageContent, type TextContent } from "@earendil-works/pi-ai
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { z } from "zod";
 import type { HarnessContext } from "./interface";
+import type { ToolExecutionConcurrency } from "@open-managed-agents/session-runtime-contract/tool-dispatch";
+
+const PARALLEL_TOOL_NAMES = new Set(["read", "glob", "grep", "web_fetch", "web_search"]);
+
+function toolConcurrency(name: string): ToolExecutionConcurrency {
+  if (PARALLEL_TOOL_NAMES.has(name)) return "parallel_safe";
+  if (name === "bash" || name === "write" || name === "edit" || name === "browser" || name === "codemode") return "exclusive";
+  return "resource_serial";
+}
 
 export function toolsToPi(ctx: HarnessContext): AgentTool[] {
   return Object.entries(ctx.tools).map(([name, raw]) => {
@@ -30,6 +39,33 @@ export function toolsToPi(ctx: HarnessContext): AgentTool[] {
           };
         }
         try {
+          if (ctx.runtime.toolDispatcher) {
+            const result = await ctx.runtime.toolDispatcher.dispatch({
+              toolCallId,
+              toolName: name,
+              args: params,
+              concurrency: toolConcurrency(name),
+            }, signal ?? new AbortController().signal);
+            if (result.pending) {
+              ctx.runtime.pendingConfirmations ??= [];
+              if (!ctx.runtime.pendingConfirmations.includes(toolCallId)) {
+                ctx.runtime.pendingConfirmations.push(toolCallId);
+              }
+              return {
+                content: valueToPiContent(result.content),
+                details: {
+                  openmaPendingConfirmation: true,
+                  openmaToolRequestId: result.requestId ?? toolCallId,
+                },
+                terminate: true,
+              };
+            }
+            return {
+              content: valueToPiContent(result.content),
+              details: result.content,
+              ...(result.isError ? { isError: true } : {}),
+            };
+          }
           const value = await tool.execute(params, { toolCallId, messages: [], abortSignal: signal });
           return { content: valueToPiContent(value), details: value };
         } catch (error) {

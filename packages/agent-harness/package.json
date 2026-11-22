@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./codemode-node": "./src/codemode-node.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.105",
@@ -12,6 +13,7 @@
     "@ai-sdk/provider": "4.0.38",
     "@earendil-works/pi-agent-core": "1.1.0",
     "@earendil-works/pi-ai": "1.1.0",
+    "@earendil-works/pi-codemode": "1.5.0",
     "@open-managed-agents/acp-runtime": "workspace:*",
     "@open-managed-agents/api-types": "workspace:*",
     "@open-managed-agents/browser-harness": "workspace:*",

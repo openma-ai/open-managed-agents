@@ -95,6 +95,13 @@ const workInputsMigration = {
   toSnapshot: "7a941c58-b1de-4d32-83e6-545034000001",
 } as const;
 
+/** 0036 adds the durable tool-request outbox used by the dispatcher/worker
+ * contract. The table is additive and is rendered from the final snapshot. */
+const toolRequestsMigration = {
+  fromSnapshot: workInputsMigration.toSnapshot,
+  toSnapshot: "ea72d2bf-9ff1-4794-a1b2-b9d90ea80927",
+} as const;
+
 /**
  * Install the main-node schema in a fresh MySQL database from the canonical
  * SQLite snapshot.  The snapshot is structural input, not SQL to be
@@ -165,6 +172,7 @@ export async function migrateNodeMysqlSchema(
       sandboxTokenHashesMigration.toSnapshot,
       workClaimPublicationMigration.toSnapshot,
       workInputsMigration.toSnapshot,
+      toolRequestsMigration.toSnapshot,
     ];
     // Walk the known additive chain toward the journal tip. Each step is
     // idempotent so an interrupted upgrade can resume on the next boot.
@@ -174,6 +182,10 @@ export async function migrateNodeMysqlSchema(
       if (installedIndex >= 0 && installedIndex < targetIndex) {
         if (installed.snapshot_id === workInputsMigration.fromSnapshot) {
           installed = { snapshot_id: workInputsMigration.toSnapshot };
+          continue;
+        }
+        if (installed.snapshot_id === toolRequestsMigration.fromSnapshot) {
+          installed = { snapshot_id: toolRequestsMigration.toSnapshot };
           continue;
         }
         if (installed.snapshot_id === usageAttributionMigration.fromSnapshot) {
@@ -244,6 +256,11 @@ export async function migrateNodeMysqlSchema(
       );
     }
     for (const table of Object.values(snapshot.tables)) {
+      // 0035 owns this table's native MySQL shape. The canonical SQLite
+      // snapshot carries the historical table for D1, but rendering it here
+      // would create a weaker SQLite-shaped identity before the native
+      // receipt migration can validate it.
+      if (table.name === "managed_custom_invocations") continue;
       await sql.exec(renderCreateTable(table));
     }
     await installEventLogTables(sql);

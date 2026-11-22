@@ -126,6 +126,9 @@ export async function recoverInterruptedState(
       case "user.custom_tool_result":
         if (ev.id) resolved.add(ev.id);
         break;
+      case "user.tool_result":
+        if (ev.tool_use_id) resolved.add(ev.tool_use_id);
+        break;
     }
   }
 

@@ -386,7 +386,7 @@ export async function ensureSchema(
     CREATE INDEX IF NOT EXISTS idx_session_events_pending
       ON session_events (session_id, session_thread_id, seq)
       WHERE processed_at IS NULL AND cancelled_at IS NULL
-        AND (type = 'user.message' OR type = 'user.tool_confirmation' OR type = 'user.custom_tool_result');
+        AND (type = 'user.message' OR type = 'user.tool_confirmation' OR type = 'user.custom_tool_result' OR type = 'user.tool_result');
   `);
   await sql.exec(`
     CREATE TABLE IF NOT EXISTS session_streams (

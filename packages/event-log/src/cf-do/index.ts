@@ -48,7 +48,8 @@ export class CfDoEventLog implements EventLogRepo {
    * appending IS the processing.
    *
    * Queue-input events (user.message / user.tool_confirmation /
-   * user.custom_tool_result) must go through `enqueueQueueInput` instead.
+   * user.custom_tool_result / user.tool_result) must go through
+   * `enqueueQueueInput` instead.
    * That writes processed_at = NULL and leaves the JSON payload unstamped
    * until `stampProcessed` promotes the same row/id at drain time. Calling
    * `append` for a queue-input event records it as already ingested and
@@ -398,7 +399,7 @@ export class CfDoEventLog implements EventLogRepo {
 }
 
 const QUEUE_TYPE_FILTER =
-  "AND (type = 'user.message' OR type = 'user.tool_confirmation' OR type = 'user.custom_tool_result')";
+  "AND (type = 'user.message' OR type = 'user.tool_confirmation' OR type = 'user.custom_tool_result' OR type = 'user.tool_result')";
 
 const QUEUE_SELECT =
   `SELECT seq, ts, enqueued_at, session_thread_id, type, data, cancelled_at,
@@ -581,7 +582,7 @@ export function ensureSchema(sql: SqlStorage): void {
     CREATE INDEX IF NOT EXISTS idx_events_pending
       ON events(session_thread_id, seq)
       WHERE processed_at IS NULL AND cancelled_at IS NULL
-        AND (type = 'user.message' OR type = 'user.tool_confirmation' OR type = 'user.custom_tool_result')
+        AND (type = 'user.message' OR type = 'user.tool_confirmation' OR type = 'user.custom_tool_result' OR type = 'user.tool_result')
   `);
   sql.exec(`
     CREATE TABLE IF NOT EXISTS streams (

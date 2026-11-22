@@ -47,6 +47,39 @@ describe("Managed session runtime codec", () => {
     });
   });
 
+  it("round-trips a worker-published user.tool_result", () => {
+    expect(decodeRuntimeProducedSessionEvent({
+      id: "worker_result_01",
+      type: "user.tool_result",
+      tool_use_id: "toolu_worker_01",
+      content: "worker output",
+      is_error: false,
+      processed_at: "2026-08-26T00:00:00.000Z",
+    })).toEqual({
+      id: "worker_result_01",
+      type: "user.tool_result",
+      toolUseId: "toolu_worker_01",
+      content: [{ type: "text", text: "worker output" }],
+      isError: false,
+      processedAt: "2026-08-26T00:00:00.000Z",
+    });
+    expect(encodeRuntimeSessionEvent({
+      id: "worker_result_01",
+      type: "user.tool_result",
+      toolUseId: "toolu_worker_01",
+      content: [{ type: "text", text: "worker output" }],
+      isError: false,
+      processedAt: "2026-08-26T00:00:00.000Z",
+    })).toEqual({
+      id: "worker_result_01",
+      type: "user.tool_result",
+      tool_use_id: "toolu_worker_01",
+      content: [{ type: "text", text: "worker output" }],
+      is_error: false,
+      processed_at: "2026-08-26T00:00:00.000Z",
+    });
+  });
+
   it("decodes committed and delta events while rejecting extension output", () => {
     expect(
       decodeRuntimeEvent(
