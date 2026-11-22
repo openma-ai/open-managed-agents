@@ -101,6 +101,8 @@
     "test:integration:storage": "vitest run --config vitest.storage.config.ts",
     "test:resource-convergence:node": "vitest run --config test/resource-convergence/vitest.node.config.ts",
     "test:integration:mysql": "pnpm --filter @open-managed-agents/main-node test:integration:mysql && pnpm --filter @open-managed-agents/sql-client test:integration:mysql",
+    "lint": "pnpm run lint:structure",
+    "lint:structure": "pnpm run check:dependency-sources && node scripts/lint-wrangler-jsonc.mjs && node scripts/check-core-boundaries.mjs && node scripts/check-platform-parity.mjs && node scripts/check-test-wiring.mjs && node scripts/check-session-ratchets.mjs",
     "test:integration:runtime": "pnpm --filter @open-managed-agents/managed-runtime-node test:docker",
     "db:generate:cf-auth": "drizzle-kit generate --config=drizzle.cf-auth.config.ts",
     "db:generate:cf-integrations": "drizzle-kit generate --config=drizzle.cf-integrations.config.ts",

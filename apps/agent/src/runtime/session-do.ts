@@ -21,9 +21,9 @@ import {
   bindStoredModelCardCredentials, delegationCredentials, type ResolvedModelCardCredentials,
   buildTools, disposeTools, ToolFailureError, resolveProxiedToolCall, resolveSkills,
   resolveCustomSkills, resolveCustomSkillMounts, type SkillMountDescriptor, getSkillFiles,
-  getSkillFilesFromManagedSource, mountSkillFiles, agentUsesAssemblySkillMount,
+  mountSkillFiles, agentUsesAssemblySkillMount,
   resolveSkillAssemblyConfig, skillMountsShouldFetchBodies, resolveAppendablePrompts,
-  InMemoryHistory, INTERRUPTED_TOOL_RESULT_TEXT, type CodemodeCheckpoint,
+  InMemoryHistory, INTERRUPTED_TOOL_RESULT_TEXT,
   type CodemodeRuntime,
 } from "@open-managed-agents/agent-harness";
 import { SessionSubagents, type SubagentTurnInput, type SubagentTurnResult } from "@open-managed-agents/session-subagents";
@@ -35,7 +35,6 @@ import { parseCronExpression } from "cron-schedule";
 import type { Env } from "@open-managed-agents/shared";
 import {
   logWarn,
-  log,
   generateEventId,
   createMonotonicClock,
   generateOutcomeId,
@@ -45,8 +44,6 @@ import {
   admitViaSessionAdmissionHook,
   SessionAdmissionDeniedError,
   ConfigError,
-  ModelError,
-  TransientInfraError,
   fileR2Key,
 } from "@open-managed-agents/shared";
 import {
@@ -98,12 +95,7 @@ import { applyCapCliPlaceholderEnvironment } from "./cap-placeholder-env";
 import {
   interruptedTurnStopReason,
   linkAbort,
-  ToolRequestDispatcher,
-  ToolRequestWorker,
-  type ToolRequest,
-  type ToolRequestStorePort,
   type ToolDispatcherPort,
-  type ToolRequestResult,
 } from "@open-managed-agents/session-runtime-contract";
 import {
   ensureSessionExecutionCoordinatorSchema,
@@ -173,8 +165,7 @@ import {
   type ActiveOutcomeState,
   type OutcomeEvaluationRecord,
 } from "./outcome-supervisor";
-import { buildCfServices, buildCfTenantDbProvider, getCfServicesForTenant } from "@open-managed-agents/services";
-import { SqlToolRequestStore } from "@open-managed-agents/managed-agents-adapters-sql";
+import { buildCfTenantDbProvider, getCfServicesForTenant } from "@open-managed-agents/services";
 import { toEnvironmentConfig } from "@open-managed-agents/environments-store";
 import { ensureEnvironmentPackages, environmentCommandPath } from "@open-managed-agents/sandbox";
 import { createCfBrowserHarness } from "@open-managed-agents/browser-harness/cf";
@@ -195,6 +186,12 @@ import {
 import {
   CloudflareSessionWakeupScheduler,
 } from "@open-managed-agents/session-wakeup-cloudflare";
+import {
+  SessionToolDispatchController,
+  acceptToolResultEvent,
+  createCodemodeRuntime,
+  type ToolDispatchHost,
+} from "./tool-dispatch-worker";
 
 interface SessionInitParams {
   agent_id: string;
@@ -512,159 +509,20 @@ export class SessionDO extends DurableObject<Env> {
   // instance scoped to this DO's session.
   private _runtimeAdapter: RuntimeAdapter | null = null;
   private readonly _primaryHarness = new HarnessLease();
-  /** Prevent duplicate alarm/wake executions for the same session worker. */
-  private readonly _toolWorkerRuns = new Map<string, Promise<void>>();
-  private readonly _toolWorkerWakePending = new Set<string>();
+  private _toolDispatchController: SessionToolDispatchController | undefined;
   private _managedProjectionChain: Promise<void> = Promise.resolve();
   private readonly _wakeupScheduler: CloudflareSessionWakeupScheduler;
   private readonly _wakeups: SessionWakeupApplication;
 
   private codemodeRuntime(): CodemodeRuntime | undefined {
-    const namespace = this.env.CODEMODE_SANDBOX;
-    if (!namespace) return undefined;
-    return {
-      remote: () => namespace.getByName(this.state.session_id) as unknown as ReturnType<NonNullable<CodemodeRuntime["remote"]>>,
-      interruptBudget: 100_000,
-      timeoutMs: 300_000,
-      memoryLimitBytes: 32 * 1024 * 1024,
-      checkpointStore: {
-        load: (key) => this.ctx.storage.get<CodemodeCheckpoint>(key).then((value) => value ?? null),
-        save: (key, checkpoint) => this.ctx.storage.put(key, checkpoint),
-        clear: (key) => this.ctx.storage.delete(key).then(() => undefined),
-      },
-      checkpointKey: (toolCallId) => `codemode-checkpoint:${this.state.session_id}:${toolCallId}`,
-    };
+    return createCodemodeRuntime(this.env.CODEMODE_SANDBOX, this.ctx.storage, this.state.session_id);
   }
 
-  /**
-   * CMA-style model-loop dispatcher. The model process only persists a
-   * request and parks its turn. A short worker tick claims and executes it,
-   * then feeds a durable user.tool_result back through the normal queue.
-   */
   private toolDispatcher(threadId: string): ToolDispatcherPort | undefined {
-    if (!this.state.tenant_id || !this.state.session_id) return undefined;
-    const store = {
-      resolve: async (): Promise<ToolRequestStorePort> => {
-        const db = await buildCfTenantDbProvider(this.env).resolve(this.state.tenant_id);
-        return new SqlToolRequestStore(new CfD1SqlClient(db), { dialect: "sqlite" });
-      },
-    };
-    return {
-      dispatch: async (input, signal) => {
-        const durable = await store.resolve();
-        return new ToolRequestDispatcher({
-          store: durable,
-          workspaceId: this.state.tenant_id,
-          sessionId: this.state.session_id,
-          sessionThreadId: threadId,
-          parkAfterEnqueue: true,
-          onEnqueued: (request) => this.wakeToolWorker(request),
-        }).dispatch(input, signal);
-      },
-    };
-  }
-
-  private wakeToolWorker(request: ToolRequest): void {
-    const existing = this._toolWorkerRuns.get(request.sessionId);
-    if (existing) {
-      this._toolWorkerWakePending.add(request.sessionId);
-      return;
+    if (!this._toolDispatchController) {
+      this._toolDispatchController = new SessionToolDispatchController(this as unknown as ToolDispatchHost);
     }
-    const run = Promise.resolve().then(() => this.runToolWorkerOnce(request.sessionId));
-    this._toolWorkerRuns.set(request.sessionId, run);
-    this.ctx.waitUntil(run.catch((error) => {
-      console.error("[session_do] tool worker tick failed", error);
-    }).finally(() => {
-      if (this._toolWorkerRuns.get(request.sessionId) !== run) return;
-      this._toolWorkerRuns.delete(request.sessionId);
-      if (this._toolWorkerWakePending.delete(request.sessionId)) {
-        this.wakeToolWorker(request);
-      }
-    }));
-  }
-
-  private async runToolWorkerOnce(sessionId: string): Promise<void> {
-    const db = await buildCfTenantDbProvider(this.env).resolve(this.state.tenant_id);
-    const store = new SqlToolRequestStore(new CfD1SqlClient(db), { dialect: "sqlite" });
-    const worker = new ToolRequestWorker({
-      store,
-      workerId: `session-worker:${this.state.session_id}`,
-      leaseTtlMs: 60_000,
-      pollLimit: 1,
-      pollIntervalMs: 1,
-      execute: (request, signal) => this.executeToolRequest(request, signal),
-      onCompleted: (request) => this.publishToolRequestResult(request),
-    });
-    const signal = new AbortController().signal;
-    while (await worker.runOnce(signal, { sessionId })) {
-      // Drain the currently admitted batch. Admission still enforces
-      // parallel/resource-serial/exclusive constraints across each tick.
-    }
-  }
-
-  private async executeToolRequest(
-    request: ToolRequest,
-    signal: AbortSignal,
-  ): Promise<Pick<ToolRequestResult, "status" | "content" | "isError">> {
-    const threadId = request.sessionThreadId ?? "sthr_primary";
-    const agent = await this.getThreadAgentConfig(threadId);
-    if (!agent) throw new Error("Agent not found for tool request");
-    const sandbox = this.bindSandboxToExecution(
-      await this.getOrCreateSandbox(), signal, undefined, threadId,
-    );
-    const credentials = await this.resolveModelCardCredentials(this.agentModelHandle(agent));
-    const environmentConfig = this.state.environment_id
-      ? (await this.getEnvConfig(this.state.environment_id))?.config
-      : undefined;
-    const tools = await buildTools(agent, sandbox, {
-      ...delegationCredentials(credentials),
-      TAVILY_API_KEY: this.env.TAVILY_API_KEY,
-      toMarkdown: cfWorkersAiToMarkdown(this.env.AI),
-      environmentConfig,
-      mcpBinding: this.env.MAIN_MCP,
-      tenantId: this.state.tenant_id,
-      sessionId: this.state.session_id,
-      codeMode: this.codemodeRuntime(),
-      browser: this.getBrowserHarness() ?? undefined,
-      broadcastEvent: (event) => this.persistAndBroadcastEvent(event, threadId),
-      scheduleWakeup: (a) => this.scheduleWakeup(a),
-      cancelWakeup: (id) => this.cancelWakeup(id),
-      listWakeups: () => this.listWakeups(),
-    }, { enforcePermissions: false });
-    try {
-      const target = resolveProxiedToolCall(request.toolName, request.args);
-      const tool = tools[target.toolName];
-      if (!tool?.execute) throw new Error(`Tool ${target.toolName} is not executable`);
-      const value = await tool.execute(target.args, {
-        toolCallId: request.toolUseId,
-        messages: [],
-        abortSignal: signal,
-      });
-      return { status: "succeeded", content: value, isError: false };
-    } finally {
-      await disposeTools(tools);
-    }
-  }
-
-  private async publishToolRequestResult(request: ToolRequest): Promise<void> {
-    if (request.result === null) return;
-    const content = request.result.content;
-    const resultThreadId = request.sessionThreadId ?? "sthr_primary";
-    const resultEvent = {
-      id: `tool-result:${request.id}`,
-      type: "user.tool_result" as const,
-      tool_use_id: request.toolUseId,
-      content: [{ type: "text" as const, text: typeof content === "string" ? content : JSON.stringify(content) ?? String(content) }],
-      is_error: request.result.isError,
-      session_thread_id: resultThreadId,
-    } as unknown as UserToolResultEvent & { id: string; processed_at?: string };
-    if (this.toolUseAlreadyAnswered(request.toolUseId, this.openHistory())) return;
-    resultEvent.processed_at = this.processedClock.nowIso();
-    const queued = this.enqueueQueueInputIfNew(resultEvent);
-    if (!queued) return;
-    this._broadcastPendingFrame(resultEvent, resultThreadId);
-    try { await this.schedule(5, "recoverEventQueue"); } catch {}
-    await this.dispatchEventQueue(resultThreadId);
+    return this._toolDispatchController.dispatcher(threadId);
   }
 
   /**
@@ -2635,22 +2493,6 @@ export class SessionDO extends DurableObject<Env> {
     return this._runtimeAdapter;
   }
 
-
-  /**
-   * Get the first event after a given sequence number matching any of the given types.
-   * Returns null if no matching event exists.
-   */
-  private getFirstEventAfter(afterSeq: number, types: string[]): { seq: number; data: string } | null {
-    const placeholders = types.map(() => "?").join(", ");
-    const result = this.ctx.storage.sql.exec(
-      `SELECT seq, data FROM events WHERE seq > ? AND type IN (${placeholders}) ORDER BY seq ASC LIMIT 1`,
-      afterSeq,
-      ...types,
-    );
-    for (const row of result) return { seq: row.seq as number, data: row.data as string };
-    return null;
-  }
-
   /**
    * Override fetch to keep our custom HTTP routing.
    * Agent (via partyserver) auto-handles WebSocket upgrades and calls
@@ -3139,29 +2981,7 @@ export class SessionDO extends DurableObject<Env> {
       }
 
       if (body.type === "user.tool_result") {
-        const toolResult = body as UserToolResultEvent;
-        const resultThread =
-          (toolResult as unknown as { session_thread_id?: string }).session_thread_id ??
-          "sthr_primary";
-        if (this.toolUseAlreadyAnswered(toolResult.tool_use_id, history)) {
-          return this.acceptNoEffectAnswer(toolResult, history);
-        }
-        if (!this.toolUseExists(toolResult.tool_use_id, history)) {
-          return new Response(JSON.stringify({ type: "error", error: { type: "invalid_request_error",
-            message: `tool_use_id ${toolResult.tool_use_id} does not match any tool use in this session` } }),
-            { status: 400, headers: { "content-type": "application/json" } });
-        }
-        const stamped = toolResult as UserToolResultEvent & { id?: string; processed_at?: string };
-        if (!stamped.id) stamped.id = `sevt_${generateEventId()}`;
-        stamped.processed_at = this.processedClock.nowIso();
-        this.markAcceptedEventsProcessed([stamped.id], stamped.processed_at);
-        const enqueued = this.enqueueQueueInputIfNew(toolResult);
-        if (enqueued) this._broadcastPendingFrame(toolResult, resultThread);
-        if (enqueued) {
-          try { await this.schedule(5, "recoverEventQueue"); } catch {}
-        }
-        if (enqueued) await this.dispatchEventQueue(resultThread);
-        return new Response(null, { status: 202 });
+        return acceptToolResultEvent(this as unknown as Parameters<typeof acceptToolResultEvent>[0], body as UserToolResultEvent, history);
       }
 
       if (body.type === "user.define_outcome") {
@@ -5259,31 +5079,6 @@ export class SessionDO extends DurableObject<Env> {
       : [...batch].reverse().find((event) => event.type === "user.message")) as UserMessageEvent | undefined
       ?? { type: "user.message", content: [{ type: "text", text: "" }] };
     return this.processUserMessage(message, runningAnnounced, signal, fence);
-  }
-
-  /**
-   * Resolve a credential token from vault by credential ID.
-   */
-  private async resolveCredentialToken(credentialId?: string): Promise<string | null> {
-    if (!credentialId) return null;
-    const vaultIds = this.state.vault_ids;
-    // Prefer snapshot — works in staging where CONFIG_KV is the wrong namespace.
-    const snapshotCreds = await this.getVaultCredentials(vaultIds);
-    for (const cred of snapshotCreds) {
-      if (cred.id === credentialId) {
-        return cred.auth?.token || cred.auth?.access_token || null;
-      }
-    }
-    // Fallback: direct KV lookup. Already covered by getVaultCredentials when
-    // the snapshot is absent, but we keep this exact-key get as a fast path.
-    for (const vaultId of vaultIds) {
-      const credData = await this.env.CONFIG_KV.get(this.tk("cred", vaultId, credentialId));
-      if (credData) {
-        const cred = JSON.parse(credData);
-        return cred.auth?.token || cred.auth?.access_token || null;
-      }
-    }
-    return null;
   }
 
   /**
