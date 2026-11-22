@@ -237,6 +237,15 @@ export class SessionToolDispatchController {
             abortSignal: signal,
           });
           return { status: "succeeded", content: value, isError: false };
+        } catch (error) {
+          // A live callback can outlive its model turn. If that turn's
+          // execution monitor closed before dispatch, reconstruct the tool
+          // from the durable request under the worker's current authority.
+          // Other live failures remain authoritative and are published once.
+          const staleExecutionFence = String(error).endsWith("execution lease monitor closed")
+            || (typeof error === "object" && error !== null
+              && (error as { message?: unknown }).message === "execution lease monitor closed");
+          if (!staleExecutionFence) throw error;
         } finally {
           this.liveExecutions.delete(request.toolUseId);
         }
