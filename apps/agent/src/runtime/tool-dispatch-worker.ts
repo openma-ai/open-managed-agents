@@ -111,7 +111,16 @@ export interface ToolDispatchAdapters {
 export class SessionToolDispatchController {
   private readonly runs = new Map<string, Promise<void>>();
   private readonly wakePending = new Set<string>();
-  private readonly liveExecutions = new Map<string, (input: unknown, options?: unknown) => Promise<unknown>>();
+  private readonly liveExecutions = new Map<string, {
+    execute: (input: unknown, options?: unknown) => Promise<unknown>;
+    /**
+     * A live callback is only safe while the current turn is held open by a
+     * custom-tool approval. Ordinary tool requests must be rebuilt by the
+     * worker after the model turn parks, so a stale turn fence cannot turn a
+     * recoverable request into an undefined result.
+     */
+    allowLive: boolean;
+  }>();
 
   constructor(
     private readonly host: ToolDispatchHost,
@@ -123,7 +132,10 @@ export class SessionToolDispatchController {
     if (!state.tenant_id || !state.session_id) return undefined;
     return {
       registerExecution: (toolUseId, execute) => {
-        this.liveExecutions.set(toolUseId, execute);
+        this.liveExecutions.set(toolUseId, {
+          execute,
+          allowLive: this.hasPendingCustomTool(threadId),
+        });
       },
       dispatch: async (input, signal) => {
         const db = await buildCfTenantDbProvider(this.host.env).resolve(state.tenant_id);
@@ -138,6 +150,17 @@ export class SessionToolDispatchController {
         }).dispatch(input, signal);
       },
     };
+  }
+
+  private hasPendingCustomTool(threadId: string): boolean {
+    const history = this.host.openHistory();
+    return history.getEvents().some((event) => {
+      if (event.type !== "agent.custom_tool_use") return false;
+      const eventThread = (event as { session_thread_id?: unknown }).session_thread_id;
+      if ((eventThread ?? "sthr_primary") !== threadId) return false;
+      const toolUseId = (event as { id?: unknown }).id;
+      return typeof toolUseId === "string" && !this.host.toolUseAlreadyAnswered(toolUseId, history);
+    });
   }
 
   private wake(request: ToolRequest): void {
@@ -228,10 +251,10 @@ export class SessionToolDispatchController {
     }, { enforcePermissions: false });
     try {
       const target = resolveProxiedToolCall(request.toolName, request.args);
-      const liveExecute = this.liveExecutions.get(request.toolUseId);
-      if (liveExecute) {
+      const liveExecution = this.liveExecutions.get(request.toolUseId);
+      if (liveExecution?.allowLive) {
         try {
-          const value = await liveExecute(target.args, {
+          const value = await liveExecution.execute(target.args, {
             toolCallId: request.toolUseId,
             messages: [],
             abortSignal: signal,
@@ -251,6 +274,7 @@ export class SessionToolDispatchController {
           this.liveExecutions.delete(request.toolUseId);
         }
       }
+      if (liveExecution) this.liveExecutions.delete(request.toolUseId);
       const tool = tools[target.toolName];
       if (!tool?.execute) throw new Error(`Tool ${target.toolName} is not executable`);
       const value = await tool.execute(target.args, {
