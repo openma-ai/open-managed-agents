@@ -4,12 +4,26 @@
 // methods. These assertions must hold unchanged on the converged code.
 import { env, exports } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { registerHarness } from "../../packages/agent-harness/src/registry";
 import { beginModelEgress, completeModelEgress } from "@open-managed-agents/domain/sessions";
 
 const SPEND_HARNESS = "characterization-usage-budget-spend";
 const REPORT_HARNESS = "characterization-usage-report";
+
+const ownedStubs: DurableObjectStub[] = [];
+
+afterEach(async () => {
+  for (const stub of ownedStubs.splice(0)) {
+    await runInDurableObject(stub, async (instance: any, state: any) => {
+      await instance._recoveryPromise;
+      await instance._recoveryRun;
+      await instance._finalizePromise;
+      await Promise.all(instance._maintenanceRuns.values());
+      await state.storage.deleteAlarm();
+    });
+  }
+});
 
 // One turn: harness usage report, one model span with cache buckets, one
 // metered egress that crosses the cap, then a refused egress.
@@ -65,6 +79,7 @@ async function createSession(input: { harness: string; priced: boolean; budgetCe
   expect(created.status).toBe(201);
   const session = await created.json() as { id: string };
   const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(JSON.stringify(["default", session.id])));
+  ownedStubs.push(stub);
   return { id: session.id, stub };
 }
 
