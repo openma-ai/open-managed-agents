@@ -34,8 +34,9 @@ import { createNodeOpenAIArtifactPublisher, withReportedArtifactPublication } fr
 
 import {
   buildTools, disposeTools, composeSystemPrompt, agentUsesAssemblySkillMount, type HarnessContext,
-  readHarnessAgentModelSettings, createPiModelRuntime, resolveHarness, createNodeCodemodeRuntime,
+  readHarnessAgentModelSettings, createPiModelRuntime, resolveHarness,
 } from "@open-managed-agents/agent-harness";
+import { createNodeCodemodeRuntime } from "@open-managed-agents/agent-harness/codemode-node";
 
 import { generateText } from "ai";
 
