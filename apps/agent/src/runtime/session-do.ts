@@ -5060,7 +5060,7 @@ export class SessionDO extends DurableObject<Env> {
     const workerBatch = planAcceptedWorkerBatch(asWireEvents(history.getEvents()), asWireEvents(batch),
       pendingCustomIds, this.state.pending_tool_calls ?? [], answerRemaining);
     if (!workerBatch.hasWorkerResult && workerBatch.earlyCustom !== null) {
-      for (const transcript of workerBatch.earlyCustom.transcripts) history.append(transcript as SessionEvent);
+      for (const transcript of workerBatch.earlyCustom.transcripts) history.append(transcript as unknown as SessionEvent);
       this.setState({ ...this.state, pending_tool_calls: workerBatch.earlyCustom.pending });
       return;
     }
@@ -5072,7 +5072,7 @@ export class SessionDO extends DurableObject<Env> {
       this.setState({ ...this.state, pending_tool_calls: pending });
       if (stopIds === "waiting") return;
       if (stopIds !== null) {
-        const idleEvent = workerContinuationIdleEvent(stopIds) as SessionEvent;
+        const idleEvent = workerContinuationIdleEvent(stopIds);
         history.append(idleEvent);
         this.broadcastEvent(idleEvent, fence);
         if (action !== null) return;

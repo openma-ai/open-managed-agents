@@ -67,18 +67,18 @@ export function acceptedEarlyCustomToolResults(
     (pendingCustomIds.has(event.custom_tool_use_id) || hasPendingWorker));
 }
 
-export interface EarlyCustomContinuationPlan {
-  transcripts: Record<string, unknown>[];
-  pending: WorkerPendingCall[];
+export interface EarlyCustomContinuationPlan<T extends WorkerPendingCall = WorkerPendingCall> {
+  transcripts: WireEvent[];
+  pending: T[];
 }
 
-export function planEarlyCustomContinuation(
+export function planEarlyCustomContinuation<T extends WorkerPendingCall>(
   events: readonly WireEvent[],
   batch: readonly WireEvent[],
   pendingCustomIds: ReadonlySet<string>,
-  pending: readonly WorkerPendingCall[],
+  pending: readonly T[],
   answerRemaining: readonly string[] | null,
-): EarlyCustomContinuationPlan | null {
+): EarlyCustomContinuationPlan<T> | null {
   const accepted = acceptedEarlyCustomToolResults(events, batch, pendingCustomIds, pending, answerRemaining);
   if (accepted.length === 0) return null;
   const answered = new Set(accepted.map((event) => event.custom_tool_use_id));
@@ -178,19 +178,19 @@ export function workerContinuationAction(
   return clientCallIds.length > 0 ? clientCallIds : null;
 }
 
-export interface WorkerContinuationPlan {
-  pending: WorkerPendingCall[];
+export interface WorkerContinuationPlan<T extends WorkerPendingCall = WorkerPendingCall> {
+  pending: T[];
   action: "waiting" | string[] | null;
   customCallIds: string[];
   stopIds: "waiting" | string[] | null;
 }
 
 /** Resolve a batch of durable worker results without mutating session state. */
-export function planWorkerContinuation(
+export function planWorkerContinuation<T extends WorkerPendingCall>(
   events: readonly WireEvent[],
   batch: readonly WireEvent[],
-  pending: readonly WorkerPendingCall[],
-): WorkerContinuationPlan {
+  pending: readonly T[],
+): WorkerContinuationPlan<T> {
   const answered = new Set(batch
     .filter((event) => event.type === "user.tool_result")
     .map((event) => event.tool_use_id)
@@ -208,31 +208,36 @@ export function planWorkerContinuation(
   return { ...plan, stopIds: workerContinuationStopIds(plan) };
 }
 
-export function workerContinuationStopIds(
-  plan: Omit<WorkerContinuationPlan, "stopIds">,
+export function workerContinuationStopIds<T extends WorkerPendingCall>(
+  plan: Omit<WorkerContinuationPlan<T>, "stopIds">,
 ): "waiting" | string[] | null {
   if (plan.action === "waiting") return "waiting";
   if (plan.action !== null) return plan.action;
   return plan.customCallIds.length > 0 ? plan.customCallIds : null;
 }
 
-export function workerContinuationIdleEvent(stopIds: readonly string[]): Record<string, unknown> {
+export interface WorkerContinuationIdleEvent {
+  type: "session.status_idle";
+  stop_reason: { type: "requires_action"; event_ids: string[] };
+}
+
+export function workerContinuationIdleEvent(stopIds: readonly string[]): WorkerContinuationIdleEvent {
   return { type: "session.status_idle", stop_reason: requiresActionStopReason(stopIds) };
 }
 
-export interface AcceptedWorkerBatchPlan {
+export interface AcceptedWorkerBatchPlan<T extends WorkerPendingCall = WorkerPendingCall> {
   hasWorkerResult: boolean;
-  earlyCustom: EarlyCustomContinuationPlan | null;
-  worker: WorkerContinuationPlan | null;
+  earlyCustom: EarlyCustomContinuationPlan<T> | null;
+  worker: WorkerContinuationPlan<T> | null;
 }
 
-export function planAcceptedWorkerBatch(
+export function planAcceptedWorkerBatch<T extends WorkerPendingCall>(
   events: readonly WireEvent[],
   batch: readonly WireEvent[],
   pendingCustomIds: ReadonlySet<string>,
-  pending: readonly WorkerPendingCall[],
+  pending: readonly T[],
   answerRemaining: readonly string[] | null,
-): AcceptedWorkerBatchPlan {
+): AcceptedWorkerBatchPlan<T> {
   const hasWorkerResult = batch.some((event) => event.type === "user.tool_result");
   return {
     hasWorkerResult,
