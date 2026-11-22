@@ -26,6 +26,11 @@ export type ToolDispatchOutcome = Pick<ToolRequestResult, "status" | "content" |
 };
 
 export interface ToolDispatcherPort {
+  /** Register a live-process implementation before its durable request is queued. */
+  registerExecution?(
+    toolUseId: string,
+    execute: (input: unknown, options?: unknown) => Promise<unknown>,
+  ): void;
   dispatch(input: ToolDispatchInput, signal: AbortSignal): Promise<ToolDispatchOutcome>;
 }
 

@@ -111,6 +111,7 @@ export interface ToolDispatchAdapters {
 export class SessionToolDispatchController {
   private readonly runs = new Map<string, Promise<void>>();
   private readonly wakePending = new Set<string>();
+  private readonly liveExecutions = new Map<string, (input: unknown, options?: unknown) => Promise<unknown>>();
 
   constructor(
     private readonly host: ToolDispatchHost,
@@ -121,6 +122,9 @@ export class SessionToolDispatchController {
     const state = this.host.state;
     if (!state.tenant_id || !state.session_id) return undefined;
     return {
+      registerExecution: (toolUseId, execute) => {
+        this.liveExecutions.set(toolUseId, execute);
+      },
       dispatch: async (input, signal) => {
         const db = await buildCfTenantDbProvider(this.host.env).resolve(state.tenant_id);
         const store = new SqlToolRequestStore(new CfD1SqlClient(db), { dialect: "sqlite" });
@@ -224,6 +228,19 @@ export class SessionToolDispatchController {
     }, { enforcePermissions: false });
     try {
       const target = resolveProxiedToolCall(request.toolName, request.args);
+      const liveExecute = this.liveExecutions.get(request.toolUseId);
+      if (liveExecute) {
+        try {
+          const value = await liveExecute(target.args, {
+            toolCallId: request.toolUseId,
+            messages: [],
+            abortSignal: signal,
+          });
+          return { status: "succeeded", content: value, isError: false };
+        } finally {
+          this.liveExecutions.delete(request.toolUseId);
+        }
+      }
       const tool = tools[target.toolName];
       if (!tool?.execute) throw new Error(`Tool ${target.toolName} is not executable`);
       const value = await tool.execute(target.args, {

@@ -95,9 +95,10 @@ import {
   customToolResultTranscript,
   missingWorkerToolResultTranscripts,
   pendingCallFromEvent,
+  planAcceptedWorkerBatch,
   shouldAppendWorkerAgentResult,
   toolUseIsAnswered,
-  workerContinuationAction,
+  workerContinuationIdleEvent,
 } from "@open-managed-agents/session-runtime-contract/worker-continuation";
 import { executionContinuationEvents, sessionExecutionLeaseTtlMs, decideExpiredExecution, decideLeaseRenewal, decideRecoveryFromCanonicalStream, evaluateCoordinationPolicy, type ActiveTurnRecord, type CanonicalTurnEvidence, type CoordinationAction, type ExecutionLeaseRecord, type QueuedInputRecord, type ScheduleWakeRecord, SessionExecutionHost, SessionSandboxRuntime, sessionSandboxWarningEvent, type SessionExecutionRunResult } from "@open-managed-agents/session-runtime";
 import { applyCapCliPlaceholderEnvironment } from "./cap-placeholder-env";
@@ -5046,31 +5047,48 @@ export class SessionDO extends DurableObject<Env> {
     signal?: AbortSignal,
     fence?: SessionExecutionFence,
   ): Promise<{ holdQueuedOnLane?: boolean } | void> {
-    // Receipt echoes can precede consumption (including a duplicate early reply).
-    // Only transcript results prove a custom answer has actually been applied.
     const answers = planRequiresActionAnswers(asWireEvents(batch), () =>
       historyForRequiresAction(asWireEvents(history.getEvents()), asWireEvents(batch)));
-    if (answers.type === "no_effect") return;
+    const answerRemaining = answers.type === "proceed" ? answers.remaining : null;
     for (const transcript of missingWorkerToolResultTranscripts(
       asWireEvents(batch), asWireEvents(history.getEvents()))) {
       history.append(transcript as unknown as SessionEvent);
       this.broadcastEvent(transcript as unknown as SessionEvent, fence);
     }
-    const parkedStill = (answers.remaining?.length ?? 0) > 0;
+    const pendingCustomIds = new Set((this.state.pending_tool_calls ?? []).filter((pending) =>
+      awaitsCustomToolResult(resolveProxiedToolCall(pending.toolName, pending.args).toolName)).map((pending) => pending.toolCallId));
+    const workerBatch = planAcceptedWorkerBatch(asWireEvents(history.getEvents()), asWireEvents(batch),
+      pendingCustomIds, this.state.pending_tool_calls ?? [], answerRemaining);
+    if (!workerBatch.hasWorkerResult && workerBatch.earlyCustom !== null) {
+      for (const transcript of workerBatch.earlyCustom.transcripts) history.append(transcript as SessionEvent);
+      this.setState({ ...this.state, pending_tool_calls: workerBatch.earlyCustom.pending });
+      return;
+    }
+    if (answers.type === "no_effect" && !workerBatch.hasWorkerResult) {
+      return;
+    }
+    if (workerBatch.worker !== null) {
+      const { pending, stopIds, action } = workerBatch.worker;
+      this.setState({ ...this.state, pending_tool_calls: pending });
+      if (stopIds === "waiting") return;
+      if (stopIds !== null) {
+        const idleEvent = workerContinuationIdleEvent(stopIds) as SessionEvent;
+        history.append(idleEvent);
+        this.broadcastEvent(idleEvent, fence);
+        if (action !== null) return;
+      }
+    }
+    const parkedStill = (answerRemaining?.length ?? 0) > 0;
     const answeredNow = new Set<string>();
-    // A confirmed tool's result lands inside running...idle.
     const runningAnnounced = !parkedStill && batch.some((event) => event.type === "user.tool_confirmation");
     if (runningAnnounced) {
       const runningEvent: SessionEvent = { type: "session.status_running" };
-      history.append(runningEvent);
-      this.broadcastEvent(runningEvent, fence);
+      history.append(runningEvent); this.broadcastEvent(runningEvent, fence);
     }
     for (const event of batch) {
       if (event.type === "user.tool_confirmation") {
         const confirmation = event as UserToolConfirmationEvent;
         answeredNow.add(confirmation.tool_use_id);
-        // A second tool_result for one tool_use makes the provider 400 the
-        // whole transcript.
         if (this.toolUseAlreadyAnswered(confirmation.tool_use_id, history)) continue;
         await this.applyToolConfirmation(confirmation, history, signal, fence);
       } else if (event.type === "user.custom_tool_result") {
@@ -5088,32 +5106,15 @@ export class SessionDO extends DurableObject<Env> {
       this.setState({ ...this.state, pending_tool_calls: (this.state.pending_tool_calls ?? [])
         .filter((pending) => !answeredNow.has(pending.toolCallId) && !closed.has(pending.toolCallId)) });
     }
-    if (batch.some((event) => event.type === "user.tool_result")) {
-      const action = workerContinuationAction(
-        asWireEvents(history.getEvents()),
-        this.state.pending_tool_calls ?? [],
-      );
-      if (action === "waiting") return;
-      if (action !== null) {
-        const idleEvent: SessionEvent = {
-          type: "session.status_idle",
-          stop_reason: requiresActionStopReason(action),
-        } as SessionEvent;
-        history.append(idleEvent);
-        this.broadcastEvent(idleEvent, fence);
-        return;
-      }
-    }
     if (parkedStill) {
       const idleEvent: SessionEvent = {
         type: "session.status_idle",
-        stop_reason: requiresActionStopReason(answers.remaining!),
+        stop_reason: requiresActionStopReason(answerRemaining!),
       } as SessionEvent;
       history.append(idleEvent);
       this.broadcastEvent(idleEvent, fence);
       return;
     }
-    // Answers and budget/outcome events continue from the existing history.
     const message: UserMessageEvent = (trigger?.type === "user.message" ? trigger
       : [...batch].reverse().find((event) => event.type === "user.message")) as UserMessageEvent | undefined
       ?? { type: "user.message", content: [{ type: "text", text: "" }] };
@@ -6087,8 +6088,7 @@ export class SessionDO extends DurableObject<Env> {
 
       // Broadcast running status
       if (!runningAnnounced) {
-        const runningEvent: SessionEvent = { type: "session.status_running" };
-        history.append(runningEvent);
+      const runningEvent: SessionEvent = { type: "session.status_running" }; history.append(runningEvent);
         this.broadcastEvent(runningEvent, activeFence);
       }
 

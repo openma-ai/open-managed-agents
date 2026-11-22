@@ -21,12 +21,21 @@ export {
 } from "./settle-events";
 export type { SettleOnlyReason } from "./settle-events";
 export {
+  acceptedEarlyCustomToolResults,
   historyForRequiresAction,
   pendingCallFromEvent,
+  planAcceptedWorkerBatch,
+  planEarlyCustomContinuation,
+  planWorkerContinuation,
   toolUseIsAnswered,
+  workerContinuationIdleEvent,
+  workerContinuationStopIds,
   workerContinuationAction,
   workerToolResultTranscript,
   type PendingWorkerCallEvent,
+  type EarlyCustomToolResultEvent,
+  type EarlyCustomContinuationPlan,
+  type AcceptedWorkerBatchPlan,
   type WorkerPendingCall,
   type WorkerToolResultEvent,
 } from "./worker-continuation";
