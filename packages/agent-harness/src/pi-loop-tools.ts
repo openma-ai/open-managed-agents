@@ -39,7 +39,12 @@ export function toolsToPi(ctx: HarnessContext): AgentTool[] {
           };
         }
         try {
-          if (ctx.runtime.toolDispatcher) {
+          // MCP clients own a live Streamable HTTP session for the lifetime of
+          // the tool set. Keep those calls in the current harness turn so the
+          // client can publish the protocol-native `agent.mcp_tool_result`
+          // event and close exactly once. Durable worker execution is used for
+          // tools whose state can be reconstructed from the durable request.
+          if (ctx.runtime.toolDispatcher && !name.startsWith("mcp__")) {
             const result = await ctx.runtime.toolDispatcher.dispatch({
               toolCallId,
               toolName: name,

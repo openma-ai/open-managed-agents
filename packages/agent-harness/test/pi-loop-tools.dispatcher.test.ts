@@ -27,4 +27,27 @@ describe("Pi tool dispatcher boundary", () => {
     expect(execute).not.toHaveBeenCalled();
     expect(result.content).toEqual([{ type: "text", text: "worker-result" }]);
   });
+
+  it("keeps MCP calls on the live client session", async () => {
+    const execute = vi.fn(async () => ({ content: [{ type: "text", text: "mcp-result" }] }));
+    const dispatch = vi.fn();
+    const tools = toolsToPi({
+      tools: {
+        "mcp__fake__echo": { description: "echo", inputSchema: { type: "object" }, execute },
+      },
+      runtime: {
+        history: { getEvents: () => [] },
+        broadcast: vi.fn(),
+        toolDispatcher: { dispatch },
+      },
+    } as unknown as HarnessContext);
+
+    const result = await tools[0].execute("mcp-call-1", { value: "managed" }, new AbortController().signal);
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(execute).toHaveBeenCalledWith(
+      { value: "managed" },
+      expect.objectContaining({ toolCallId: "mcp-call-1" }),
+    );
+    expect(result.content).toEqual([{ type: "text", text: JSON.stringify({ content: [{ type: "text", text: "mcp-result" }] }) }]);
+  });
 });

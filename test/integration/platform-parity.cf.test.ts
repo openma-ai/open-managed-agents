@@ -132,7 +132,7 @@ const durableWorker = (scenario: string): KnownDifference => ({
   title: "Cloudflare durable worker receipt",
   paths: ["/events/session.status_running", "/events/user.tool_result"],
   eventTypes: ["user.tool_result", "session.status_running"],
-  cause: "Cloudflare executes built-in and MCP tools through the durable worker request queue, so the public "
+  cause: "Cloudflare executes built-in tools through the durable worker request queue, so the public "
     + "user.tool_result receipt and the continuation running marker are present in the event log. Node runs "
     + "the same tool loop inline and has no worker receipt event",
 });
