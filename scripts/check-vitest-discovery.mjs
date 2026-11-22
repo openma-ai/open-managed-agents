@@ -91,7 +91,10 @@ test("root Cloudflare test discovery excludes generated and Node-only trees", ()
       path === "scripts/cost-attribution-certification.test.mjs" ||
       path === "scripts/local-release-certification.test.mjs" ||
       path === "scripts/deepseek-live-certification.test.mjs" ||
-      path === "scripts/harness-in-sandbox-live-certification.test.mjs" || [
+      path === "scripts/harness-in-sandbox-live-certification.test.mjs" ||
+      // The code-mode adapter keeps QuickJS in a worker thread
+      // (node:worker_threads), which workerd has no module for.
+      path === "packages/agent-harness/test/codemode.test.ts" || [
         "apps/main-fly/",
         "apps/main-vercel/",
         "packages/acp-runtime/",

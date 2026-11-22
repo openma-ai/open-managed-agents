@@ -18,7 +18,6 @@
     "@cloudflare/sandbox": "1.0.3",
     "@earendil-works/pi-agent-core": "1.1.0",
     "@earendil-works/pi-ai": "1.1.0",
-    "@earendil-works/pi-codemode": "1.5.0",
     "@open-managed-agents/acp-runtime": "workspace:*",
     "@open-managed-agents/agent-harness": "workspace:*",
     "@open-managed-agents/api-types": "workspace:*",

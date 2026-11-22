@@ -1,5 +1,5 @@
 import { readFile, readdir } from "node:fs/promises";
-import { extname, join } from "node:path";
+import { dirname, extname, join, posix } from "node:path";
 import {
   providerPackageBoundaryViolations,
   providerWorkspaceBoundaryViolations,
@@ -151,6 +151,62 @@ for (const sourcePath of await sourceFiles(SHARED_HARNESS_DIRECTORY)) {
   }
 }
 
+// The Cloudflare hosts bundle the shared harness barrel
+// (packages/agent-harness/src/index.ts). Anything that barrel reaches has to
+// load in workerd, which has no node:worker_threads. The Node/Bun code-mode
+// adapter keeps QuickJS in a worker thread, so its upstream package root
+// imports node:worker_threads; it therefore lives behind the "./codemode-node"
+// subpath export and must stay out of the barrel's module graph.
+const SHARED_HARNESS_BARREL = "packages/agent-harness/src/index.ts";
+const NODE_ONLY_PACKAGE_ROOTS = new Set([
+  // The root entry re-exports CodemodeSandbox, which runs QuickJS in a worker
+  // thread. The "./portable" and "./declarations" subpaths import no node:*
+  // module and stay usable from the Cloudflare hosts.
+  "@earendil-works/pi-codemode",
+]);
+
+const sharedHarnessSources = new Map();
+for (const sourcePath of await sourceFiles(SHARED_HARNESS_DIRECTORY)) {
+  sharedHarnessSources.set(normalizePath(sourcePath), await readFile(sourcePath, "utf8"));
+}
+
+/** The first-party file a relative specifier points at, if it is one. */
+function resolveSharedHarnessModule(fromPath, specifier) {
+  const base = dirname(normalizePath(fromPath));
+  const target = posix.join(base, specifier);
+  for (const candidate of [target, `${target}.ts`, `${target}/index.ts`]) {
+    if (sharedHarnessSources.has(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+/** Every first-party file the Cloudflare-consumed barrel reaches. */
+function sharedHarnessFilesReachableFromBarrel() {
+  const reached = new Set();
+  const queue = [SHARED_HARNESS_BARREL];
+  while (queue.length > 0) {
+    const current = queue.pop();
+    if (reached.has(current)) continue;
+    reached.add(current);
+    for (const specifier of importSpecifiers(sharedHarnessSources.get(current) ?? "")) {
+      if (!specifier.startsWith(".")) continue;
+      const target = resolveSharedHarnessModule(current, specifier);
+      if (target !== undefined) queue.push(target);
+    }
+  }
+  return reached;
+}
+
+for (const sourcePath of sharedHarnessFilesReachableFromBarrel()) {
+  for (const specifier of importSpecifiers(sharedHarnessSources.get(sourcePath) ?? "")) {
+    if (NODE_ONLY_PACKAGE_ROOTS.has(specifier)) {
+      violations.push(`${sourcePath}: Node-only package root ${specifier} is reachable from ${SHARED_HARNESS_BARREL} (workerd has no node:worker_threads; import the "./codemode-node" subpath export instead)`);
+    } else if (specifier.startsWith("node:")) {
+      violations.push(`${sourcePath}: node: builtin ${specifier} is reachable from ${SHARED_HARNESS_BARREL} (the shared harness must stay platform-neutral)`);
+    }
+  }
+}
+
 // The Session sandbox core (design §0.0 rule 15, §0.7) is one
 // implementation in packages/session-runtime over the Sandbox SDK v2
 // vocabulary only (session-runtime itself depends on sql-client, so this is
@@ -233,6 +289,11 @@ async function sourceFiles(directory) {
     else if ([".ts", ".tsx", ".mts"].includes(extname(entry.name))) files.push(path);
   }
   return files;
+}
+
+/** Repository-relative POSIX path, so path maths matches the source paths. */
+function normalizePath(path) {
+  return path.split("\\").join("/");
 }
 
 function importSpecifiers(source) {

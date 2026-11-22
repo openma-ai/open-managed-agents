@@ -251,6 +251,10 @@ export default defineConfig({
       { find: "@open-managed-agents/sandbox-gateway", replacement: "./packages/sandbox-gateway/src/index.ts" },
       { find: "@open-managed-agents/session-realtime", replacement: "./packages/session-realtime/src/index.ts" },
       { find: "@open-managed-agents/session-realtime-memory", replacement: "./packages/session-realtime-memory/src/index.ts" },
+      // The Node code-mode adapter lives behind its own subpath export. It is
+      // listed before the barrel alias so the string alias cannot rewrite the
+      // subpath onto the barrel path.
+      { find: "@open-managed-agents/agent-harness/codemode-node", replacement: "./packages/agent-harness/src/codemode-node.ts" },
       { find: "@open-managed-agents/agent-harness", replacement: "./packages/agent-harness/src/index.ts" },
       { find: "@open-managed-agents/session-outcomes", replacement: "./packages/session-outcomes/src/index.ts" },
       { find: "@open-managed-agents/session-subagents", replacement: "./packages/session-subagents/src/index.ts" },
@@ -531,6 +535,10 @@ export default defineConfig({
       "apps/main-node/**",
       "apps/matter/**",
       "packages/control-plane-node/**",
+      // Node-only: the code-mode adapter keeps QuickJS in a worker thread
+      // (node:worker_threads), which workerd has no module for. The Node pool
+      // runs it (apps/main-node/vitest.config.ts).
+      "packages/agent-harness/test/codemode.test.ts",
       "apps/main-fly/**",
       "apps/main-vercel/**",
       "packages/auth/**",

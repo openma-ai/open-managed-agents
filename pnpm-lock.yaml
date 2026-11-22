@@ -115,9 +115,6 @@ importers:
       '@earendil-works/pi-ai':
         specifier: 1.1.0
         version: 1.1.0(@aws-sdk/credential-provider-node@3.972.84)(@modelcontextprotocol/sdk@1.29.0)(@smithy/signature-v4@5.7.3)(undici@8.12.4)(ws@8.21.0)(zod@4.3.6)
-      '@earendil-works/pi-codemode':
-        specifier: 1.5.0
-        version: 1.5.0
       '@open-managed-agents/acp-runtime':
         specifier: workspace:*
         version: link:../../packages/acp-runtime
