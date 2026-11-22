@@ -13,7 +13,8 @@
     "./lifecycle": "./src/lifecycle.ts",
     "./stream": "./src/stream.ts",
     "./settle-events": "./src/settle-events.ts",
-    "./requires-action": "./src/requires-action.ts"
+    "./requires-action": "./src/requires-action.ts",
+    "./worker-continuation": "./src/worker-continuation.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

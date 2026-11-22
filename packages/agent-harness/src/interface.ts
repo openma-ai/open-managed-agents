@@ -238,6 +238,9 @@ export interface HarnessRuntime {
   ) => Promise<void>;
   reportUsage?: (input_tokens: number, output_tokens: number) => Promise<void>;
   pendingConfirmations?: string[];
+  /** Durable worker calls remain pending for continuation admission but do
+   * not expose a client-facing requires_action stop reason. */
+  pendingDispatches?: string[];
   /** Optional CMA-style dispatcher. When set, Pi tool calls are enqueued and
    * the model turn parks until the durable worker publishes a result. */
   toolDispatcher?: ToolDispatcherPort;

@@ -12,7 +12,7 @@
  */
 import { settleOnlyReason, settleOnlyRejectMessage } from "./settle-events";
 
-type WireEvent = { type?: string; [key: string]: unknown };
+export type WireEvent = { type?: string; [key: string]: unknown };
 
 /** Narrow history frames for requires_action bookkeeping without forcing
  *  callers to write `as unknown as` (banned by the runtime-adapter lint). */

@@ -21,6 +21,16 @@ export {
 } from "./settle-events";
 export type { SettleOnlyReason } from "./settle-events";
 export {
+  historyForRequiresAction,
+  pendingCallFromEvent,
+  toolUseIsAnswered,
+  workerContinuationAction,
+  workerToolResultTranscript,
+  type PendingWorkerCallEvent,
+  type WorkerPendingCall,
+  type WorkerToolResultEvent,
+} from "./worker-continuation";
+export {
   idleStopReasonForCancelledTurn,
   interruptedTurnStopReason,
   isSilentTurnCancel,

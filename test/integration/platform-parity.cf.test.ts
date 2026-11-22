@@ -127,13 +127,27 @@ const stub = (scenario: string, paths: string[]): KnownDifference => ({
   cause: STUB_CAUSE,
 });
 const FIRST_RESULT_TEXT = "/events/agent.tool_result/0/content/0/text";
+const durableWorker = (scenario: string): KnownDifference => ({
+  scenario,
+  title: "Cloudflare durable worker receipt",
+  paths: ["/events/session.status_running", "/events/user.tool_result"],
+  eventTypes: ["user.tool_result", "session.status_running"],
+  cause: "Cloudflare executes built-in and MCP tools through the durable worker request queue, so the public "
+    + "user.tool_result receipt and the continuation running marker are present in the event log. Node runs "
+    + "the same tool loop inline and has no worker receipt event",
+});
 
 const KNOWN_DIFFERENCES: KnownDifference[] = [
   stub("tool-call", [FIRST_RESULT_TEXT]),
+  durableWorker("tool-call"),
   stub("budget-usage", [FIRST_RESULT_TEXT]),
+  durableWorker("budget-usage"),
   stub("interrupt", [FIRST_RESULT_TEXT]),
+  durableWorker("interrupt"),
   stub("session-outputs", [FIRST_RESULT_TEXT]),
+  durableWorker("session-outputs"),
   stub("mixed-custom-tools", [FIRST_RESULT_TEXT]),
+  durableWorker("mixed-custom-tools"),
   {
     scenario: "memory-read-write",
     title: "managed memory unavailable in the CF fixture",
@@ -144,6 +158,7 @@ const KNOWN_DIFFERENCES: KnownDifference[] = [
       "/events/session.error",
       "/events/session.status_idle",
       "/events/session.status_running",
+      "/events/user.tool_result",
       "/events/session.usage",
       "/events/span.model_request_end",
       "/events/span.model_request_start",
@@ -159,6 +174,7 @@ const KNOWN_DIFFERENCES: KnownDifference[] = [
       "session.error",
       "session.status_idle",
       "session.status_running",
+      "user.tool_result",
       "span.model_request_end",
       "span.model_request_start",
     ],
@@ -166,6 +182,7 @@ const KNOWN_DIFFERENCES: KnownDifference[] = [
       + "(apps/agent/src/runtime/sandbox.ts:463-467). This masks the complete scenario result; the targeted memory authority "
       + "and Node parity paths provide the positive storage evidence",
   },
+  durableWorker("subagent-call"),
   {
     scenario: "session-outputs",
     title: "outputs not published",

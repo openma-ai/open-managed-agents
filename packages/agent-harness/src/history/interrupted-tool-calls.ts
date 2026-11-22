@@ -94,7 +94,7 @@ export function normalizeInterruptedToolCalls(events: SessionEvent[]): SessionEv
   const laterResultAt = new Map<string, number>();
   for (let i = 0; i < events.length; i++) {
     const e = events[i];
-    if (e.type === "agent.tool_result" || e.type === "agent.mcp_tool_result") {
+    if (e.type === "agent.tool_result" || e.type === "agent.mcp_tool_result" || e.type === "user.tool_result") {
       const id = (e as { tool_use_id?: string; mcp_tool_use_id?: string }).tool_use_id
         ?? (e as { mcp_tool_use_id?: string }).mcp_tool_use_id;
       if (id && !laterResultAt.has(id)) laterResultAt.set(id, i);
@@ -147,7 +147,7 @@ export function normalizeInterruptedToolCalls(events: SessionEvent[]): SessionEv
       });
     }
 
-    if (e.type === "agent.tool_result" || e.type === "agent.mcp_tool_result") {
+    if (e.type === "agent.tool_result" || e.type === "agent.mcp_tool_result" || e.type === "user.tool_result") {
       const id = (e as { tool_use_id?: string; mcp_tool_use_id?: string }).tool_use_id
         ?? (e as { mcp_tool_use_id?: string }).mcp_tool_use_id;
       if (id && answered.has(id)) {

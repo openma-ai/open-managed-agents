@@ -76,9 +76,7 @@ export interface ToolDispatchHost {
   listWakeups(): ToolDispatchWakeup[];
   openHistory(): HistoryStore;
   toolUseAlreadyAnswered(toolUseId: string, history: HistoryStore): boolean;
-  processedNow(): string;
   enqueueQueueInputIfNew(event: SessionEvent): boolean;
-  broadcastPendingFrame(event: SessionEvent, threadId: string): void;
   schedule(delayMs: number, callback: string): Promise<unknown>;
   dispatchEventQueue(threadId: string): Promise<void>;
 }
@@ -88,6 +86,7 @@ export interface ToolResultHost {
   toolUseExists(toolUseId: string, history: HistoryStore): boolean;
   acceptNoEffectAnswer(event: SessionEvent, history: HistoryStore): Response;
   processedNow(): string;
+  appendToolResultTranscript(event: SessionEvent, threadId: string): void;
   markAcceptedEventsProcessed(eventIds: string[], processedAt: string): void;
   enqueueQueueInputIfNew(event: SessionEvent): boolean;
   broadcastPendingFrame(event: SessionEvent, threadId: string): void;
@@ -95,12 +94,28 @@ export interface ToolResultHost {
   dispatchEventQueue(threadId: string): Promise<void>;
 }
 
+export interface ToolDispatchAdapters {
+  processedNow(): string;
+  appendToolResultTranscript(event: SessionEvent, threadId: string): void;
+  broadcastPendingFrame(event: SessionEvent, threadId: string): void;
+  delegateToAgentForTool(
+    agentId: string,
+    message: string,
+    threadId: string,
+    sandbox: SandboxExecutor,
+    signal: AbortSignal,
+  ): Promise<string>;
+}
+
 /** Session-local adapter for the durable dispatcher/worker split. */
 export class SessionToolDispatchController {
   private readonly runs = new Map<string, Promise<void>>();
   private readonly wakePending = new Set<string>();
 
-  constructor(private readonly host: ToolDispatchHost) {}
+  constructor(
+    private readonly host: ToolDispatchHost,
+    private readonly adapters: ToolDispatchAdapters,
+  ) {}
 
   dispatcher(threadId: string): ToolDispatcherPort | undefined {
     const state = this.host.state;
@@ -204,6 +219,8 @@ export class SessionToolDispatchController {
       scheduleWakeup: (args) => this.host.scheduleWakeup(args),
       cancelWakeup: (id) => this.host.cancelWakeup(id),
       listWakeups: () => this.host.listWakeups(),
+      delegateToAgent: (agentId, message) =>
+        this.adapters.delegateToAgentForTool(agentId, message, threadId, sandbox, signal),
     }, { enforcePermissions: false });
     try {
       const target = resolveProxiedToolCall(request.toolName, request.args);
@@ -233,10 +250,10 @@ export class SessionToolDispatchController {
       session_thread_id: threadId,
     } as unknown as UserToolResultEvent & { id: string; processed_at?: string };
     if (this.host.toolUseAlreadyAnswered(request.toolUseId, this.host.openHistory())) return;
-    event.processed_at = this.host.processedNow();
+    event.processed_at = this.adapters.processedNow();
     const queued = this.host.enqueueQueueInputIfNew(event);
     if (!queued) return;
-    this.host.broadcastPendingFrame(event, threadId);
+    this.adapters.broadcastPendingFrame(event, threadId);
     try { await this.host.schedule(5, "recoverEventQueue"); } catch {}
     await this.host.dispatchEventQueue(threadId);
   }
@@ -280,6 +297,18 @@ export async function acceptToolResultEvent(
   if (!stamped.id) stamped.id = `sevt_${generateEventId()}`;
   stamped.processed_at = host.processedNow();
   host.markAcceptedEventsProcessed([stamped.id], stamped.processed_at);
+  const transcript: SessionEvent = {
+    type: "agent.tool_result",
+    tool_use_id: toolResult.tool_use_id,
+    content: toolResult.content,
+    parent_event_id: toolResult.tool_use_id,
+    ...(toolResult.is_error === true ? { is_error: true } : {}),
+    ...(threadId !== "sthr_primary" ? { session_thread_id: threadId } : {}),
+  } as unknown as SessionEvent;
+  // Publish the harness transcript at admission time. This makes a worker
+  // result durable before a concurrent client answer can resume the model,
+  // while the user.tool_result remains the public CMA receipt in the queue.
+  host.appendToolResultTranscript(transcript, threadId);
   const enqueued = host.enqueueQueueInputIfNew(toolResult);
   if (enqueued) host.broadcastPendingFrame(toolResult, threadId);
   if (enqueued) {

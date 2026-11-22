@@ -90,6 +90,15 @@ import {
   toolResultIds,
   type PendingToolCall as ResolvedPendingToolCall,
 } from "@open-managed-agents/session-runtime-contract/requires-action";
+import {
+  historyForRequiresAction,
+  customToolResultTranscript,
+  missingWorkerToolResultTranscripts,
+  pendingCallFromEvent,
+  shouldAppendWorkerAgentResult,
+  toolUseIsAnswered,
+  workerContinuationAction,
+} from "@open-managed-agents/session-runtime-contract/worker-continuation";
 import { executionContinuationEvents, sessionExecutionLeaseTtlMs, decideExpiredExecution, decideLeaseRenewal, decideRecoveryFromCanonicalStream, evaluateCoordinationPolicy, type ActiveTurnRecord, type CanonicalTurnEvidence, type CoordinationAction, type ExecutionLeaseRecord, type QueuedInputRecord, type ScheduleWakeRecord, SessionExecutionHost, SessionSandboxRuntime, sessionSandboxWarningEvent, type SessionExecutionRunResult } from "@open-managed-agents/session-runtime";
 import { applyCapCliPlaceholderEnvironment } from "./cap-placeholder-env";
 import {
@@ -191,6 +200,8 @@ import {
   acceptToolResultEvent,
   createCodemodeRuntime,
   type ToolDispatchHost,
+  type ToolDispatchAdapters,
+  type ToolResultHost,
 } from "./tool-dispatch-worker";
 
 interface SessionInitParams {
@@ -251,6 +262,7 @@ interface PendingToolCall {
   toolCallId: string;
   toolName: string;
   args: Record<string, unknown>;
+  execution?: "worker" | "client";
 }
 
 /**
@@ -520,9 +532,31 @@ export class SessionDO extends DurableObject<Env> {
 
   private toolDispatcher(threadId: string): ToolDispatcherPort | undefined {
     if (!this._toolDispatchController) {
-      this._toolDispatchController = new SessionToolDispatchController(this as unknown as ToolDispatchHost);
+      const adapters: ToolDispatchAdapters = {
+        processedNow: () => this.processedClock.nowIso(),
+        appendToolResultTranscript: (event, laneId) => this.persistAndBroadcastEvent(event, laneId),
+        broadcastPendingFrame: (event, laneId) => this._broadcastPendingFrame(event, laneId),
+        delegateToAgentForTool: (agentId, message, laneId, sandbox, signal) =>
+          this.runSubAgent(agentId, message, this.openHistory(), sandbox, laneId, signal),
+      };
+      this._toolDispatchController = new SessionToolDispatchController(this as unknown as ToolDispatchHost, adapters);
     }
     return this._toolDispatchController.dispatcher(threadId);
+  }
+
+  private toolResultHost(): ToolResultHost {
+    return {
+      toolUseAlreadyAnswered: (id, history) => this.toolUseAlreadyAnswered(id, history),
+      toolUseExists: (id, history) => this.toolUseExists(id, history),
+      acceptNoEffectAnswer: (event, history) => this.acceptNoEffectAnswer(event, history),
+      processedNow: () => this.processedClock.nowIso(),
+      appendToolResultTranscript: (event, laneId) => this.persistAndBroadcastEvent(event, laneId),
+      markAcceptedEventsProcessed: (ids, processedAt) => this.markAcceptedEventsProcessed(ids, processedAt),
+      enqueueQueueInputIfNew: (event) => this.enqueueQueueInputIfNew(event),
+      broadcastPendingFrame: (event, laneId) => this._broadcastPendingFrame(event, laneId),
+      schedule: (delayMs, callback) => this.schedule(delayMs, callback as keyof SessionDO),
+      dispatchEventQueue: (threadId) => this.dispatchEventQueue(threadId),
+    };
   }
 
   /**
@@ -2969,6 +3003,7 @@ export class SessionDO extends DurableObject<Env> {
         if (!stamped.id) stamped.id = `sevt_${generateEventId()}`;
         stamped.processed_at = this.processedClock.nowIso();
         this.markAcceptedEventsProcessed([stamped.id], stamped.processed_at);
+        history.append(customToolResultTranscript(customResult) as unknown as SessionEvent);
         const enqueued = this.enqueueQueueInputIfNew(customResult);
         if (enqueued) this._broadcastPendingFrame(customResult, ctrThread);
         if (enqueued) {
@@ -2981,7 +3016,7 @@ export class SessionDO extends DurableObject<Env> {
       }
 
       if (body.type === "user.tool_result") {
-        return acceptToolResultEvent(this as unknown as Parameters<typeof acceptToolResultEvent>[0], body as UserToolResultEvent, history);
+        return acceptToolResultEvent(this.toolResultHost(), body as UserToolResultEvent, history);
       }
 
       if (body.type === "user.define_outcome") {
@@ -3847,7 +3882,9 @@ export class SessionDO extends DurableObject<Env> {
         // of an aborted tool is discarded).
         if (event.type === "agent.tool_result") {
           const id = (event as unknown as { tool_use_id?: string }).tool_use_id;
-          if (id && this.toolUseAlreadyAnswered(id, history)) return;
+          if (id && this.toolUseAlreadyAnswered(id, history)) {
+            if (!shouldAppendWorkerAgentResult(id, asWireEvents(history.getEvents()))) return;
+          }
         }
         history.append(event);
       },
@@ -4883,23 +4920,6 @@ export class SessionDO extends DurableObject<Env> {
     return closedCount;
   }
 
-  /**
-   * The harness transcript's tool result for a client's custom tool answer.
-   * The public log carries only user.custom_tool_result (official CMA), so this
-   * is appended for the model and pairing checks, never broadcast or projected.
-   */
-  private customToolResultTranscriptEvent(result: UserCustomToolResultEvent): SessionEvent {
-    return {
-      type: "agent.tool_result",
-      tool_use_id: result.custom_tool_use_id,
-      content: (result.content ?? []).map((b) => b.type === "text" ? b.text : "").join(""),
-      // v1-additive (docs/trajectory-v1-spec.md "Causality"): matching
-      // agent.custom_tool_use's EventBase.id IS the custom_tool_use_id.
-      parent_event_id: result.custom_tool_use_id,
-      transcript_only: true,
-    } as SessionEvent;
-  }
-
   private toolUseExists(toolUseId: string, history: HistoryStore): boolean {
     try {
       return knownToolCallIds(asWireEvents(history.getEvents())).has(toolUseId);
@@ -4999,7 +5019,7 @@ export class SessionDO extends DurableObject<Env> {
 
   private toolUseAlreadyAnswered(toolUseId: string, history: HistoryStore): boolean {
     try {
-      return toolResultIds(asWireEvents(history.getEvents())).has(toolUseId);
+      return toolUseIsAnswered(toolUseId, asWireEvents(history.getEvents()));
     } catch {
       return false;
     }
@@ -5028,8 +5048,14 @@ export class SessionDO extends DurableObject<Env> {
   ): Promise<{ holdQueuedOnLane?: boolean } | void> {
     // Receipt echoes can precede consumption (including a duplicate early reply).
     // Only transcript results prove a custom answer has actually been applied.
-    const answers = planRequiresActionAnswers(asWireEvents(batch), () => asWireEvents(history.getEvents()).filter((event) => event.type !== "user.custom_tool_result"));
+    const answers = planRequiresActionAnswers(asWireEvents(batch), () =>
+      historyForRequiresAction(asWireEvents(history.getEvents()), asWireEvents(batch)));
     if (answers.type === "no_effect") return;
+    for (const transcript of missingWorkerToolResultTranscripts(
+      asWireEvents(batch), asWireEvents(history.getEvents()))) {
+      history.append(transcript as unknown as SessionEvent);
+      this.broadcastEvent(transcript as unknown as SessionEvent, fence);
+    }
     const parkedStill = (answers.remaining?.length ?? 0) > 0;
     const answeredNow = new Set<string>();
     // A confirmed tool's result lands inside running...idle.
@@ -5051,7 +5077,7 @@ export class SessionDO extends DurableObject<Env> {
         const customResult = event as UserCustomToolResultEvent;
         answeredNow.add(customResult.custom_tool_use_id);
         if (this.toolUseAlreadyAnswered(customResult.custom_tool_use_id, history)) continue;
-        history.append(this.customToolResultTranscriptEvent(customResult));
+        history.append(customToolResultTranscript(customResult) as unknown as SessionEvent);
       } else if (event.type === "user.tool_result") {
         const toolResult = event as UserToolResultEvent;
         answeredNow.add(toolResult.tool_use_id);
@@ -5062,6 +5088,22 @@ export class SessionDO extends DurableObject<Env> {
       this.setState({ ...this.state, pending_tool_calls: (this.state.pending_tool_calls ?? [])
         .filter((pending) => !answeredNow.has(pending.toolCallId) && !closed.has(pending.toolCallId)) });
     }
+    if (batch.some((event) => event.type === "user.tool_result")) {
+      const action = workerContinuationAction(
+        asWireEvents(history.getEvents()),
+        this.state.pending_tool_calls ?? [],
+      );
+      if (action === "waiting") return;
+      if (action !== null) {
+        const idleEvent: SessionEvent = {
+          type: "session.status_idle",
+          stop_reason: requiresActionStopReason(action),
+        } as SessionEvent;
+        history.append(idleEvent);
+        this.broadcastEvent(idleEvent, fence);
+        return;
+      }
+    }
     if (parkedStill) {
       const idleEvent: SessionEvent = {
         type: "session.status_idle",
@@ -5071,10 +5113,7 @@ export class SessionDO extends DurableObject<Env> {
       this.broadcastEvent(idleEvent, fence);
       return;
     }
-    // The batch's newest message drives the turn. Answers, a budget resume and
-    // an outcome alone continue from history: the empty message adds no input
-    // of its own. CF applied a user.define_outcome on receipt (POST /event), so
-    // this turn ends with its grading.
+    // Answers and budget/outcome events continue from the existing history.
     const message: UserMessageEvent = (trigger?.type === "user.message" ? trigger
       : [...batch].reverse().find((event) => event.type === "user.message")) as UserMessageEvent | undefined
       ?? { type: "user.message", content: [{ type: "text", text: "" }] };
@@ -5605,24 +5644,14 @@ export class SessionDO extends DurableObject<Env> {
       activeFence,
     );
 
-    // Pair running with one public terminal, only after bounded cleanup.
     let terminalError: Error | undefined;
     let terminalReported = false;
     let idleEmitted = false;
     let managedMemorySynchronized = false;
     let managedMemoryFailed = false;
-    // A successful turn knows its precise stop reason before tool disposal,
-    // but `status_idle` is the externally visible lifecycle boundary. Hold
-    // the event until every turn-scoped tool (including remote MCP sessions)
-    // has finished closing so clients cannot observe idle while resources are
-    // still live.
+    let internalWorkerTurn = false;
     let completedIdleEvent: SessionEvent | undefined;
     let failedAttempts: Exclude<TurnAttemptsResult, { type: "completed" }> | undefined;
-
-    // Reuse session-level sandbox (singleton) — files persist across turns.
-    // Returned object is a lazy proxy. Warmup starts concurrently with the
-    // control-plane reads below, then is awaited before tools/harness are
-    // built so declared resources are present on the first model request.
     let sandbox = this.bindSandboxToExecution(
       await this.getOrCreateSandbox(),
       parentSignal,
@@ -5630,11 +5659,6 @@ export class SessionDO extends DurableObject<Env> {
       turnThreadId,
     );
 
-    // Kick off warmup so it overlaps with the rest of pre-streamText setup
-    // Result is cached on sandboxWarmupPromise and awaited below before any
-    // tool or model can observe the runtime. Catch detached here only avoids
-    // an unhandled rejection during the overlap window; the later await
-    // propagates the same error into the turn lifecycle.
     void this.warmUpSandbox().catch(() => { /* surfaces via tool exec */ });
 
     // Fetch environment config for networking restrictions
@@ -5647,10 +5671,6 @@ export class SessionDO extends DurableObject<Env> {
       }
     }
 
-    // Warmup may overlap the preceding control-plane reads, but it must
-    // finish before harness/tool construction. This closes the first-turn
-    // race where files, repositories or skills were absent from the model's
-    // initial capability snapshot and only appeared on a later sandbox call.
     try {
       await this.warmUpSandbox();
     } catch (err) {
@@ -6009,6 +6029,7 @@ export class SessionDO extends DurableObject<Env> {
           },
           toolDispatcher: this.toolDispatcher(turnThreadId),
           pendingConfirmations: [],
+          pendingDispatches: [],
           consumePendingConfirmation: (requestId) => {
             if (activeFence !== undefined && !this.isExecutionFenceCurrent(activeFence)) {
               const error = new Error("session execution fence is no longer valid");
@@ -6091,6 +6112,7 @@ export class SessionDO extends DurableObject<Env> {
         }
       };
       await runHarness();
+      internalWorkerTurn = (ctx.runtime.pendingDispatches?.length ?? 0) > 0;
 
       // A parked call can already be closed by the time the run returns
       // (steer/interrupt closed it with a tool_result, or the client answered
@@ -6108,39 +6130,20 @@ export class SessionDO extends DurableObject<Env> {
         ctx.runtime.pendingConfirmations = ctx.runtime.pendingConfirmations.filter((id) => !answered.has(id));
       }
 
-      // Store any pending tool calls in session metadata for confirmation flow
       if (ctx.runtime.pendingConfirmations?.length) {
-        // Collect pending tool call details from the last harness run events
         const recentEvents = history.getEvents();
         const pendingCalls: PendingToolCall[] = [];
+        const pendingDispatches = new Set(ctx.runtime.pendingDispatches || []);
         for (const eventId of ctx.runtime.pendingConfirmations) {
-          // Find the matching agent.tool_use or agent.custom_tool_use event
-          const toolUseEvent = recentEvents.find((e: SessionEvent) => {
-            if (e.type === "agent.tool_use") {
-              return (e as AgentToolUseEvent).id === eventId;
-            }
-            if (e.type === "agent.custom_tool_use") {
-              return (e as import("@open-managed-agents/shared").AgentCustomToolUseEvent).id === eventId;
-            }
-            return false;
-          });
-          if (toolUseEvent) {
-            if (toolUseEvent.type === "agent.tool_use") {
-              const tue = toolUseEvent as AgentToolUseEvent;
-              pendingCalls.push({ toolCallId: tue.id, toolName: tue.name, args: tue.input });
-            } else if (toolUseEvent.type === "agent.custom_tool_use") {
-              const cte = toolUseEvent as import("@open-managed-agents/shared").AgentCustomToolUseEvent;
-              pendingCalls.push({ toolCallId: cte.id, toolName: cte.name, args: cte.input });
-            }
-          }
+          const event = recentEvents.find((candidate) =>
+            (candidate as { id?: string }).id === eventId);
+          const pending = event && pendingCallFromEvent(event, pendingDispatches);
+          if (pending) pendingCalls.push(pending);
         }
         if (pendingCalls.length) {
           this.setState({ ...this.state, pending_tool_calls: pendingCalls });
         }
       } else if ((this.state.pending_tool_calls?.length ?? 0) > 0) {
-        // The run finished without parking on a client action, so nothing is
-        // outstanding. A stale list would hold queued user.messages behind
-        // continuationsOnly claims forever.
         this.setState({ ...this.state, pending_tool_calls: [] });
       }
 
@@ -6249,16 +6252,18 @@ export class SessionDO extends DurableObject<Env> {
 
       // Determine stop reason based on pending tool confirmations or custom tool results
       const pendingConfirmations = ctx.runtime.pendingConfirmations || [];
+      const pendingDispatches = new Set(ctx.runtime.pendingDispatches || []);
+      const clientPendingConfirmations = pendingConfirmations.filter((id) => !pendingDispatches.has(id));
 
       // A pending custom tool use (no execute function) outranks always_ask confirmations.
       const storedPendingCalls = this.resolvedPendingCalls(this.state.pending_tool_calls);
       let stopReason: import("@open-managed-agents/shared").SessionStatusEvent["stop_reason"] = { type: "end_turn" };
       const budget = ctx.budget;
       finishTurn({
-        parkedOnClient: storedPendingCalls.some((p) => awaitsCustomToolResult(p.toolName)) || pendingConfirmations.length > 0,
+        parkedOnClient: storedPendingCalls.some((p) => awaitsCustomToolResult(p.toolName)) || clientPendingConfirmations.length > 0,
         budgetReached: budget?.reached === true,
       }, {
-        requiresAction: () => { stopReason = requiresActionStopReason(pendingConfirmations); },
+        requiresAction: () => { stopReason = requiresActionStopReason(clientPendingConfirmations); },
         budgetReached: () => {
           // Thread idle → usage snapshot here; the session idle is emitted
           // below. Usage source on CF: every model span in this session's log.
@@ -6343,7 +6348,7 @@ export class SessionDO extends DurableObject<Env> {
       const interruptOwnsIdle = abortController.signal.aborted &&
         this._interruptIdleOwned.delete(turnThreadId);
       if (interruptOwnsIdle) this.closeToolUsesAfterInterrupt(history, activeFence, turnThreadId);
-      if (!idleEmitted && !interruptOwnsIdle && !abortController.signal.aborted) {
+      if (!idleEmitted && !internalWorkerTurn && !interruptOwnsIdle && !abortController.signal.aborted) {
         try {
           const idleEvent: SessionEvent = completedIdleEvent ?? { type: "session.status_idle", stop_reason: { type: "end_turn" } };
           history.append(idleEvent);

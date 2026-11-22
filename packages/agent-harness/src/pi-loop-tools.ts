@@ -51,6 +51,10 @@ export function toolsToPi(ctx: HarnessContext): AgentTool[] {
               if (!ctx.runtime.pendingConfirmations.includes(toolCallId)) {
                 ctx.runtime.pendingConfirmations.push(toolCallId);
               }
+              ctx.runtime.pendingDispatches ??= [];
+              if (!ctx.runtime.pendingDispatches.includes(toolCallId)) {
+                ctx.runtime.pendingDispatches.push(toolCallId);
+              }
               return {
                 content: valueToPiContent(result.content),
                 details: {
