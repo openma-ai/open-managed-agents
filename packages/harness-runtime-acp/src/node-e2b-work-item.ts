@@ -40,5 +40,15 @@ export async function loadE2BAgentSpawner(
   }
   const isolated = module.isolateE2BAgentSpawner(new NodeSpawner());
   if (!isolated || typeof isolated.spawn !== "function") throw new TypeError("Invalid isolated E2B agent spawner");
-  return {spawn: spec => isolated.spawn({...spec, env: {PATH:"/usr/local/bin:/usr/bin:/bin",HOME:"/home/oma-worker",...spec.env}})};
+  return {spawn: spec => {
+    // The Work runner itself receives OPENMA_SANDBOX_TOKEN so it can use the
+    // authenticated File API and ACP control channels. The user-selected ACP
+    // child must not inherit that capability. Its process environment is an
+    // explicit replacement environment, and this denylist is enforced before
+    // crossing the root-private isolation module.
+    if (spec.env !== undefined && Object.hasOwn(spec.env, "OPENMA_SANDBOX_TOKEN")) {
+      throw new TypeError("E2B ACP agent environment cannot include OPENMA_SANDBOX_TOKEN");
+    }
+    return isolated.spawn({...spec, env: {PATH:"/usr/local/bin:/usr/bin:/bin",HOME:"/home/oma-worker",...spec.env}});
+  }};
 }

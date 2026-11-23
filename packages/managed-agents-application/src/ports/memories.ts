@@ -1,3 +1,5 @@
+import type { MemoryVersionActor } from "@open-managed-agents/domain/memories";
+
 export type MemoryProjection = "basic" | "full";
 
 export interface MemoryView {
@@ -25,6 +27,8 @@ export interface CreateMemoryCommand {
   content: string | null;
   path: string;
   projection?: MemoryProjection;
+  /** Optional per-operation actor. Hosts use the configured actor by default. */
+  actor?: MemoryVersionActor;
 }
 
 export interface RetrieveMemoryQuery {
@@ -44,6 +48,7 @@ export interface UpdateMemoryCommand {
   content?: string | null;
   path?: string | null;
   contentPrecondition?: MemoryContentPrecondition;
+  actor?: MemoryVersionActor;
 }
 
 export interface ListMemoriesQuery {
@@ -64,6 +69,7 @@ export interface DeleteMemoryCommand {
   memoryStoreId: string;
   memoryId: string;
   expectedContentSha256?: string;
+  actor?: MemoryVersionActor;
 }
 
 export interface MemoryPathConflict {

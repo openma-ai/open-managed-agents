@@ -114,6 +114,17 @@ export interface E2BObjectStorageOptions {
   /** Lifetime of each minted credential (default 1 h). A mount is re-minted
    * and remounted at the next attach or sync once less than half is left. */
   ttlSeconds?: number;
+  /** Optional File API gateway endpoint for the pinned `rclone-oma` remote.
+   * The endpoint is passed to the root mount process through
+   * `OMA_GATEWAY_ENDPOINT`, never as a secret-bearing command argument. Both
+   * gatewayEndpoint and sandboxToken must be supplied to select this path.
+   * The current Session id is passed separately as OMA_SESSION_ID. */
+  gatewayEndpoint?: string;
+  /** The current execution attempt's unified sandbox token. Prefer a
+   * zero-argument provider so the token remains in control-plane memory until
+   * the mount starts. It is passed only as OPENMA_SANDBOX_TOKEN in the root
+   * rclone process environment and never written to a config file or argv. */
+  sandboxToken?: string | ((sandbox?: object | string) => string | Promise<string>);
 }
 
 const DEFAULT_RETRY_AFTER_MS = 1_000;
@@ -133,6 +144,14 @@ export const E2B_SANDBOX_SETUP = [
   "  elif command -v apk >/dev/null 2>&1; then apk add --no-cache rclone fuse3 >/dev/null;",
   "  else echo 'no package manager to install rclone' >&2; exit 1; fi",
   "fi",
+].join("\n");
+/** Setup contract for the gateway-backed OMA remote. The pinned
+ * `/usr/local/bin/rclone-oma` binary is built from packages/rclone-oma and is
+ * deliberately not downloaded or replaced at runtime. */
+export const E2B_OMA_SANDBOX_SETUP = [
+  E2B_SANDBOX_DIRECTORIES,
+  "test -x /usr/local/bin/rclone-oma || { echo 'rclone-oma is required for OMA gateway mounts' >&2; exit 1; }",
+  "command -v fusermount3 >/dev/null 2>&1 || { echo 'fuse3 is required for OMA gateway mounts' >&2; exit 1; }",
 ].join("\n");
 
 export function createE2BV2Adapter(options: E2BV2AdapterOptions): SandboxAdapterPort<E2BSandboxExecutor> {
@@ -384,7 +403,11 @@ export function e2bObjectStorage(
   options: E2BObjectStorageOptions,
 ): SandboxStoragePort<E2BSandboxExecutor> {
   const ttlSeconds = options.ttlSeconds ?? 3_600;
-  interface Mount { identity: string; expiresAt: number; issue(): ReturnType<ObjectStoreCredentialPort["issue"]>; readOnly: boolean }
+  const gatewayConfigured = options.gatewayEndpoint !== undefined || options.sandboxToken !== undefined;
+  if (gatewayConfigured && (options.gatewayEndpoint === undefined || options.sandboxToken === undefined)) {
+    throw new TypeError("E2B OMA gateway mounts require both gatewayEndpoint and sandboxToken");
+  }
+  interface Mount { identity: string; expiresAt: number; issue(): ReturnType<ObjectStoreCredentialPort["issue"]>; readOnly: boolean; gatewayRoot: string }
   const mounted = new WeakMap<E2BSandboxExecutor, { owner: { uid: string; gid: string }; mounts: Map<string, Mount> }>();
   const fresh = (mount: Mount) => mount.expiresAt - Date.now() > (ttlSeconds * 1_000) / 2;
   const asRoot = async (runtime: E2BSandboxExecutor, command: string, envs?: Record<string, string>) => {
@@ -393,9 +416,16 @@ export function e2bObjectStorage(
     const result = await runtimeCall(() => runtime.run(command, { user: "root", timeoutMs: 60_000, sessionEnv: false, ...(envs === undefined ? {} : { envs }) }));
     if (result.exitCode !== 0) throw new Error(`E2B storage command failed (exit ${result.exitCode}): ${(result.stderr || result.stdout).slice(0, 300)}`);
   };
-  const mount = async (runtime: E2BSandboxExecutor, owner: { uid: string; gid: string }, target: string, entry: Mount) => {
-    const credentials = await entry.issue();
-    const remote = `:s3:${credentials.bucket}/${credentials.prefix.replace(/\/$/u, "")}`;
+  const tokenForMount = async (runtime: E2BSandboxExecutor): Promise<string> => {
+    const token = options.sandboxToken;
+    if (token === undefined) throw new Error("E2B OMA gateway mount token is not configured");
+    return typeof token === "function" ? await token(runtime) : token;
+  };
+  const mount = async (runtime: E2BSandboxExecutor, owner: { uid: string; gid: string }, target: string, entry: Mount, sessionId: string) => {
+    const credentials = gatewayConfigured ? undefined : await entry.issue();
+    const remote = gatewayConfigured
+      ? `:oma:${entry.gatewayRoot}`
+      : `:s3:${credentials!.bucket}/${credentials!.prefix.replace(/\/$/u, "")}`;
     const control = e2bMountControlDirectory(target);
     const flags = [
       "--rc",
@@ -409,22 +439,26 @@ export function e2bObjectStorage(
       "--vfs-cache-mode=writes",
       ...(entry.readOnly ? ["--read-only"] : []),
     ].map(quote).join(" ");
+    const envs: Record<string, string> = gatewayConfigured
+      ? { OMA_GATEWAY_ENDPOINT: options.gatewayEndpoint!, OMA_SESSION_ID: sessionId, OPENMA_SANDBOX_TOKEN: await tokenForMount(runtime) }
+      : {
+        RCLONE_S3_PROVIDER: "Cloudflare",
+        RCLONE_S3_ENDPOINT: credentials!.endpoint,
+        RCLONE_S3_REGION: "auto",
+        RCLONE_S3_ACCESS_KEY_ID: credentials!.accessKeyId,
+        RCLONE_S3_SECRET_ACCESS_KEY: credentials!.secretAccessKey,
+        RCLONE_S3_SESSION_TOKEN: credentials!.sessionToken,
+      };
+    const command = gatewayConfigured ? "/usr/local/bin/rclone-oma" : "rclone";
     await asRoot(
       runtime,
       `(mountpoint -q ${quote(target)} && (umount ${quote(target)} || umount -l ${quote(target)})) || true; `
         + `install -d -m 700 /run/oma-rclone ${quote(control)} && rm -f ${quote(control + "/rc.sock")} && mkdir -p ${quote(target)} || exit 90; `
-        + e2bNativeMountCommand(`rclone mount ${quote(remote)} ${quote(target)} ${flags}`, target, control),
-      {
-        RCLONE_S3_PROVIDER: "Cloudflare",
-        RCLONE_S3_ENDPOINT: credentials.endpoint,
-        RCLONE_S3_REGION: "auto",
-        RCLONE_S3_ACCESS_KEY_ID: credentials.accessKeyId,
-        RCLONE_S3_SECRET_ACCESS_KEY: credentials.secretAccessKey,
-        RCLONE_S3_SESSION_TOKEN: credentials.sessionToken,
-      },
+        + e2bNativeMountCommand(`${command} mount ${quote(remote)} ${quote(target)} ${flags}`, target, control),
+      envs,
     );
     await verifyMount(runtime, target);
-    entry.expiresAt = credentials.expiresAt;
+    entry.expiresAt = gatewayConfigured ? Date.now() + ttlSeconds * 1_000 : credentials!.expiresAt;
   };
   /** The mount must be a FUSE mountpoint and its prefix listable through it. */
   const verifyMount = async (runtime: E2BSandboxExecutor, target: string) => {
@@ -447,6 +481,7 @@ export function e2bObjectStorage(
         identity: `outputs:${outputsPrefix}`,
         expiresAt: 0,
         readOnly: false,
+        gatewayRoot: `outputs/${outputsPrefix}`,
         issue: () => options.outputs.issue({ prefix: outputsPrefix, access: "read_write", ttlSeconds }),
       }]];
       for (const store of input.stores) {
@@ -457,6 +492,7 @@ export function e2bObjectStorage(
           identity: `memory:${store.storeId}:${store.readOnly ? "ro" : "rw"}`,
           expiresAt: 0,
           readOnly: store.readOnly,
+          gatewayRoot: `memory/${store.storeId}`,
           issue: () => options.memory.issue({ prefix: `${store.storeId}/`, access: store.readOnly ? "read_only" : "read_write", ttlSeconds }),
         }]);
       }
@@ -464,7 +500,7 @@ export function e2bObjectStorage(
         input.signal.throwIfAborted();
         const current = state.mounts.get(target);
         if (current !== undefined && current.identity === entry.identity && fresh(current)) continue;
-        await mount(input.runtime, state.owner, target, entry);
+        await mount(input.runtime, state.owner, target, entry, input.scope.sessionId);
         state.mounts.set(target, entry);
       }
     },
@@ -473,7 +509,7 @@ export function e2bObjectStorage(
       if (state === undefined) return;
       for (const [target, entry] of state.mounts) {
         input.signal.throwIfAborted();
-        if (!fresh(entry)) await mount(input.runtime, state.owner, target, entry);
+        if (!fresh(entry)) await mount(input.runtime, state.owner, target, entry, input.scope.sessionId);
       }
     },
     async detach(input) {

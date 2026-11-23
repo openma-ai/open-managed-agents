@@ -18,6 +18,7 @@ import {
 } from "@open-managed-agents/memory-store";
 import { generateMemoryVersionId } from "@open-managed-agents/shared";
 import type { R2EventMessage } from "@open-managed-agents/shared";
+import { processMemoryEvent } from "@open-managed-agents/queue/handlers/memory-events";
 
 const TENANT = "tn_test_consumer";
 
@@ -81,6 +82,27 @@ async function processOne(
 }
 
 describe("memory-events queue consumer — PUT", () => {
+  it("preserves the session actor carried by the storage gateway event", async () => {
+    const { memoryRepo, blobs } = createInMemoryMemoryStoreService();
+    const key = r2Key("memstore-actor", "/x");
+    await blobs.put(key, "from session");
+    await processMemoryEvent({
+      account: "openma",
+      action: "PutObject",
+      bucket: "memory",
+      object: { key },
+      eventTime: new Date().toISOString(),
+      actor: { type: "agent_session", id: "sess_actor" },
+    }, {
+      blobs,
+      resolveRepo: () => memoryRepo,
+    });
+    expect(memoryRepo.versions.at(-1)).toMatchObject({
+      actor_type: "agent_session",
+      actor_id: "sess_actor",
+    });
+  });
+
   it("synthesizes a created memory + version when a new R2 object is PUT", async () => {
     const { service, memoryRepo, blobs, storeRepo } = createInMemoryMemoryStoreService();
     void service; // service unused; consumer touches lower-level repos directly

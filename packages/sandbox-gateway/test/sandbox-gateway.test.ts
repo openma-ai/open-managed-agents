@@ -6,6 +6,7 @@ import {
   UNFENCED_SANDBOX_TOKEN,
   type SandboxBearerCodec, type SandboxTokenStore,
 } from "../src/index";
+import { memorySandboxTokens } from "./memory-sandbox-token-store";
 
 const NOW = Date.UTC(2026, 10, 8, 12);
 const now = () => NOW;
@@ -87,6 +88,35 @@ describe("sandbox token presentation (no store reads for a malformed request)", 
       expect(await authenticateSandboxEgress(store, header, { now })).toEqual({ type: "rejected" });
     }
     expect(store.find).not.toHaveBeenCalled();
+  });
+});
+
+describe("sandbox token storage gateway scope", () => {
+  it("admits the File API object verbs only for the token's Session", async () => {
+    const fixture = memorySandboxTokens({ sessionId: "sess" });
+    const token = await fixture.issue("all");
+    const request = (method: string, path: string) => authenticateSandboxTokenRequest(fixture.store, {
+      method, path, authorization: `Bearer ${token}`, apiKey: null,
+    }, now);
+    for (const method of ["GET", "HEAD", "PUT", "PATCH", "DELETE", "POST"]) {
+      await expect(request(method, "/v1/oma/storage/sessions/sess/objects/memory/store/file.txt"))
+        .resolves.toMatchObject({ type: "accepted" });
+    }
+    await expect(request("GET", "/v1/oma/storage/sessions/other/objects/memory/store/file.txt"))
+      .resolves.toMatchObject({ type: "rejected" });
+    await expect(request("GET", "/v1/oma/storage/sessions/sess/objects"))
+      .resolves.toMatchObject({ type: "rejected" });
+  });
+
+  it("admits the File API for an outside-harness egress-scoped token", async () => {
+    const fixture = memorySandboxTokens({ sessionId: "sess" });
+    const token = await fixture.issue("egress");
+    await expect(authenticateSandboxTokenRequest(fixture.store, {
+      method: "PUT",
+      path: "/v1/oma/storage/sessions/sess/objects/memory/store/file.txt",
+      authorization: `Bearer ${token}`,
+      apiKey: null,
+    }, now)).resolves.toMatchObject({ type: "accepted" });
   });
 });
 

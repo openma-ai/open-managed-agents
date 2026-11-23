@@ -160,6 +160,7 @@ import {
 } from "@open-managed-agents/shared";
 import { toEnvironmentConfig } from "@open-managed-agents/environments-store";
 import { authMiddleware } from "./auth";
+import { sandboxStorageRoutes } from "./routes/sandbox-storage";
 import { rateLimitMiddleware, authRateLimitMiddleware } from "./rate-limit";
 import { cfRouteServices } from "./lib/cf-route-services";
 import { cfDreamCredentialResolver } from "./lib/workspace-model-credentials";
@@ -434,6 +435,7 @@ type AppCtx = import("hono").Context<{
     tenant_id: string;
     user_id?: string;
     auth_credential?: ApiKeyResolution["credential"];
+    sandbox_session?: import("@open-managed-agents/sandbox-gateway").SandboxTokenSession;
     services: import("@open-managed-agents/services").Services;
     tenantDb: D1Database;
   };
@@ -573,7 +575,8 @@ const managedMemoryStoresRoutes = buildManagedMemoryStoreRoutes((context) => {
 });
 
 const managedMemoryContent = new WebCryptoMemoryContentDescriptor();
-function managedMemoryActor(userId: string | undefined) {
+function managedMemoryActor(userId: string | undefined, sessionId?: string) {
+  if (sessionId !== undefined) return { kind: "session" as const, sessionId };
   return userId === undefined
     ? { kind: "api" as const, apiKeyId: "self_hosted" }
     : { kind: "user" as const, userId };
@@ -593,6 +596,7 @@ function managedMemoriesApplicationFor(ctx: AppCtx) {
     ctx.var.tenantDb,
     ctx.env.MEMORY_BUCKET,
     ctx.var.user_id,
+    ctx.var.sandbox_session?.sessionId,
   );
 }
 
@@ -601,6 +605,7 @@ function managedMemoriesApplication(
   tenantDb: D1Database,
   bucket: Env["MEMORY_BUCKET"],
   userId?: string,
+  sessionId?: string,
 ) {
   const client = new CfD1SqlClient(tenantDb);
   return createCloudflareManagedAgentsApp({
@@ -631,7 +636,7 @@ function managedMemoriesApplication(
       providePort(memoryContentDescriptorPort, managedMemoryContent),
       providePort(
         memoryVersionActorPort,
-        managedMemoryActor(userId),
+        managedMemoryActor(userId, sessionId),
       ),
     ],
   });
@@ -1687,6 +1692,7 @@ app.route("/v1/oma/stats", statsRoutes);
 // then validates that the requested server belongs to the same Session.
 app.route("/v1/oma/mcp-proxy", mcpProxyRoutes);
 app.route("/v1/oma/inference-proxy", inferenceProxyRoutes);
+app.route("/v1/oma/storage", sandboxStorageRoutes);
 
 // /v1/oma/* aliases — OMA-only namespaces re-mounted under an `oma/` prefix
 // so the public surface can grow into a clean two-tier API:
@@ -2083,6 +2089,7 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
         sessionId: opts.sessionId,
         runtimeGeneration: opts.runtimeGeneration,
         executionFence: opts.executionFence,
+        actor: { kind: "session", sessionId: opts.sessionId },
         isFenceActive: (fence) => cfExecutionFenceActive(client, opts, fence),
       },
     );

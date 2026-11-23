@@ -51,7 +51,14 @@ export function createNodeSessionStorage(deps: NodeSessionStorageDeps): NodeSess
         for (const resource of session.resources) {
           if (resource.type !== "memory_store" || resource.access !== "read_write") continue;
           if (!await authorize()) throw new Error("Work claim lost during Memory synchronization");
-          const result = await synchronizer.synchronize({ workspaceId, sessionId: session.id, runtimeGeneration, memoryStoreId: resource.memoryStoreId, authorize });
+          const result = await synchronizer.synchronize({
+            workspaceId,
+            sessionId: session.id,
+            runtimeGeneration,
+            memoryStoreId: resource.memoryStoreId,
+            authorize,
+            actor: { kind: "session", sessionId: session.id },
+          });
           if (result.type === "fence_lost") throw new Error("Work claim lost during Memory synchronization");
           if (result.type === "distrusted") throw new Error("Writable Managed Memory workspace became distrusted: " + resource.memoryStoreId);
           if (result.conflicts.length > 0) deps.warn({ conflicts: result.conflicts, op: "main-node.managed_memory.conflicts", sessionId: session.id, workspaceId }, "Managed Memory synchronization kept canonical winners for conflicts");
@@ -94,6 +101,7 @@ export function createNodeSessionStorage(deps: NodeSessionStorageDeps): NodeSess
           runtimeGeneration,
           executionFence,
           isFenceActive: deps.isFenceActive,
+          actor: { kind: "session", sessionId: session.id },
         });
         if (result.type === "fence_lost") throw new Error(`Managed Memory synchronization lost the execution fence for ${session.id}`);
         if (result.type === "not_found") throw new Error(`Managed Session ${session.id} disappeared before Memory synchronization`);

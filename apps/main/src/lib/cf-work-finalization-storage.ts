@@ -85,7 +85,13 @@ export async function synchronizeCfWorkStorage(input: Input & { runtimeGeneratio
   }, new ManagedMemoryWorkspaceReconciler(memories), memories);
   for (const resource of writable) {
     await assertCurrent();
-    const result = await synchronizer.synchronize({ ...claim, runtimeGeneration, memoryStoreId: resource.storeId, authorize });
+    const result = await synchronizer.synchronize({
+      ...claim,
+      runtimeGeneration,
+      memoryStoreId: resource.storeId,
+      authorize,
+      actor: { kind: "session", sessionId: claim.sessionId },
+    });
     if (result.type !== "reconciled") throw new Error(`Work Memory synchronization failed: ${result.type}`);
   }
   await assertCurrent();

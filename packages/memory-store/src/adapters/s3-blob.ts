@@ -54,6 +54,7 @@ interface S3HeadOutput {
 interface S3GetOutput {
   ETag?: string;
   ContentLength?: number;
+  Metadata?: Record<string, string>;
   Body?: { transformToString(): Promise<string> };
 }
 interface S3PutOutput {
@@ -154,6 +155,9 @@ export class S3BlobStore implements BlobStore {
         text,
         etag: stripQuotes(out.ETag ?? ""),
         size: out.ContentLength ?? text.length,
+        ...(out.Metadata?.actor_type && out.Metadata.actor_id
+          ? { actorMetadata: { actor_type: out.Metadata.actor_type, actor_id: out.Metadata.actor_id } }
+          : {}),
       };
     } catch (err) {
       if (isNotFound(err)) return null;

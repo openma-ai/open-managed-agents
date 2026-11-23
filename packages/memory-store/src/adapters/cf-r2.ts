@@ -27,7 +27,15 @@ export class CfR2BlobStore implements BlobStore {
     const obj = await this.bucket.get(key);
     if (!obj) return null;
     const text = await obj.text();
-    return { text, etag: obj.etag, size: obj.size };
+    const metadata = obj.customMetadata;
+    return {
+      text,
+      etag: obj.etag,
+      size: obj.size,
+      ...(metadata?.actor_type && metadata.actor_id
+        ? { actorMetadata: { actor_type: metadata.actor_type, actor_id: metadata.actor_id } }
+        : {}),
+    };
   }
 
   async list(

@@ -182,17 +182,32 @@ async function onUnlink(
   try {
     const parsed = parseKey(absPath, deps.memoryRoot);
     if (!parsed) return;
+    let actor: R2EventMessage["actor"];
+    try {
+      const raw = await fs.readFile(`${absPath}.meta.json`, "utf8");
+      const metadata = JSON.parse(raw) as { actor_type?: string; actor_id?: string };
+      if (metadata.actor_type && metadata.actor_id && isActorType(metadata.actor_type)) {
+        actor = { type: metadata.actor_type, id: metadata.actor_id };
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
     const evt: R2EventMessage = {
       account: "node",
       action: "DeleteObject",
       bucket: "local",
       object: { key: `${parsed.storeId}${parsed.memoryPath}` },
       eventTime: new Date().toISOString(),
+      ...(actor === undefined ? {} : { actor }),
     };
     await queue.enqueue(evt);
   } catch (err) {
     log.warn(`[node-memory-queue] enqueue unlink ${absPath} failed:`, err);
   }
+}
+
+function isActorType(value: string): value is NonNullable<R2EventMessage["actor"]>["type"] {
+  return value === "api_key" || value === "user" || value === "agent_session" || value === "system";
 }
 
 export { join };

@@ -29,6 +29,12 @@ export interface Env {
   // SESSION_DO and SANDBOX are only in sandbox workers
   SESSION_DO?: DurableObjectNamespace;
   SANDBOX?: DurableObjectNamespace;
+  /** Secret for the self-hosted Node→Cloudflare native rootfs bridge. */
+  SANDBOX_API_KEY?: string;
+  /** Enables the OpenMA-owned native rootfs extension on the custom bridge. */
+  CLOUDFLARE_SANDBOX_BRIDGE_ROOTFS_SNAPSHOTS?: string;
+  /** Control-plane origin for sandbox File API mounts using rclone-oma. */
+  OMA_STORAGE_GATEWAY_ENDPOINT?: string;
   WORKSPACE_BUCKET?: R2Bucket;
   FILES_BUCKET?: R2Bucket;
   /** Memory store content bucket (Anthropic Managed Agents Memory model).
@@ -37,10 +43,9 @@ export interface Env {
    *  Mounted into agent sandboxes per attached store via
    *  sandbox.mountBucket(..., { prefix: "/<store_id>/", readOnly?: true }). */
   MEMORY_BUCKET?: R2Bucket;
-  /** Optional producer binding for the memory-events queue. The queue is
-   *  primarily fed by R2 Event Notifications (configured out-of-band via
-   *  `wrangler r2 bucket notification create`); this binding only exists
-   *  if some code path needs to enqueue messages directly (none today). */
+  /** Optional producer binding for the memory-events queue. R2 Event
+   *  Notifications remain the durable source, while the sandbox storage
+   *  gateway sends an attributed companion event when this binding exists. */
   MEMORY_QUEUE?: Queue<R2EventMessage>;
   // Cloudflare Browser Rendering — only bound on agent worker (sandbox-default)
   BROWSER?: Fetcher;
@@ -479,6 +484,13 @@ export interface R2EventMessage {
     size?: number;
     eTag?: string;
     version?: string;
+  };
+  /** Optional producer attribution. R2 notifications do not carry object
+   * custom metadata, so the sandbox storage gateway includes this on its
+   * direct queue message when the binding is available. */
+  actor?: {
+    type: "api_key" | "user" | "agent_session" | "system";
+    id: string;
   };
   eventTime: string;
   copySource?: { bucket: string; object: string };

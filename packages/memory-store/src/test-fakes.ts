@@ -396,7 +396,16 @@ export class InMemoryBlobStore implements BlobStore {
 
   async getText(key: string): Promise<BlobReadResult | null> {
     const obj = this.objects.get(key);
-    return obj ? { text: obj.text, etag: obj.etag, size: obj.size } : null;
+    return obj
+      ? {
+          text: obj.text,
+          etag: obj.etag,
+          size: obj.size,
+          ...(obj.customMetadata?.actor_type && obj.customMetadata.actor_id
+            ? { actorMetadata: { actor_type: obj.customMetadata.actor_type, actor_id: obj.customMetadata.actor_id } }
+            : {}),
+        }
+      : null;
   }
 
   async list(

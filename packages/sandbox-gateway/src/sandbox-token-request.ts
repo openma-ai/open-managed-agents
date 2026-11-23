@@ -6,14 +6,14 @@
 
 import { isSandboxTokenShaped, parseSandboxBasicCredential, sandboxTokenRandomPart } from "./sandbox-token";
 import { authenticateSandboxToken, type SandboxTokenResolution } from "./sandbox-token-authority";
-import { proxySessionId, sandboxTokenAllows } from "./sandbox-token-routes";
+import { proxySessionId, sandboxTokenAllows, SANDBOX_STORAGE_PATH } from "./sandbox-token-routes";
 import type { SandboxTokenStore } from "./sandbox-token-store";
 
 export type SandboxTokenTransport = "bearer" | "x-api-key" | "basic";
 
 export type SandboxRequestDecision =
   | { type: "absent" }
-  | { type: "accepted"; resolution: SandboxTokenResolution; transport: SandboxTokenTransport }
+  | { type: "accepted"; resolution: SandboxTokenResolution; transport: SandboxTokenTransport; session: import("./sandbox-token-store").SandboxTokenSession; attempt: import("./sandbox-token-store").SandboxTokenAttempt }
   | { type: "rejected" }
   | { type: "unavailable"; error: unknown };
 
@@ -57,11 +57,14 @@ export async function authenticateSandboxTokenRequest(
   const sessionId = pathSessionId ?? credential.basicSessionId;
   if (sessionId === null || (credential.basicSessionId !== null && credential.basicSessionId !== sessionId)) return { type: "rejected" };
   if (store === null) return { type: "unavailable", error: new Error("Sandbox token store is not configured") };
-  // Model gateway, MCP gateway and sandbox API: `all` only.
-  const decision = await authenticateSandboxToken(store, { sessionId, token: credential.token, channel: "api" }, now);
+  // The storage File API is a sandbox egress capability. An outside-sandbox
+  // harness therefore keeps its egress-scoped token while rclone talks to
+  // this gateway. Model/MCP/sandbox API routes still require `all`.
+  const channel = SANDBOX_STORAGE_PATH.test(request.path) ? "egress" as const : "api" as const;
+  const decision = await authenticateSandboxToken(store, { sessionId, token: credential.token, channel }, now);
   if (decision.type !== "accepted") return decision;
   return sandboxTokenAllows(decision.session, request.method, request.path)
-    ? { type: "accepted", resolution: decision.resolution, transport: credential.transport }
+    ? { type: "accepted", resolution: decision.resolution, transport: credential.transport, session: decision.session, attempt: decision.attempt }
     : { type: "rejected" };
 }
 
@@ -82,6 +85,8 @@ export async function sandboxTokenAuthDecision(
   return {
     type: "accepted" as const,
     transport: decision.transport,
+    session: decision.session,
+    attempt: decision.attempt,
     resolution: {
       tenantId: r.workspaceId,
       credential: {

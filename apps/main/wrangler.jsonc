@@ -153,6 +153,9 @@
   // still audit (inline write to D1 in the route handler), but agent FUSE
   // writes are not audited in dev. Documented in README.
   "queues": {
+    "producers": [
+      { "binding": "MEMORY_QUEUE", "queue": "managed-agents-memory-events" }
+    ],
     "consumers": [
       {
         "queue": "managed-agents-memory-events",
@@ -243,6 +246,9 @@
         { "name": "RL_UPLOAD_TENANT",   "namespace_id": "1007", "simple": { "limit": 30, "period": 60 } }
       ],
       "queues": {
+        "producers": [
+          { "binding": "MEMORY_QUEUE", "queue": "managed-agents-memory-events" }
+        ],
         "consumers": [
           {
             "queue": "managed-agents-memory-events",
@@ -292,7 +298,12 @@
       // staging — `managed-agents-lane-mem-anthropic` (lane worker)
       // owns them in this account and CF allows only one consumer per
       // queue. Re-add only if lane is decommissioned.
-      "queues": { "consumers": [] },
+      "queues": {
+        "producers": [
+          { "binding": "MEMORY_QUEUE", "queue": "managed-agents-memory-events-staging" }
+        ],
+        "consumers": []
+      },
       "send_email": [
         { "name": "SEND_EMAIL" }
       ],

@@ -33,7 +33,12 @@ export interface MemoryEventsDeps {
   /** Read R2 / blob bytes by key. CF wraps a CfR2BlobStore; Node has its
    *  Local / S3 BlobStore — both implement getText + head. */
   blobs: {
-    getText(key: string): Promise<{ text: string; etag: string; size: number } | null>;
+    getText(key: string): Promise<{
+      text: string;
+      etag: string;
+      size: number;
+      actorMetadata?: { actor_type: string; actor_id: string };
+    } | null>;
     head?(key: string): Promise<unknown | null>;
   };
   logger?: {
@@ -72,7 +77,7 @@ export async function processMemoryEvent(
     const result = await memoryRepo.deleteFromEvent({
       storeId,
       path: memoryPath,
-      actor: deriveActor(),
+      actor: deriveActor(event),
       nowMs,
       versionId: generateMemoryVersionId(),
     });
@@ -102,7 +107,7 @@ export async function processMemoryEvent(
       contentSha256: sha,
       etag: blob.etag,
       sizeBytes: blob.size,
-      actor: deriveActor(),
+      actor: deriveActor(event, blob.actorMetadata),
       nowMs,
       versionId: generateMemoryVersionId(),
       content: blob.text,
@@ -122,10 +127,29 @@ export function memoryEventsHandler(deps: MemoryEventsDeps): QueueHandler<Memory
   return (msg: QueueMessage<MemoryEvent>) => processMemoryEvent(msg.body, deps);
 }
 
-function deriveActor(): Actor {
-  // R2 customMetadata round-trip via R2 Event Notifications is not currently
-  // exposed in the event body. Attribute event-derived versions as
-  // agent_session to match the most likely producer (FUSE write); REST
-  // writes already wrote their own version row inline before the event fired.
+function deriveActor(
+  event: MemoryEvent,
+  metadata?: { actor_type: string; actor_id: string },
+): Actor {
+  if (event.actor !== undefined && event.actor !== null
+    && typeof event.actor.id === "string"
+    && isActorType(event.actor.type)
+    && event.actor.id.length > 0) {
+    return { type: event.actor.type, id: event.actor.id };
+  }
+  if (metadata !== undefined
+    && isActorType(metadata.actor_type)
+    && typeof metadata.actor_id === "string"
+    && metadata.actor_id.length > 0) {
+    return { type: metadata.actor_type, id: metadata.actor_id };
+  }
+  // R2 customMetadata is not present in the R2 notification body. This is a
+  // legacy fallback for writes made before the gateway started attaching a
+  // producer actor. New sandbox writes carry the session actor on the direct
+  // event or on the object metadata.
   return { type: "agent_session", id: "unknown" };
+}
+
+function isActorType(value: string): value is Actor["type"] {
+  return value === "api_key" || value === "user" || value === "agent_session" || value === "system";
 }

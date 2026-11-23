@@ -200,6 +200,8 @@ export interface BlobMetadata {
 
 export interface BlobReadResult extends BlobMetadata {
   text: string;
+  /** Producer attribution carried by an S3/R2 object when available. */
+  actorMetadata?: { actor_type: string; actor_id: string };
 }
 
 export type BlobPrecondition =
