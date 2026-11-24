@@ -18,6 +18,10 @@ export default defineConfig({
       "test/**/*.test.ts",
       "src/sandbox-provider-sdk.test.ts",
       "../../packages/control-plane-node/src/auth-cookie-warning.test.ts",
+      // Node-only: the code-mode adapter keeps QuickJS in a worker thread
+      // (node:worker_threads). workerd has no such module, so the shared
+      // harness keeps this file out of the Cloudflare root suite.
+      "../../packages/agent-harness/test/codemode.test.ts",
     ],
     // PostgreSQL/MinIO contracts own real containers and run through the
     // repository-level `test:integration:storage` project.

@@ -3,6 +3,7 @@ import type { ManagedAcpExecutionChannels, ManagedAcpExecutionChannelsRequest, M
 
 export interface Env {
   OMA_SESSION_EXECUTION_LEASE_TTL_MS?: string;
+  OMA_SESSION_EXECUTION_PROGRESS_TIMEOUT_MS?: string;
   CONFIG_KV: KVNamespace;
   /** @deprecated Pre-shard binding. Equivalent to AUTH_DB_00 (the original
    *  openma-auth database) for back-compat during the shard rollout. New
@@ -29,12 +30,8 @@ export interface Env {
   // SESSION_DO and SANDBOX are only in sandbox workers
   SESSION_DO?: DurableObjectNamespace;
   SANDBOX?: DurableObjectNamespace;
-  /** Secret for the self-hosted Node→Cloudflare native rootfs bridge. */
-  SANDBOX_API_KEY?: string;
-  /** Enables the OpenMA-owned native rootfs extension on the custom bridge. */
-  CLOUDFLARE_SANDBOX_BRIDGE_ROOTFS_SNAPSHOTS?: string;
-  /** Control-plane origin for sandbox File API mounts using rclone-oma. */
-  OMA_STORAGE_GATEWAY_ENDPOINT?: string;
+  /** Remote QuickJS Durable Object deployed in the dedicated code-mode Worker. */
+  CODEMODE_SANDBOX?: DurableObjectNamespace;
   WORKSPACE_BUCKET?: R2Bucket;
   FILES_BUCKET?: R2Bucket;
   /** Memory store content bucket (Anthropic Managed Agents Memory model).
@@ -43,9 +40,10 @@ export interface Env {
    *  Mounted into agent sandboxes per attached store via
    *  sandbox.mountBucket(..., { prefix: "/<store_id>/", readOnly?: true }). */
   MEMORY_BUCKET?: R2Bucket;
-  /** Optional producer binding for the memory-events queue. R2 Event
-   *  Notifications remain the durable source, while the sandbox storage
-   *  gateway sends an attributed companion event when this binding exists. */
+  /** Optional producer binding for the memory-events queue. The queue is
+   *  primarily fed by R2 Event Notifications (configured out-of-band via
+   *  `wrangler r2 bucket notification create`); this binding only exists
+   *  if some code path needs to enqueue messages directly (none today). */
   MEMORY_QUEUE?: Queue<R2EventMessage>;
   // Cloudflare Browser Rendering — only bound on agent worker (sandbox-default)
   BROWSER?: Fetcher;
@@ -485,9 +483,7 @@ export interface R2EventMessage {
     eTag?: string;
     version?: string;
   };
-  /** Optional producer attribution. R2 notifications do not carry object
-   * custom metadata, so the sandbox storage gateway includes this on its
-   * direct queue message when the binding is available. */
+  /** Optional producer attribution for direct queue messages. */
   actor?: {
     type: "api_key" | "user" | "agent_session" | "system";
     id: string;

@@ -159,6 +159,18 @@ describe("SqlSessionExecutionCoordinator", () => {
     expect(normal.type === "claimed" && normal.execution.id).toBe("queued_msg");
   });
 
+  it("continuationsOnly claims a worker user.tool_result", async () => {
+    await coordinator.admit(admitted("queued_msg", "session_01", at(1)));
+    await coordinator.admit({ execution: {
+      id: "worker_tool_result", workspaceId: "workspace_01", sessionId: "session_01", admittedAt: at(2),
+      events: [{ id: "worker_tool_result", type: "user.tool_result", toolUseId: "call_1",
+        content: [{ type: "text", text: "ok" }], processedAt: at(2) } as never],
+    } });
+    const parked = { ownerId: "do", claimedAt: at(3), leaseTtlMs: 10_000, continuationsOnly: true };
+    const result = await coordinator.claim({ ...parked, attemptId: "worker_attempt" });
+    expect(result.type === "claimed" && result.execution.id).toBe("worker_tool_result");
+  });
+
   it("retries failed-session projection on later sweeps even after the execution is failed", async () => {
     let failures = 0;
     let succeed = false;

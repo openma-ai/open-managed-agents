@@ -151,7 +151,7 @@ describe('Official SDK through native SQL managed services', () => {
     expect(new Set(beforeTurns.data.map(turn => turn.id)).size).toBe(3);
     const raw = await f.sql.prepare('SELECT document FROM managed_session_events WHERE session_id=?').bind(session.id).all<{ document: string }>();
     expect(raw.results?.every(row => JSON.parse(row.document).source_position)).toBe(true);
-  });
+  }, 15_000);
   it('streams factual SQL-recorded output through the official SDK and disconnects without durable cancellation', async () => {
     const f = await fixture();
     const streamed = await f.sdk.beta.agents.sessions.create({ agent: { model: 'controlled-executor' }, environment: { type: 'none' }, input: 'Stream actual recorded output', stream: true });

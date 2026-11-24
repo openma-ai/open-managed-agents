@@ -84,12 +84,48 @@ export class SqlKvStore implements KvStore {
   async compareAndSwap(key: string, expected: string | null, value: string | null): Promise<boolean> {
     const where = and(eq(kv_entries.tenant_id, this.opts.tenantId), eq(kv_entries.key, key), eq(kv_entries.value, expected ?? ""));
     if (expected === null && value === null) return (await this.get(key)) === null;
-    const query = expected === null
-      ? this.db.insert(kv_entries).values({ tenant_id: this.opts.tenantId, key, value: value!, expires_at: null }).onConflictDoNothing().returning({ key: kv_entries.key })
-      : value === null
-        ? this.db.delete(kv_entries).where(where).returning({ key: kv_entries.key })
-        : this.db.update(kv_entries).set({ value, expires_at: null }).where(where).returning({ key: kv_entries.key });
-    return (await getAll<{ key: string }>(query)).length === 1;
+    // A same-value CAS is already satisfied by the exact read. This also
+    // avoids MySQL's changed-row count of zero for a no-op UPDATE.
+    if (expected !== null && value === expected) return (await this.get(key)) === expected;
+    if (expected === null) {
+      const insert = this.db
+        .insert(kv_entries)
+        .values({ tenant_id: this.opts.tenantId, key, value: value!, expires_at: null });
+      const chain = insert as unknown as {
+        onConflictDoNothing?: () => unknown;
+        onDuplicateKeyUpdate?: (config: { set: Record<string, unknown> }) => unknown;
+      };
+      if (typeof chain.onConflictDoNothing === "function") {
+        const query = chain.onConflictDoNothing() as { returning: (fields: { key: unknown }) => unknown };
+        return (await getAll<{ key: string }>(query.returning({ key: kv_entries.key }) as PromiseLike<{ key: string }[]>)).length === 1;
+      }
+      // MySQL does not expose onConflictDoNothing or INSERT ... RETURNING.
+      // Use INSERT IGNORE through the dialect's execute seam. Unlike a
+      // no-op ON DUPLICATE KEY UPDATE, its affectedRows is 0 for a duplicate
+      // and 1 for an insert, preserving the CAS result under contention.
+      const execute = this.db as unknown as { execute?: (query: unknown) => Promise<unknown> };
+      if (typeof execute.execute === "function") {
+        const result = await execute.execute(sql`INSERT IGNORE INTO ${kv_entries}
+          (${kv_entries.tenant_id}, ${kv_entries.key}, ${kv_entries.value}, ${kv_entries.expires_at})
+          VALUES (${this.opts.tenantId}, ${key}, ${value}, ${null})`);
+        const header = Array.isArray(result) ? result[0] : result;
+        return Number((header as { affectedRows?: number } | undefined)?.affectedRows) === 1;
+      }
+      throw new Error("SqlKvStore.compareAndSwap: drizzle insert builder supports neither conflict-ignore operation");
+    }
+    const query = value === null
+      ? this.db.delete(kv_entries).where(where)
+      : this.db.update(kv_entries).set({ value, expires_at: null }).where(where);
+    const returning = query as unknown as { returning?: (fields: { key: unknown }) => unknown };
+    if (typeof returning.returning === "function") {
+      return (await getAll<{ key: string }>(returning.returning({ key: kv_entries.key }) as PromiseLike<{ key: string }[]>)).length === 1;
+    }
+    // MySQL has no DML RETURNING. For the CAS transitions used by the
+    // environment cache, changedRows/affectedRows reports whether the
+    // conditional statement matched and changed one row.
+    const result = await (query as PromiseLike<{ affectedRows?: number; changedRows?: number } | [{ affectedRows?: number; changedRows?: number }, unknown]>);
+    const header = Array.isArray(result) ? result[0] : result;
+    return Number(header?.affectedRows ?? header?.changedRows) === 1;
   }
 
   async put(key: string, value: string, opts?: KvPutOptions): Promise<void> {

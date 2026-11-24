@@ -237,6 +237,12 @@ function toToolConfig(config: WireToolConfig): AgentToolConfigInput {
         name: config.name,
         ...(config.type !== undefined && { type: config.type }),
       };
+    case "codemode":
+      return {
+        ...common,
+        name: config.name,
+        ...(config.type !== undefined && { type: config.type }),
+      };
   }
 }
 

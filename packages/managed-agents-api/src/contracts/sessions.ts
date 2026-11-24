@@ -6,7 +6,7 @@ import type {
   SessionUpdateParams,
 } from "@anthropic-ai/sdk/resources/beta/sessions/sessions";
 import { z } from "zod";
-import { agentModelInputSchema, type OpenMaMcpServerBody } from "./agents";
+import { agentModelInputSchema, type OpenMaAgentToolBody, type OpenMaMcpServerBody } from "./agents";
 import {
   agentMcpServerInputSchema,
   agentSkillInputSchema,
@@ -38,15 +38,17 @@ export type SessionCreateBody = Omit<OfficialSessionCreateBody, "agent" | "resou
   agent:
     | string
     | Exclude<OfficialSessionAgent, { type: "agent_with_overrides" }>
-    | (Omit<OfficialSessionAgentOverride, "mcp_servers"> & {
+    | (Omit<OfficialSessionAgentOverride, "mcp_servers" | "tools"> & {
         mcp_servers?: OpenMaMcpServerBody[];
+        tools?: OpenMaAgentToolBody[];
       });
 };
 export type SessionListQuery = Omit<SessionListParams, "betas">;
 type OfficialSessionUpdateBody = Omit<SessionUpdateParams, "betas">;
 export type SessionUpdateBody = Omit<OfficialSessionUpdateBody, "agent"> & {
-  agent?: Omit<NonNullable<OfficialSessionUpdateBody["agent"]>, "mcp_servers"> & {
+  agent?: Omit<NonNullable<OfficialSessionUpdateBody["agent"]>, "mcp_servers" | "tools"> & {
     mcp_servers?: OpenMaMcpServerBody[];
+    tools?: OpenMaAgentToolBody[];
   };
 };
 type SessionAgentOverrides = Extract<

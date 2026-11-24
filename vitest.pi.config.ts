@@ -8,6 +8,7 @@ export default defineConfig({
     include: [
       "packages/agent-harness/test/pi-loop.test.ts",
       "packages/agent-harness/test/pi-compaction.test.ts",
+      "packages/agent-harness/test/codemode.test.ts",
       "apps/main-node/test/pi-sandbox-harness.e2e.test.ts",
     ],
     testTimeout: 30_000,

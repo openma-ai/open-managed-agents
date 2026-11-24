@@ -29,6 +29,17 @@ export async function runKvStoreUpsert(database: NodeDatabase): Promise<void> {
 
   await kv.delete("alpha");
   expect(await kv.get("alpha")).toBeNull();
+
+  // CAS is used by the durable environment cache. The insert-if-absent branch
+  // must remain atomic on every Node SQL dialect, including MySQL where
+  // Drizzle exposes a different conflict API and no INSERT RETURNING.
+  expect(await kv.compareAndSwap?.("cas", null, "one")).toBe(true);
+  expect(await kv.compareAndSwap?.("cas", null, "two")).toBe(false);
+  expect(await kv.compareAndSwap?.("cas", "one", "two")).toBe(true);
+  expect(await kv.compareAndSwap?.("cas", "two", "two")).toBe(true);
+  expect(await kv.get("cas")).toBe("two");
+  expect(await kv.compareAndSwap?.("cas", "two", null)).toBe(true);
+  expect(await kv.get("cas")).toBeNull();
 }
 
 /** The POST /v1/oma/evals/benchmarks path that 500'd on MySQL. */

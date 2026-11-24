@@ -62,6 +62,26 @@ function decode(value:unknown,turnId:string,status:number,action:string):WorkFin
 export function createWorkFinalizationHttpClient(options:{apiBaseUrl:string;sessionId:string;sessionsToken:string;fetch?:typeof globalThis.fetch}) {
   const base = new URL(options.apiBaseUrl);
   if (!["https:","http:"].includes(base.protocol) || base.username || base.password || !text(options.sessionId) || !text(options.sessionsToken)) throw new TypeError("Invalid Work finalization connection");
+  const wait = async (ms:number, signal:AbortSignal) => {
+    signal.throwIfAborted();
+    await new Promise<void>((resolve,reject) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        settled = true;
+        signal.removeEventListener("abort", abort);
+        resolve();
+      }, ms);
+      const abort = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        signal.removeEventListener("abort", abort);
+        reject(signal.reason ?? new Error("Work finalization aborted"));
+      };
+      if (signal.aborted) abort();
+      else signal.addEventListener("abort", abort, { once: true });
+    });
+  };
   async function post(action:string,body:{turnId:string;revision?:number},signal:AbortSignal):Promise<WorkFinalizationResult> {
     if (!text(body.turnId) || (body.revision !== undefined && !revision(body.revision))) throw new TypeError("Invalid canonical Work turn");
     signal.throwIfAborted();
@@ -99,7 +119,29 @@ export function createWorkFinalizationHttpClient(options:{apiBaseUrl:string;sess
   async function checkpoint(input:{turnId:string;revision:number},signal:AbortSignal):Promise<WorkFinalizationResult> {
     let current=input;
     for(let attempt=0;attempt<2;attempt++){
-      const result=await post("work-checkpoint",current,signal);
+      let result: WorkFinalizationResult | undefined;
+      for (let retry = 0; retry < 4; retry++) {
+        try {
+          result = await post("work-checkpoint", current, signal);
+        } catch (error) {
+          if (!(error instanceof WorkFinalizationTransportError) || retry === 3) throw error;
+          logWarn({op:"work.finalization.checkpoint",session_id:options.sessionId,turn_id:input.turnId,
+            retry:retry+1,reason:"response_unknown",delay_ms:1_000*2**retry},
+            "Retrying Work checkpoint after an unknown response");
+          await wait(1_000*2**retry,signal);
+          continue;
+        }
+        // The host may time out while the provider is still synchronizing the
+        // physical runtime. Checkpoint preparation is idempotent, so retry the
+        // bounded transient failure before settling the turn as exhausted.
+        if (result.type !== "failed" && result.type !== "unavailable") break;
+        if (retry === 3) break;
+        logWarn({op:"work.finalization.checkpoint",session_id:options.sessionId,turn_id:input.turnId,
+          retry:retry+1,reason:result.type,delay_ms:1_000*2**retry},
+          "Retrying Work checkpoint after a transient host failure");
+        await wait(1_000*2**retry,signal);
+      }
+      if (result === undefined) throw new Error("Work checkpoint retry did not produce a result");
       if(result.type!=="rejected"||!(["turn_revision","authority_changed"] as const).includes(result.reason as "turn_revision"|"authority_changed")||attempt===1)return result;
       const recovered=await post("work-recovery",{turnId:input.turnId},signal);
       if(recovered.type!=="gap"||recovered.reason!=="consumed_turn_without_terminal"||recovered.revision===undefined)return result;

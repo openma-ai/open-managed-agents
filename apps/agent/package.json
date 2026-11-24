@@ -31,6 +31,7 @@
     "@open-managed-agents/files-store": "workspace:*",
     "@open-managed-agents/harness-inference-adapters": "workspace:*",
     "@open-managed-agents/managed-agents-adapters-runtime": "workspace:*",
+    "@open-managed-agents/managed-agents-adapters-sql": "workspace:*",
     "@open-managed-agents/managed-agents-application": "workspace:*",
     "@open-managed-agents/managed-credential-resolver": "workspace:*",
     "@open-managed-agents/managed-runtime-cloudflare": "workspace:*",

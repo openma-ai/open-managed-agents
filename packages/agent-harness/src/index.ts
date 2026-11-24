@@ -76,6 +76,15 @@ export { resolveRuntimeSkillFiles, resolveSubagentSkillReminders } from "./runti
 export { assertRuntimeAgentSnapshot, resolvePinnedSubagent, resolveThreadAgentSnapshot } from "./agent-snapshot";
 
 export { ToolFailureError, buildTools, disposeTools } from "./tools";
+export {
+  CODEMODE_TOOL_NAME,
+  codemodeToolExecutionMode,
+  createCodemodeTool,
+  type CodemodeHostTool,
+  type CodemodeRuntime,
+  type CodemodeCheckpoint,
+  type CodemodeCheckpointStore,
+} from "./codemode";
 export { parkUnknownToolRetry, requestUnknownToolRetry } from "./unknown-tool-retry";
 export { resolveProxiedToolCall } from "./tool-proxy";
 

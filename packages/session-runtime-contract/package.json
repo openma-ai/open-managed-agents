@@ -8,11 +8,13 @@
     "./coordination": "./src/coordination.ts",
     "./context": "./src/context.ts",
     "./dispatch": "./src/dispatch.ts",
+    "./tool-dispatch": "./src/tool-dispatch.ts",
     "./history": "./src/history.ts",
     "./lifecycle": "./src/lifecycle.ts",
     "./stream": "./src/stream.ts",
     "./settle-events": "./src/settle-events.ts",
-    "./requires-action": "./src/requires-action.ts"
+    "./requires-action": "./src/requires-action.ts",
+    "./worker-continuation": "./src/worker-continuation.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

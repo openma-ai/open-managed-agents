@@ -26,10 +26,11 @@ import {
 import type { SqlClient, SqlTransaction } from "@open-managed-agents/sql-client";
 import { Cause, Effect, Exit, Option } from "effect";
 
-/** Row is a turn continuation (client answer to a paused tool call). */
+/** Row is a turn continuation (client or worker answer to a paused tool call). */
 const CONTINUATION_SQL = (alias: string) =>
   `${alias}.events_json LIKE '%"type":"user.custom_tool_result"%' OR ` +
-  `${alias}.events_json LIKE '%"type":"user.tool_confirmation"%'`;
+  `${alias}.events_json LIKE '%"type":"user.tool_confirmation"%' OR ` +
+  `${alias}.events_json LIKE '%"type":"user.tool_result"%'`;
 
 /** Promise port over an Effect program. FiberFailure stays inside. */
 function runCoordinatorPort<A>(effect: Effect.Effect<A, unknown>): Promise<A> {

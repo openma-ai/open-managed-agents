@@ -196,7 +196,7 @@ jobs:
           done
 
   cf-preflight:
-    needs: changes
+    needs: [changes, lint]
     if: needs.changes.outputs.cf == 'true' || needs.changes.outputs.parity_cf == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -340,8 +340,33 @@ jobs:
   # Fast, deterministic checks run before the long Node lanes. Every dependent
   # lane reuses this gate so lockfile and dependency-boundary failures are
   # reported without spending time on tests.
-  node-preflight:
+  lint:
     needs: changes
+    if: needs.changes.outputs.node == 'true' || needs.changes.outputs.parity_node == 'true' || needs.changes.outputs.cf == 'true' || needs.changes.outputs.parity_cf == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6.1.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Structural lint
+        run: pnpm lint
+
+  node-preflight:
+    needs: [changes, lint]
     if: needs.changes.outputs.node == 'true' || needs.changes.outputs.parity_node == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -684,7 +709,7 @@ jobs:
   # Required check name stays `verify` (branch protection). Skipped surfaces
   # count as success so docs-only / CF-only / Node-only PRs still pass.
   verify:
-    needs: [changes, docs, web, cf, node, release-check]
+    needs: [changes, docs, web, cf, node, release-check, lint]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -699,6 +724,7 @@ jobs:
           echo "cf=${{ needs.cf.result }}"
           echo "node=${{ needs.node.result }}"
           echo "release-check=${{ needs.release-check.result }}"
+          echo "lint=${{ needs.lint.result }}"
           echo "meta_only=${{ needs.changes.outputs.meta_only }}"
 
           fail=0
@@ -719,6 +745,7 @@ jobs:
           check cf "${{ needs.cf.result }}"
           check node "${{ needs.node.result }}"
           check release-check "${{ needs.release-check.result }}"
+          check lint "${{ needs.lint.result }}"
 
           if [[ "$fail" -ne 0 ]]; then
             exit 1

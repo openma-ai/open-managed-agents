@@ -8,6 +8,6 @@ it("recognizes the legal 0034 identity without re-running previous structural tr
   first:async()=> (text.includes("GET_LOCK")?{acquired:1}:text.includes("SELECT snapshot_id")?{snapshot_id:installed}:null) as never,
   all:async()=>({results:[]}),run:async()=>{if(text.includes("INSERT INTO openma_schema_metadata"))installed=String(values[1]);return {meta:{changes:1}};}};},batch:async()=>[],exec:async text=>{ddl.push(text);}};
  await expect(migrateNodeMysqlSchema(sql,fileURLToPath(new URL("../../../apps/main-node/migrations-sqlite",import.meta.url)))).resolves.toBeUndefined();
- expect(installed).toBe("7a941c58-b1de-4d32-83e6-545034000001");
+ expect(installed).toBe("ea72d2bf-9ff1-4794-a1b2-b9d90ea80927");
  expect(ddl.some(s=>s.startsWith("ALTER TABLE")||s.startsWith("DROP TABLE"))).toBe(false);
 });

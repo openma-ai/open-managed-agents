@@ -181,6 +181,8 @@ export function loadNodeConfig(env: NodeEnvironment): NodeConfig {
 
   const skillSourceAllowHosts = attempt<string[]>([], () => parseAllowHosts(env.SKILL_SOURCES_ALLOW_HOSTS));
   const sandboxImages = attempt(EMPTY_SANDBOX_IMAGE_CATALOG, () => parseSandboxImageCatalog(env.SANDBOX_IMAGES));
+  const executionLeaseTtlMs = integer("OMA_SESSION_EXECUTION_LEASE_TTL_MS", DEFAULT_SESSION_EXECUTION_LEASE_TTL_MS, { min: 3 });
+  const executionProgressTimeoutMs = integer("OMA_SESSION_EXECUTION_PROGRESS_TIMEOUT_MS", executionLeaseTtlMs, { min: 1 });
 
   const config: NodeConfig = {
     processMode,
@@ -202,7 +204,8 @@ export function loadNodeConfig(env: NodeEnvironment): NodeConfig {
     execution: {
       ownerId: env.OMA_SESSION_EXECUTION_OWNER_ID ?? `node:${process.pid}:${nanoid()}`,
       concurrency: integer("OMA_SESSION_EXECUTION_CONCURRENCY", 8, { min: 1 }),
-      leaseTtlMs: integer("OMA_SESSION_EXECUTION_LEASE_TTL_MS", DEFAULT_SESSION_EXECUTION_LEASE_TTL_MS, { min: 3 }),
+      leaseTtlMs: executionLeaseTtlMs,
+      progressTimeoutMs: executionProgressTimeoutMs,
     },
     workspace: {
       strategy: workspaceStrategy === "checkpoint_restore" ? "checkpoint_restore" : "ephemeral",

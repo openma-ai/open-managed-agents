@@ -6,6 +6,7 @@ packages:
   - 'apps/main-vercel'
   - 'apps/matter'
   - 'apps/agent'
+  - 'apps/codemode'
   - 'apps/console'
   - 'apps/integrations'
   - 'apps/docs'

@@ -36,6 +36,7 @@ import {
   buildTools, disposeTools, composeSystemPrompt, agentUsesAssemblySkillMount, type HarnessContext,
   readHarnessAgentModelSettings, createPiModelRuntime, resolveHarness,
 } from "@open-managed-agents/agent-harness";
+import { createNodeCodemodeRuntime } from "@open-managed-agents/agent-harness/codemode-node";
 
 import { generateText } from "ai";
 
@@ -95,7 +96,7 @@ import { builtinSpecs, createSpecRegistry } from "@open-managed-agents/cap";
 import { createNodeRepositoryEgress } from "../lib/node-repository-egress.js";
 import { sendDirectHttps } from "@open-managed-agents/sandbox-egress/direct-https";
 import { buildCredentialEgressRoutes } from "@open-managed-agents/managed-agents-adapters-http";
-import { ApplicationBackedNodeManagedSessionRuntimeEngine, DefaultNodeManagedSessionRuntimeDriver, NodeManagedSessionRuntimeAdapter } from "../lib/node-managed-session-runtime.js";
+import { ApplicationBackedNodeManagedSessionRuntimeEngine, createNodeSessionExecutionRuntime, DefaultNodeManagedSessionRuntimeDriver, NodeManagedSessionRuntimeAdapter } from "../lib/node-managed-session-runtime.js";
 import { DefaultNodeManagedSessionRunner } from "../lib/node-managed-session-runner.js";
 import {
   nodeManagedMemoryFacts,
@@ -197,6 +198,15 @@ export async function createManagedNodeRuntime(
     budget: nodeSessionModelEgress,
   };
   const nodeMcpProxyBinding = createMcpProxyBinding(() => mcpProxyPorts);
+  // QuickJS is loaded once per Node control-plane process and each tool call
+  // receives its own worker-thread sandbox. This keeps code-mode available on
+  // the direct Node path without coupling it to the Cloudflare Worker.
+  let nodeCodemodeRuntime: ReturnType<typeof createNodeCodemodeRuntime> | undefined;
+  const getNodeCodemodeRuntime = () =>
+    nodeCodemodeRuntime ??= createNodeCodemodeRuntime({
+      timeoutMs: 300_000,
+      memoryLimitBytes: 32 * 1024 * 1024,
+    });
 
   const managedSessionResourceSecrets = new SqlSessionResourceSecretSource(sql, {
     open: async (value) => {
@@ -484,6 +494,7 @@ export async function createManagedNodeRuntime(
         auxModel: auxiliary?.model,
         auxModelInfo: auxiliary?.modelInfo,
         auxProviderOptions: auxiliary?.providerOptions,
+        codeMode: await getNodeCodemodeRuntime(),
         delegateToAgent,
       });
       if (subagents && (await readManagedSessionMappingMetadata(session, openAIAgentsSecrets))?.agent.multi_agent?.enabled) {
@@ -621,28 +632,12 @@ export async function createManagedNodeRuntime(
   const managedSessionExecutionWorker = new NodeSessionExecutionWorker({
     coordinator: managedSessionExecutionCoordinator,
     context: managedRuntimeReaders.executionContext,
-    runtime: {
-      run: async ({ executionId: _executionId, fence, ...input }, hooks) => {
-        await managedRuntimeDriver.accept({
-          ...input,
-          executionFence: fence,
-          ...(hooks !== undefined && { takeSteeringInputs: () => hooks.takeSteeringInputs() }),
-        });
-      },
-      cancel: async (input) => {
-        managedRuntimeDriver.cancel({
-          workspaceId: input.workspaceId,
-          sessionId: input.sessionId,
-          reason: input.reason,
-          attemptId: input.fence.attemptId,
-        });
-        managedRuntimeRunner.cancel({ workspaceId: input.workspaceId, sessionId: input.sessionId, reason: input.reason });
-      },
-    },
+    runtime: createNodeSessionExecutionRuntime(managedRuntimeDriver, (input) => managedRuntimeRunner.cancel(input)),
     ownerId: config.execution.ownerId,
     clock: { now: () => new Date() },
     ids: { nextAttemptId: () => `attempt_${nanoid()}` },
     leaseTtlMs: config.execution.leaseTtlMs,
+    progressTimeoutMs: config.execution.progressTimeoutMs,
     maxConcurrent: config.execution.concurrency,
     eventProcessing: {
       storeFor: () => new SqlSessionEventPersistence(sql,{dialect:foundation.dialect}),

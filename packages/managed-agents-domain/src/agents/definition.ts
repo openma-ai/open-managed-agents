@@ -108,6 +108,7 @@ export type AgentToolConfigInput =
   | AgentSimpleToolConfigInput<"write">
   | AgentSimpleToolConfigInput<"glob">
   | AgentSimpleToolConfigInput<"grep">
+  | AgentSimpleToolConfigInput<"codemode">
   | (AgentSimpleToolConfigInput<"web_fetch"> & {
       allowedDomains?: string[];
       blockedDomains?: string[];
@@ -218,6 +219,7 @@ export type AgentToolConfig =
   | AgentSimpleToolConfig<"write">
   | AgentSimpleToolConfig<"glob">
   | AgentSimpleToolConfig<"grep">
+  | AgentSimpleToolConfig<"codemode">
   | (AgentSimpleToolConfig<"web_fetch"> & {
       allowedDomains?: string[];
       blockedDomains?: string[];

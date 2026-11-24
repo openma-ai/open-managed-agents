@@ -22,7 +22,8 @@
   "durable_objects": {
     "bindings": [
       { "name": "SESSION_DO", "class_name": "SessionDO" },
-      { "name": "SANDBOX", "class_name": "Sandbox" }
+      { "name": "SANDBOX", "class_name": "Sandbox" },
+      { "name": "CODEMODE_SANDBOX", "class_name": "CodemodeSandbox", "script_name": "managed-agents-codemode-sandbox" }
     ]
   },
 

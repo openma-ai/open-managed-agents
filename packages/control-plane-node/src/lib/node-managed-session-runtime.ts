@@ -56,6 +56,7 @@ import { ScopedSessionMap } from "./scoped-session-map.js";
 import { managedEventThread } from "./node-managed-subagents.js";
 import { outstandingRequiresAction, rejectMessageForRequiresActionBatch } from "@open-managed-agents/session-runtime-contract/requires-action";
 import { encodeRuntimeHistoryEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
+import type { NodeSessionExecutionRuntime } from "./node-session-execution-worker.js";
 
 export type StartNodeManagedSessionRuntime = StartSessionExecution & {
   executionFence?: SessionExecutionFence;
@@ -76,6 +77,8 @@ export interface ExecuteNodeManagedSessionEvents
    *  absorbed inputs are stamped (processed_at, seq) at consume before the
    *  harness sees them. See docs/implementation/cma-steer-coherent-turn.md. */
   takeSteeringInputs?: () => Promise<AcceptNodeManagedSessionEvents["events"]>;
+  /** Marks observable harness progress for the owning execution lease. */
+  markProgress?: () => void;
 }
 
 export type ArchiveNodeManagedSessionThread = ArchivedSessionThread;
@@ -90,6 +93,37 @@ export interface NodeManagedSessionRuntimeDriver {
   accept(input: ExecuteNodeManagedSessionEvents): Promise<void>;
   archiveThread(input: ArchiveNodeManagedSessionThread): Promise<void>;
   subscribe(input: SubscribeNodeManagedSessionRuntime): AsyncIterable<unknown>;
+}
+
+export function createNodeSessionExecutionRuntime(
+  driver: Pick<DefaultNodeManagedSessionRuntimeDriver, "accept" | "cancel">,
+  cancelRunner: (input: { workspaceId: string; sessionId: string; reason: string }) => void,
+): NodeSessionExecutionRuntime {
+  return {
+    run: async ({ executionId: _executionId, fence, ...input }, hooks) => {
+      await driver.accept({
+        ...input,
+        executionFence: fence,
+        ...(hooks !== undefined && {
+          markProgress: hooks.markProgress,
+          takeSteeringInputs: hooks.takeSteeringInputs,
+        }),
+      });
+    },
+    cancel: async (input) => {
+      driver.cancel({
+        workspaceId: input.workspaceId,
+        sessionId: input.sessionId,
+        reason: input.reason,
+        attemptId: input.fence.attemptId,
+      });
+      cancelRunner({
+        workspaceId: input.workspaceId,
+        sessionId: input.sessionId,
+        reason: input.reason,
+      });
+    },
+  };
 }
 
 export interface NodeManagedSessionRuntimeCoordination
@@ -108,9 +142,7 @@ export interface NodeManagedSessionRuntimeEngine {
     output: (frame: unknown) => Promise<void>,
   ): Promise<void>;
   stop(input: StopNodeManagedSessionRuntime): Promise<void>;
-  accept(input: ExecuteNodeManagedSessionEvents & {
-    executionFence?: SessionExecutionFence;
-  }): Promise<void>;
+  accept(input: ExecuteNodeManagedSessionEvents): Promise<void>;
   archiveThread(input: ArchiveNodeManagedSessionThread): Promise<void>;
   /** requires_action settle window (CMA): reject user.message while parked;
    * settle answers may release earlier queued messages once the park clears. */
@@ -160,6 +192,7 @@ export interface NodeManagedSessionRunnerAcceptInput
   /** Already-stamped mid-run inputs to steer into the running turn at the
    *  next LLM/tool-call boundary (after-call). */
   takeSteeringInputs?: () => Promise<AcceptNodeManagedSessionEvents["events"]>;
+  markProgress?: () => void;
   initialEvents: SessionBootstrapEvent[];
   historyEvents: SessionEventView[];
   /** Answer inputs (custom results, tool results, confirmations) admitted
@@ -253,7 +286,7 @@ export class ApplicationBackedNodeManagedSessionRuntimeEngine
     return planRequiresActionQueue(history.events, input.events);
   }
 
-  async accept(input: AcceptNodeManagedSessionEvents): Promise<void> {
+  async accept(input: ExecuteNodeManagedSessionEvents): Promise<void> {
     const output = this.outputs.get(input);
     if (output === undefined) {
       throw new Error(
@@ -290,6 +323,7 @@ export class ApplicationBackedNodeManagedSessionRuntimeEngine
       initialEvents: history.initialEvents,
       historyEvents: history.events,
       ...(laterAnswerEventIds.size === 0 ? {} : { laterAnswerEventIds }),
+      ...(input.markProgress !== undefined ? { markProgress: input.markProgress } : {}),
       output,
     });
   }
@@ -541,6 +575,7 @@ export class DefaultNodeManagedSessionRuntimeDriver
       const {
         executionFence: _executionFence,
         takeSteeringInputs: rawTakeSteering,
+        markProgress,
         ...accepted
       } = run;
       // After-call steer: mid-run inputs are taken only once the harness is
@@ -561,6 +596,7 @@ export class DefaultNodeManagedSessionRuntimeDriver
         ...accepted,
         ...(fence !== undefined && { executionFence: fence }),
         ...(takeSteeringInputs !== undefined && { takeSteeringInputs }),
+        ...(markProgress !== undefined && { markProgress }),
       });
       await this.outputChains.get(input);
       if (interrupting && plan.release.length > 0 && !signal.aborted) {
@@ -569,6 +605,7 @@ export class DefaultNodeManagedSessionRuntimeDriver
         await this.dependencies.engine.accept({
           ...drain,
           ...(fence !== undefined && { executionFence: fence }),
+          ...(markProgress !== undefined && { markProgress }),
         });
         await this.outputChains.get(input);
       }

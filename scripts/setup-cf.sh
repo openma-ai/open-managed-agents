@@ -252,6 +252,9 @@ if [ "$DO_DEPLOY" = 1 ]; then
   patch_var apps/main/wrangler.jsonc INTEGRATIONS_ORIGIN "$INTEGRATIONS_URL"
   patch_var apps/integrations/wrangler.jsonc GATEWAY_ORIGIN "$INTEGRATIONS_URL"
   if [ "${MISSING_WORKERS[0]}" = 1 ]; then bootstrap main; fi
+  # The code-mode Durable Object must exist before the agent worker publishes
+  # its cross-script CODEMODE_SANDBOX binding. It has no secrets or databases.
+  deploy_worker apps/codemode/wrangler.jsonc >/dev/null
   deploy_worker apps/agent/wrangler.jsonc >/dev/null
   MAIN_URL=$(deploy_worker apps/main/wrangler.jsonc)
   deploy_worker apps/integrations/wrangler.jsonc >/dev/null

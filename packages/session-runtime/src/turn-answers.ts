@@ -21,6 +21,7 @@ export type RequiresActionAnswerPlan =
 
 function answeredCallId(event: WireEvent): unknown {
   if (event.type === "user.custom_tool_result") return event.custom_tool_use_id;
+  if (event.type === "user.tool_result") return event.tool_use_id;
   if (event.type === "user.tool_confirmation") return event.tool_use_id;
   return undefined;
 }
