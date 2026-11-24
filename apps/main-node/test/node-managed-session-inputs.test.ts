@@ -224,6 +224,35 @@ describe("NodeManagedSessionInputPreparer", () => {
     expect(setEnvVars).toHaveBeenCalledWith({ OMA_OUTPUTS_DIR: "/mnt/session/outputs" });
   });
 
+  it("still mounts provider-native session outputs when the local collector is enabled", async () => {
+    const session = managedSession();
+    session.resources = [];
+    session.agent.skills = [];
+    const preparer = new NodeManagedSessionInputPreparer({
+      localOutputs: true,
+      files: {} as never,
+      skillVersions: {} as never,
+      repositoryCredentials: {} as never,
+      memoryStores: { mode: "file_sync", memories: {} as never },
+    });
+    const mountSessionOutputs = vi.fn(async () => undefined);
+    const setEnvVars = vi.fn(async () => undefined);
+    const sandbox = {
+      setEnvVars,
+      sessionOutputMountCapabilities: () => ({ durability: "durable" as const }),
+      mountSessionOutputs,
+    } as unknown as SandboxExecutor;
+
+    await expect(preparer.prepareStorage({
+      workspaceId: "default",
+      session,
+      sandbox,
+      runtimeGeneration: "runtime_1",
+    })).resolves.toBeUndefined();
+    expect(mountSessionOutputs).toHaveBeenCalledWith({ tenantId: "default", sessionId: session.id });
+    expect(setEnvVars).toHaveBeenCalledWith({ OMA_OUTPUTS_DIR: "/mnt/session/outputs" });
+  });
+
   it("materializes file, pinned repository revision, and custom skill before execution", async () => {
     const writeFileBytes = vi.fn(async () => "written");
     const gitCheckout = vi.fn(async () => undefined);

@@ -320,16 +320,17 @@ export class NodeManagedSessionInputPreparer {
   /** Session outputs and Memory Stores: what the sandbox storage Port
    * attaches on every open (design §0.1 step 3). */
   async prepareStorage(input: PrepareNodeManagedSessionInputs): Promise<void> {
-    if (!this.dependencies.sharedOutputs && !this.dependencies.localOutputs) {
-      if (!supportsSessionOutputMount(input.sandbox)) {
+    if (!this.dependencies.sharedOutputs) {
+      if (supportsSessionOutputMount(input.sandbox)) {
+        await input.sandbox.mountSessionOutputs({
+          tenantId: input.workspaceId,
+          sessionId: input.session.id,
+        });
+      } else if (!this.dependencies.localOutputs) {
         throw new Error(
           "Managed Session runtime requires durable session outputs, but the selected sandbox does not provide them",
         );
       }
-      await input.sandbox.mountSessionOutputs({
-        tenantId: input.workspaceId,
-        sessionId: input.session.id,
-      });
     }
     await input.sandbox.setEnvVars?.(sessionResourceEnvironment({ memoryStores: [], outputs: { path: SESSION_OUTPUTS_PATH } }));
 
