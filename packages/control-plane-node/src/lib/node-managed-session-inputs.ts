@@ -125,6 +125,10 @@ export interface NodeManagedSessionInputPreparerDependencies {
   memoryStores: NodeManagedMemoryStoreMode;
   /** Shared OSS collection uses provider-local outputs, not a FUSE mount. */
   sharedOutputs?: boolean;
+  /** Node's local output collector owns persistence when no shared provider
+   * output backend is configured. The sandbox only needs the standard output
+   * directory and the collector reads it at turn end. */
+  localOutputs?: boolean;
 }
 
 /** How Memory Stores reach the sandbox, decided once from the composed
@@ -316,7 +320,7 @@ export class NodeManagedSessionInputPreparer {
   /** Session outputs and Memory Stores: what the sandbox storage Port
    * attaches on every open (design §0.1 step 3). */
   async prepareStorage(input: PrepareNodeManagedSessionInputs): Promise<void> {
-    if (!this.dependencies.sharedOutputs) {
+    if (!this.dependencies.sharedOutputs && !this.dependencies.localOutputs) {
       if (!supportsSessionOutputMount(input.sandbox)) {
         throw new Error(
           "Managed Session runtime requires durable session outputs, but the selected sandbox does not provide them",
