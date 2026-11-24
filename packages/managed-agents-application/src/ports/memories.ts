@@ -1,6 +1,10 @@
-import type { MemoryVersionActor } from "@open-managed-agents/domain/memories";
-
 export type MemoryProjection = "basic" | "full";
+
+export type MemoryVersionActor =
+  | { kind: "api"; apiKeyId: string }
+  | { kind: "service_account"; serviceAccountId: string }
+  | { kind: "session"; sessionId: string }
+  | { kind: "user"; userId: string };
 
 export interface MemoryView {
   kind: "memory";
