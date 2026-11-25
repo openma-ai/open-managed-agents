@@ -1,5 +1,11 @@
 # @openma/sdk
 
+## 1.2.1
+
+### Patch Changes
+
+- da64029: Add npm keywords (claude-managed-agents, openai-agents, self-hosted, sandbox, agent-runtime) so the packages are easier to find.
+
 ## 1.2.0
 
 ### Minor Changes
