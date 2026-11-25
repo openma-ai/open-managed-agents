@@ -247,6 +247,17 @@ describe("SqlReplicatedSessionEventStream", () => {
     expect(timers()).toBe(0);
   });
 
+  it("stops polling when a reader returns while waiting for the next event", async () => {
+    const { stream, timers } = await fixture();
+    const sub = await subscribe(stream);
+    expect(timers()).toBe(1);
+
+    await sub.close();
+
+    expect(sub.finished()).toBe(true);
+    expect(timers()).toBe(0);
+  });
+
   it("isolates thread lanes", async () => {
     const { append, stream } = await fixture();
     const sub = await subscribe(stream, { threadId: "thread_01", thread: {} });

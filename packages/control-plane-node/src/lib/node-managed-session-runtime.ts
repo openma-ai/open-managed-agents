@@ -912,16 +912,32 @@ export class NodeManagedSessionRuntimeAdapter
   subscribe(
     input: SubscribeSessionEvents | SubscribeSessionThreadEvents,
   ): AsyncIterable<StreamSessionEvent> {
-    return this.stream(input);
+    const source = this.driver.subscribe(input)[Symbol.asyncIterator]();
+    const events = this.stream(input, source);
+    return {
+      [Symbol.asyncIterator]() {
+        return {
+          next: () => events.next(),
+          // An async generator waiting for its next frame queues return()
+          // until a frame arrives, so a disconnected reader would stay
+          // attached to an idle session. Closing the source ends that wait.
+          return: async (value?: unknown) => {
+            await source.return?.();
+            return events.return(value as never);
+          },
+        };
+      },
+    };
   }
 
   private async *stream(
     input: SubscribeSessionEvents | SubscribeSessionThreadEvents,
-  ): AsyncIterable<StreamSessionEvent> {
+    source: AsyncIterator<unknown>,
+  ): AsyncGenerator<StreamSessionEvent, void, undefined> {
     const deltaTypes = new Set(input.deltaEventTypes ?? []);
     const decoder = new RuntimeEventStreamDecoder(deltaTypes);
     const deltaEventIds = new Set<string>();
-    for await (const raw of this.driver.subscribe(input)) {
+    for await (const raw of { [Symbol.asyncIterator]: () => source }) {
       if (
         "threadId" in input &&
         (

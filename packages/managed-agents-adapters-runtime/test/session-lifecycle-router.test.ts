@@ -318,6 +318,37 @@ describe("Environment-aware Session event stream router", () => {
     expect(events).toEqual([{ type: "event_start", eventId: "event_01" }]);
   });
 
+  it("forwards return() to an idle runtime stream instead of waiting for its next event", async () => {
+    let returnCalls = 0;
+    let wake: ((result: IteratorResult<never>) => void) | null = null;
+    const runtimeIterator: AsyncIterator<never> = {
+      next: () => new Promise((resolve) => { wake = resolve; }),
+      return: () => {
+        returnCalls += 1;
+        wake?.({ value: undefined as never, done: true });
+        wake = null;
+        return Promise.resolve({ value: undefined as never, done: true });
+      },
+    };
+    const router = new EnvironmentAwareSessionEventStreamRouter({
+      environments: { find: async () => managedEnvironment },
+      runtime: { subscribe: () => ({ [Symbol.asyncIterator]: () => runtimeIterator }) },
+      selfHosted: { subscribe: () => ({ [Symbol.asyncIterator]: () => runtimeIterator }) },
+    });
+    const iterator = router.subscribe({
+      workspaceId: "workspace_01",
+      sessionId: session.id,
+      session: { ...session, environmentId: managedEnvironment.id },
+    })[Symbol.asyncIterator]();
+    const pending = iterator.next();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    await iterator.return?.();
+
+    expect(returnCalls).toBe(1);
+    await expect(pending).resolves.toEqual({ value: undefined, done: true });
+  });
+
   it("streams self-hosted Session and thread lanes from the canonical store", async () => {
     const calls: object[] = [];
     const router = new EnvironmentAwareSessionEventStreamRouter({
