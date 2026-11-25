@@ -124,10 +124,10 @@ export function buildSessionEventRoutes(
         released = true;
         void Promise.resolve(iterator.return?.()).catch(() => undefined);
       };
+      // A fresh abort promise per round: one long-lived promise would collect
+      // a reaction from every race and keep each delivered event reachable
+      // for as long as the connection stays open.
       let wakeOnAbort = () => {};
-      const aborted = new Promise<{ type: "aborted" }>((resolve) => {
-        wakeOnAbort = () => resolve({ type: "aborted" });
-      });
       stream.onAbort(() => {
         wakeOnAbort();
         release();
@@ -145,7 +145,9 @@ export function buildSessionEventRoutes(
                 SESSION_EVENT_HEARTBEAT_INTERVAL_MS,
               );
             }),
-            aborted,
+            new Promise<{ type: "aborted" }>((resolve) => {
+              wakeOnAbort = () => resolve({ type: "aborted" });
+            }),
           ]);
           if (heartbeatTimer !== undefined) clearTimeout(heartbeatTimer);
           if (next.type === "aborted" || stream.aborted) break;
