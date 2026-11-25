@@ -266,11 +266,14 @@ async function apiFetch<T = unknown>(config: Config, path: string, init?: Reques
 //
 //   streamChat   — subscribe to GET /v1/sessions/:id/events/stream, then
 //                  POST one user.message to /v1/sessions/:id/events and
-//                  read text/event-stream until session.status_idle,
-//                  render text deltas inline + thinking deltas dimmed
-//                  + tool calls as one-line headers. Auto-closes on
-//                  the FIRST status_idle (server scopes the SSE to the
-//                  just-posted turn). Drops back to the prompt when done.
+//                  read text/event-stream, rendering text deltas inline
+//                  + thinking deltas dimmed + tool calls as one-line
+//                  headers. Stops at the first session.status_idle or
+//                  session.status_terminated. The stream is session-wide
+//                  (not scoped to the posted turn), so the exit code is
+//                  derived from that event: end_turn → 0, requires_action
+//                  → 3, anything else (error frame, terminated, other
+//                  stop_reason, stream closed early) → 1.
 //
 //   tailSession  — GET /v1/sessions/:id/events/stream, never closes;
 //                  prints every event as one JSON line. Pipe into jq.
@@ -323,7 +326,14 @@ const dim = (s: string) => (tty ? `\x1b[2m${s}\x1b[0m` : s);
 const cyan = (s: string) => (tty ? `\x1b[36m${s}\x1b[0m` : s);
 const yellow = (s: string) => (tty ? `\x1b[33m${s}\x1b[0m` : s);
 
-async function streamChat(config: Config, sessionId: string, text: string): Promise<void> {
+// `oma sessions chat` exit codes. 0 = the turn ended with end_turn.
+// 3 = the session is parked on requires_action (tool confirmation or custom
+// tool result). 1 = the turn did not finish (error frame, terminated,
+// retries_exhausted / budget_reached, or the stream closed before idle).
+const CHAT_EXIT_FAILED = 1;
+const CHAT_EXIT_REQUIRES_ACTION = 3;
+
+async function streamChat(config: Config, sessionId: string, text: string): Promise<number> {
   const controller = new AbortController();
   const res = await rawStream(
     config,
@@ -334,6 +344,15 @@ async function streamChat(config: Config, sessionId: string, text: string): Prom
   let thinkOpen = false;      // are we mid-thinking on stderr?
   const streamedEventTypes = new Map<string, string>();
   const streamedAssistantIds = new Set<string>();
+  const endLines = () => {
+    if (textOpen) { process.stdout.write("\n"); textOpen = false; }
+    if (thinkOpen) { process.stderr.write("\n"); thinkOpen = false; }
+  };
+  const fail = (message: string) => {
+    endLines();
+    process.stderr.write(yellow(`✗ ${message}`) + "\n");
+    return CHAT_EXIT_FAILED;
+  };
   try {
     await apiFetch(config, `/v1/sessions/${sessionId}/events`, {
       method: "POST",
@@ -345,6 +364,13 @@ async function streamChat(config: Config, sessionId: string, text: string): Prom
       }),
     });
     for await (const ev of parseSSE(res)) {
+      if (ev.type === "error") {
+        // `event: error` frame (apiError envelope) — the server gave up on
+        // this stream; the turn's outcome is unknown.
+        const err = ev.error as { type?: unknown; message?: unknown } | undefined;
+        const message = typeof err?.message === "string" ? err.message : JSON.stringify(ev.error ?? ev);
+        return fail(`stream error: ${message}`);
+      }
       if (ev.type === "event_start") {
         const preview = ev.event;
         if (preview && typeof preview === "object") {
@@ -422,11 +448,30 @@ async function streamChat(config: Config, sessionId: string, text: string): Prom
               : `⚠ ${normalized.source ? `${normalized.source}: ` : ""}${normalized.message}`,
           ) + "\n");
           break;
-        case "turn_complete":
-          if (textOpen) { process.stdout.write("\n"); textOpen = false; }
-          return;
+        case "turn_complete": {
+          endLines();
+          const reason = normalized.stopReason;
+          if (reason === undefined || reason === "end_turn") return 0;
+          if (reason === "requires_action") {
+            const ids = normalized.awaitingEventIds ?? [];
+            process.stderr.write(yellow(
+              `⏸ session is waiting on ${ids.length || "a"} pending action${ids.length === 1 ? "" : "s"}` +
+              (ids.length ? `: ${ids.join(", ")}` : ""),
+            ) + "\n");
+            process.stderr.write(dim(
+              `  Answer with POST /v1/sessions/${sessionId}/events: user.tool_confirmation ` +
+              `{tool_use_id, result: "allow"|"deny"} or user.custom_tool_result {custom_tool_use_id, content}.\n` +
+              `  Then follow the turn with: oma sessions tail ${sessionId}\n`,
+            ));
+            return CHAT_EXIT_REQUIRES_ACTION;
+          }
+          return fail(`turn stopped: ${reason}`);
+        }
+        case "turn_terminated":
+          return fail("session terminated before the turn finished");
       }
     }
+    return fail("event stream closed before the turn finished (no session.status_idle)");
   } finally {
     controller.abort();
   }
@@ -1008,12 +1053,13 @@ const commands: Cmd[] = [
   },
   {
     group: "Sessions", match: ["sessions", "chat"], needsArg: true,
-    usage: "oma sessions chat <id> <text>", desc: "Send a turn AND stream the reply token-by-token",
+    usage: "oma sessions chat <id> <text>", desc: "Send a turn AND stream the reply (exit 0 end_turn, 3 requires_action, 1 failed)",
     http: "GET    /v1/sessions/:id/events/stream + POST /v1/sessions/:id/events",
     async run(config, args) {
       const text = args.slice(1).join(" ");
       if (!text) { console.error("Usage: oma sessions chat <id> <text>"); process.exit(1); }
-      await streamChat(config, args[0], text);
+      // exitCode (not exit()) so buffered stderr is flushed on every platform.
+      process.exitCode = await streamChat(config, args[0], text);
     },
   },
   {
@@ -2356,6 +2402,9 @@ function usage() {
   API Reference:
     oma api                                    Show all HTTP endpoints
     oma api <resource>                         Show endpoints for a resource
+
+Exit status of 'oma sessions chat':
+  0 end_turn · 3 requires_action (pending event ids on stderr) · 1 turn did not finish
 
 Environment:
   OMA_BASE_URL   API base (default: https://app.openma.ai)
