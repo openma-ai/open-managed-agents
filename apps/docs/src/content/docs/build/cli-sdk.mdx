@@ -36,14 +36,27 @@ The CLI lives in this repo (`packages/cli`).
 
 ### Configure
 
-The CLI reads two env vars:
+Authenticate interactively with a browser (stores `base_url` and credentials per profile in `~/.config/oma/credentials.json`):
+
+```bash
+oma auth login --base-url https://app.openma.ai
+oma whoami
+```
+
+For headless / agent environments without a browser, export the two env vars instead (create a key under **API Keys** in the Console):
 
 ```bash
 export OMA_BASE_URL="https://app.openma.ai"
 export OMA_API_KEY="oma_..."
 ```
 
-For self-hosters, point `OMA_BASE_URL` at your own deployment.
+For self-hosters, replace `https://app.openma.ai` with your own deployment origin (the Console **Dashboard** and **Local Runtimes** pages copy-fill your current `window.location.origin`, including `oma bridge setup --server-url=<origin>`).
+
+To give a coding agent the CLI/API workflow skill:
+
+```bash
+npx skills add openma-ai/open-managed-agents --skill openma
+```
 
 ### Common commands
 
