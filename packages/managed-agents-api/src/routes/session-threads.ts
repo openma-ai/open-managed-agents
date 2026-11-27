@@ -218,17 +218,48 @@ export function buildSessionThreadRoutes(
     }
 
     return streamSSE(c, async (stream) => {
-      for await (const event of result.events) {
-        const wire = sessionStreamEventResponseSchema.safeParse(
-          toStreamSessionEventResponse(event),
-        );
-        if (!wire.success) {
-          throw new Error("Application returned an invalid streamed session thread event");
+      const iterator = result.events[Symbol.asyncIterator]();
+      // Hono's write() swallows errors once the client has gone, so the loop
+      // never notices a disconnect by itself. Stop on abort and release the
+      // subscription so it does not outlive the request.
+      let released = false;
+      const release = () => {
+        if (released) return;
+        released = true;
+        void Promise.resolve(iterator.return?.()).catch(() => undefined);
+      };
+      // A fresh abort promise per round: one long-lived promise would collect
+      // a reaction from every race and keep each delivered event reachable
+      // for as long as the connection stays open.
+      let wakeOnAbort = () => {};
+      stream.onAbort(() => {
+        wakeOnAbort();
+        release();
+      });
+      try {
+        for (;;) {
+          if (stream.aborted) break;
+          const next = await Promise.race([
+            iterator.next().then((event) => ({ type: "event" as const, event })),
+            new Promise<{ type: "aborted" }>((resolve) => {
+              wakeOnAbort = () => resolve({ type: "aborted" });
+            }),
+          ]);
+          if (next.type === "aborted" || stream.aborted) break;
+          if (next.event.done) break;
+          const wire = sessionStreamEventResponseSchema.safeParse(
+            toStreamSessionEventResponse(next.event.value),
+          );
+          if (!wire.success) {
+            throw new Error("Application returned an invalid streamed session thread event");
+          }
+          await stream.writeSSE({
+            event: wire.data.type,
+            data: JSON.stringify(wire.data),
+          });
         }
-        await stream.writeSSE({
-          event: wire.data.type,
-          data: JSON.stringify(wire.data),
-        });
+      } finally {
+        release();
       }
     });
   });
