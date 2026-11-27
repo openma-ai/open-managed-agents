@@ -252,6 +252,7 @@ export async function createManagedNodeRuntime(
   const managedSessionOutputCollector = new NodeManagedSessionOutputCollector({
     outputsRoot,
     isFenceActive: isManagedSessionExecutionFenceActive,
+    ...(sharedSessionOutputs === undefined ? { localProviderOutputs: true } : {}),
     ...(sharedSessionOutputs === undefined ? {} : { shared: sharedSessionOutputs }),
   });
   const workspaceCheckpoints = config.workspace.strategy === "checkpoint_restore"
@@ -273,6 +274,7 @@ export async function createManagedNodeRuntime(
     managedMemoriesApplicationForWorkspace(workspaceId).port(managedAgentsPortTokens.memories);
   const managedSessionInputs = (workspaceId: string) => new NodeManagedSessionInputPreparer({
     sharedOutputs: sharedSessionOutputs !== undefined,
+    localOutputs: sharedSessionOutputs === undefined,
     files: managedPlatform.app({ workspaceId }).port(managedAgentsPortTokens.files),
     skillVersions: managedPlatform.app({ workspaceId }).port(managedAgentsPortTokens.skillVersions),
     ...repositorySources, repositoryPlaceholder: repositoryEgress.placeholder,

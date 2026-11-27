@@ -53,6 +53,10 @@ it("uses only the isolated spawner at the actual process launch boundary", async
  const isolated = await loadE2BAgentSpawner(async () => ({ isolateE2BAgentSpawner: () => ({ spawn: async (spec: {env?:Record<string,string|undefined>}) => { expect(spec.env).toMatchObject({PATH:"/usr/local/bin:/usr/bin:/bin",HOME:"/home/oma-worker"}); throw new Error("isolated-launch-boundary"); } }) }));
  await expect(isolated.spawn({ command: "/must-not-run", args: [], env: {} })).rejects.toThrow("isolated-launch-boundary");
 });
+it("does not pass the unified sandbox token to a user-selected ACP child", async () => {
+ const isolated = await loadE2BAgentSpawner(async () => ({ isolateE2BAgentSpawner: () => ({ spawn: async () => { throw new Error("must not launch"); } }) }));
+ await expect(Promise.resolve().then(() => isolated.spawn({ command: "/agent", env: { OPENMA_SANDBOX_TOKEN: "oma_sbx_secret" } }))).rejects.toThrow(/cannot include OPENMA_SANDBOX_TOKEN/);
+});
 
 const codex = { id: "codex-acp", version: "1.8.0", command: "/home/oma-worker/.oma/installed-agent/codex-acp/1.8.0/acp-launch.sh" };
 const pi = { id: "pi-acp", version: "0.1.8", command: "/home/oma-worker/.oma/installed-agent/pi-acp/0.1.8/acp-launch.sh" };

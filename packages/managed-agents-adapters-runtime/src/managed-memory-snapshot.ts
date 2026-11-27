@@ -1,4 +1,5 @@
 import type { MemoriesApplicationPort } from "@open-managed-agents/managed-agents-application";
+import type { MemoryVersionActor } from "@open-managed-agents/domain/memories";
 
 const managedMemoryMarkerName = ".openma-memory-store";
 
@@ -190,6 +191,8 @@ export interface ReconcileManagedMemoryWorkspace {
   local: readonly ManagedMemoryLocalEntry[];
   /** Revalidated immediately before each canonical mutation. */
   authorize(): Promise<boolean>;
+  /** Actor attached to canonical versions created by this reconciliation. */
+  actor?: MemoryVersionActor;
 }
 
 export type ManagedMemoryWorkspaceReconcileResult =
@@ -264,6 +267,7 @@ export class ManagedMemoryWorkspaceReconciler {
           memoryStoreId: input.memoryStoreId,
           path,
           content: localEntry.content,
+          ...(input.actor === undefined ? {} : { actor: input.actor }),
         });
         if (result.type === "created") {
           created += 1;
@@ -294,6 +298,7 @@ export class ManagedMemoryWorkspaceReconciler {
         content: localEntry.content,
         path,
         contentPrecondition: { expectedSha256: base.sha256 },
+        ...(input.actor === undefined ? {} : { actor: input.actor }),
       });
       if (result.type === "updated") {
         updated += 1;
@@ -327,6 +332,7 @@ export class ManagedMemoryWorkspaceReconciler {
         memoryStoreId: input.memoryStoreId,
         memoryId: remoteEntry.id,
         expectedContentSha256: base.sha256,
+        ...(input.actor === undefined ? {} : { actor: input.actor }),
       });
       if (result.type === "deleted" || result.type === "not_found") {
         deleted += result.type === "deleted" ? 1 : 0;
@@ -423,6 +429,7 @@ export class ManagedMemoryBlobWorkspaceSynchronizer {
     runtimeGeneration: string;
     memoryStoreId: string;
     authorize(): Promise<boolean>;
+    actor?: MemoryVersionActor;
   }): Promise<ManagedMemoryWorkspaceReconcileResult> {
     const root = [
       ".openma-managed-memory-workspaces",
@@ -462,6 +469,7 @@ export class ManagedMemoryBlobWorkspaceSynchronizer {
           baseline: manifest.memories,
           local,
           authorize: input.authorize,
+          ...(input.actor === undefined ? {} : { actor: input.actor }),
         })
       : { type: "distrusted" as const, reason: "whole_folder_missing" as const };
     if (result.type === "fence_lost") return result;

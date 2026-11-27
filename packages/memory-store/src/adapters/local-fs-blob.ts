@@ -59,10 +59,19 @@ export class LocalFsBlobStore implements BlobStore {
       const path = this.pathFor(key);
       const buf = await fs.readFile(path);
       const text = buf.toString();
+      let actorMetadata: SidecarMeta | undefined;
+      try {
+        actorMetadata = JSON.parse(await fs.readFile(`${path}.meta.json`, "utf8")) as SidecarMeta;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
       return {
         text,
         etag: sha256Hex(buf),
         size: buf.byteLength,
+        ...(actorMetadata?.actor_type && actorMetadata.actor_id
+          ? { actorMetadata: { actor_type: actorMetadata.actor_type, actor_id: actorMetadata.actor_id } }
+          : {}),
       };
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;

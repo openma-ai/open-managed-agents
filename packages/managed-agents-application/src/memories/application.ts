@@ -143,6 +143,7 @@ export class MemoriesApplicationService implements MemoriesApplicationPort {
   ) {}
 
   async createMemory(command: CreateMemoryCommand): Promise<CreateMemoryResult> {
+    const actor = command.actor ?? this.dependencies.actor;
     const invalidPath = validatePath(command.path);
     if (invalidPath !== null) {
       return { type: "invalid_request", message: invalidPath };
@@ -175,7 +176,7 @@ export class MemoriesApplicationService implements MemoriesApplicationPort {
         memory,
         versionId,
         "created",
-        this.dependencies.actor,
+        actor,
         timestamp,
       ),
     });
@@ -212,6 +213,7 @@ export class MemoriesApplicationService implements MemoriesApplicationPort {
   }
 
   async updateMemory(command: UpdateMemoryCommand): Promise<UpdateMemoryResult> {
+    const actor = command.actor ?? this.dependencies.actor;
     const current = await this.dependencies.store.findCurrent({
       workspaceId: this.dependencies.workspaceId,
       memoryStoreId: command.memoryStoreId,
@@ -279,7 +281,7 @@ export class MemoriesApplicationService implements MemoriesApplicationPort {
         next,
         versionId,
         "modified",
-        this.dependencies.actor,
+        actor,
         timestamp,
       ),
     });
@@ -377,6 +379,7 @@ export class MemoriesApplicationService implements MemoriesApplicationPort {
   }
 
   async deleteMemory(command: DeleteMemoryCommand): Promise<DeleteMemoryResult> {
+    const actor = command.actor ?? this.dependencies.actor;
     const current = await this.dependencies.store.findCurrent({
       workspaceId: this.dependencies.workspaceId,
       memoryStoreId: command.memoryStoreId,
@@ -403,7 +406,7 @@ export class MemoriesApplicationService implements MemoriesApplicationPort {
         current.memory,
         versionId,
         "deleted",
-        this.dependencies.actor,
+        actor,
         timestamp,
       ),
     });

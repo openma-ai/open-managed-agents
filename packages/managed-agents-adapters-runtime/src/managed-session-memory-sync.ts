@@ -1,6 +1,7 @@
 import type {
   MemoriesApplicationPort,
 } from "@open-managed-agents/managed-agents-application";
+import type { MemoryVersionActor } from "@open-managed-agents/domain/memories";
 import {
   ManagedMemoryBlobWorkspaceSynchronizer,
   ManagedMemoryWorkspaceReconciler,
@@ -49,6 +50,7 @@ export async function synchronizeManagedSessionMemoryWorkspaces(
     runtimeGeneration: string;
     executionFence: ManagedMemoryExecutionFence;
     isFenceActive(fence: ManagedMemoryExecutionFence): Promise<boolean>;
+    actor?: MemoryVersionActor;
   },
 ): Promise<SynchronizeManagedSessionMemoryResult> {
   const session = await source.find({
@@ -87,6 +89,7 @@ export async function synchronizeManagedSessionMemoryWorkspaces(
       runtimeGeneration: input.runtimeGeneration,
       memoryStoreId,
       authorize: () => input.isFenceActive(input.executionFence),
+      ...(input.actor === undefined ? {} : { actor: input.actor }),
     });
     if (result.type === "fence_lost") return result;
     if (result.type === "distrusted") {

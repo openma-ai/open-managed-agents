@@ -34,6 +34,9 @@ export interface NodeManagedSessionOutputCollectorDependencies {
   outputsRoot: string;
   isFenceActive(fence: SessionExecutionFence): Promise<boolean>;
   shared?: NodeSharedSessionOutputs;
+  /** Allow the Node-local collector to persist provider-local files when the
+   * provider does not expose a native output mount. */
+  localProviderOutputs?: boolean;
 }
 
 function assertSafeId(label: string, value: string): void {
@@ -130,7 +133,7 @@ export class NodeManagedSessionOutputCollector {
       ? outputMount.sessionOutputMountCapabilities()
       : null;
     if (this.dependencies.shared === undefined && capabilities?.durability === "durable") return;
-    if (this.dependencies.shared === undefined && capabilities?.durability !== "best_effort") {
+    if (this.dependencies.shared === undefined && !this.dependencies.localProviderOutputs && capabilities?.durability !== "best_effort") {
       throw new Error("Sandbox does not expose collectable Session outputs");
     }
     if (input.sandbox.readFileBytes === undefined) {

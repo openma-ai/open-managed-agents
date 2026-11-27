@@ -4,7 +4,8 @@
 // string), and checked in the same read as the hash and the lease:
 //   all    — the harness runs inside the sandbox: model gateway, MCP gateway,
 //            sandbox API and Vault egress;
-//   egress — the harness runs outside; the sandbox only needs the egress relay.
+//   egress — the harness runs outside; the sandbox only needs egress-scoped
+//            relay and storage File API capabilities.
 // Re-signing an attempt keeps its scope (the store refuses a different one).
 // A missing or unknown scope on a stored entry is a definite rejection: there
 // is no default that widens.
@@ -13,7 +14,8 @@ import { harnessExecutionPlacement } from "@open-managed-agents/domain/environme
 
 export type SandboxTokenScope = "all" | "egress";
 
-/** Where a token is presented. `api`: model gateway, MCP gateway, sandbox API. */
+/** Where a token is presented. `api`: model gateway, MCP gateway, sandbox API.
+ * `egress`: credential relay and sandbox storage File API. */
 export type SandboxTokenChannel = "api" | "egress";
 
 /** Where the harness of an execution runs, decided by the issuing host. */

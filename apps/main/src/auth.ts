@@ -4,7 +4,7 @@ import { logWarn, logError } from "@open-managed-agents/shared";
 import { CfKvStore } from "@open-managed-agents/kv-store";
 import { WebCryptoAesGcm } from "@open-managed-agents/integrations-adapters-cf";
 import { sealedSandboxBearerCodec } from "@open-managed-agents/managed-agents-adapters-runtime";
-import { authenticateSandboxBearer, sandboxTokenAuthDecision } from "@open-managed-agents/sandbox-gateway";
+import { authenticateSandboxBearer, sandboxTokenAuthDecision, type SandboxTokenSession } from "@open-managed-agents/sandbox-gateway";
 import { cfSandboxTokenStore } from "./lib/cf-sandbox-token-store";
 import { isCurrentEnvironmentWorkClaim } from "@open-managed-agents/environment-work-store";
 import { SqlEnvironmentWorkStore } from "@open-managed-agents/environment-work-store-sql";
@@ -137,6 +137,7 @@ export const authMiddleware = createMiddleware<{
     tenant_id: string;
     user_id?: string;
     auth_credential?: ApiKeyResolution["credential"];
+    sandbox_session?: SandboxTokenSession;
   };
 }>(async (c, next) => {
   // Internal endpoints have their own header-secret auth (see routes/internal.ts)
@@ -159,6 +160,7 @@ export const authMiddleware = createMiddleware<{
   if (sandbox.type === "accepted") {
     c.set("tenant_id", sandbox.resolution.tenantId);
     c.set("auth_credential", sandbox.resolution.credential);
+    c.set("sandbox_session", sandbox.session);
     return next();
   }
 

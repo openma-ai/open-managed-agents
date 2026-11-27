@@ -242,6 +242,25 @@ describe("createE2BSessionSandbox", () => {
     expect(JSON.stringify([outputs, memory])).not.toMatch(/memory-secret|files-secret/u);
   });
 
+  it("uses the OMA gateway as the native storage path without exposing S3 credentials", async () => {
+    const config = storageConfig({ OMA_STORAGE_GATEWAY_ENDPOINT: "https://control.example/v1/oma/storage" });
+    expect(config.kind).toBe("native");
+    if (config.kind !== "native") throw new Error("unexpected");
+    expect(config.objectStorage.gatewayEndpoint).toBe("https://control.example");
+    expect(config.objectStorage.outputsPrefix(scope)).toBe("t/ws/session-outputs/sess/");
+    await expect(config.objectStorage.memory.issue({ prefix: "st/", access: "read_write", ttlSeconds: 60 }))
+      .rejects.toThrow("OMA gateway mounts do not issue S3 credentials");
+    await expect(config.objectStorage.outputs.issue({ prefix: "t/ws/session-outputs/sess/", access: "read_write", ttlSeconds: 60 }))
+      .rejects.toThrow("OMA gateway mounts do not issue S3 credentials");
+  });
+
+  it("rejects an OMA gateway endpoint that is not HTTP(S)", () => {
+    expect(() => storageConfig({ OMA_STORAGE_GATEWAY_ENDPOINT: "file:///tmp/storage" }))
+      .toThrow("OMA_STORAGE_GATEWAY_ENDPOINT must be an HTTP(S) URL");
+    expect(() => storageConfig({ OMA_STORAGE_GATEWAY_ENDPOINT: "not a URL" }))
+      .toThrow("OMA_STORAGE_GATEWAY_ENDPOINT must be a valid URL");
+  });
+
   it("compiles Environment networking and cap_cli placeholders into the egress policy", async () => {
     expect(sessionEgressPolicy(scope, undefined)).toBeNull();
     expect(sessionEgressPolicy(scope, { type: "unrestricted" })).toBeNull();

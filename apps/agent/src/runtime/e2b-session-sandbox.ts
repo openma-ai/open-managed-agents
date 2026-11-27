@@ -36,8 +36,8 @@ import type {
 } from "@open-managed-agents/sandbox";
 import type { RuntimeResourceScope, SessionOutputBinding } from "@open-managed-agents/runtime-resource-contract";
 import { createSandboxPorts, placeholderSubstitutions, sessionEgressPolicy, type SandboxOutputSinkPort, type SandboxVendorPort, type SessionNetworking } from "@open-managed-agents/sandbox-port-kit";
-import { createR2TemporaryCredentials } from "@open-managed-agents/sandbox-port-kit/object-storage";
-import { createE2BV2Adapter, E2B_MANAGED_SYNC_SETUP, E2B_SANDBOX_SETUP, type E2BObjectStorageOptions, type E2BV2Module } from "@open-managed-agents/sandbox-adapter-e2b/v2";
+import { createR2TemporaryCredentials, type ObjectStoreCredentialPort } from "@open-managed-agents/sandbox-port-kit/object-storage";
+import { createE2BV2Adapter, E2B_MANAGED_SYNC_SETUP, E2B_OMA_SANDBOX_SETUP, E2B_SANDBOX_SETUP, type E2BObjectStorageOptions, type E2BV2Module } from "@open-managed-agents/sandbox-adapter-e2b/v2";
 import type { E2BSandboxExecutor } from "@open-managed-agents/sandbox-adapter-e2b";
 import { EGRESS_RELAY_PATH } from "@open-managed-agents/managed-credential-resolver";
 import { UNFENCED_SANDBOX_TOKEN, type SessionExecutionAttemptRef } from "@open-managed-agents/sandbox-gateway";
@@ -68,6 +68,8 @@ export interface E2BSandboxEnv {
   /** Bindings for the generic sync. */
   MEMORY_BUCKET?: MemoryPrefixBucket;
   FILES_BUCKET?: R2Bucket;
+  /** Optional control-plane File API endpoint for unified-token mounts. */
+  OMA_STORAGE_GATEWAY_ENDPOINT?: string;
   /** Vault egress: the control plane's public HTTPS origin. */
   PUBLIC_BASE_URL?: string;
   MAIN_MCP?: {
@@ -159,6 +161,19 @@ function e2bExecutor(runtime: E2BSandboxExecutor): SessionSandboxExecutor {
  * sync when no key is. A files key alone would leave Memory and outputs on
  * different paths: rejected. */
 export function storageConfig(env: E2BSandboxEnv): { kind: "native"; objectStorage: E2BObjectStorageOptions } | { kind: "sync"; memory: MemoryPrefixBucket; files: R2Bucket } {
+  if (env.OMA_STORAGE_GATEWAY_ENDPOINT !== undefined) {
+    let endpoint: URL;
+    try { endpoint = new URL(env.OMA_STORAGE_GATEWAY_ENDPOINT); }
+    catch { throw new Error("OMA_STORAGE_GATEWAY_ENDPOINT must be a valid URL"); }
+    if (!["http:", "https:"].includes(endpoint.protocol) || !endpoint.origin) throw new Error("OMA_STORAGE_GATEWAY_ENDPOINT must be an HTTP(S) URL");
+    const unavailable: ObjectStoreCredentialPort = { issue: async () => { throw new Error("OMA gateway mounts do not issue S3 credentials"); } };
+    return { kind: "native", objectStorage: {
+      memory: unavailable,
+      outputs: unavailable,
+      outputsPrefix: (scope) => sessionOutputsPrefix(scope.workspaceId, scope.sessionId),
+      gatewayEndpoint: endpoint.origin,
+    } };
+  }
   const memoryKey = Boolean(env.R2_ACCESS_KEY_ID || env.R2_SECRET_ACCESS_KEY);
   log({ op: "sandbox.persistence.select", path: memoryKey ? "e2b_native" : "worker_r2_binding",
     configuration: Object.fromEntries(["R2_ENDPOINT", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "MEMORY_BUCKET", "FILES_BUCKET"].map(name => [name, Boolean(env[name as keyof E2BSandboxEnv])])) }, "E2B persistence path selected");
@@ -219,6 +234,25 @@ export function createE2BSessionSandbox(input: {
   assertLeaseCoversIdle("SANDBOX_ADAPTER=e2b", leaseMs, idleMs);
   const maxLifetimeMs = parseMaxLifetime(env.E2B_MAX_LIFETIME_MS!, idleMs);
   const storage = storageConfig(env);
+  const gatewayStorage = storage.kind === "native" && storage.objectStorage.gatewayEndpoint !== undefined
+    ? {
+        ...storage.objectStorage,
+        sandboxToken: async (sandbox?: object | string) => {
+          // AttemptSandboxTokens keys a physical sandbox by its stable E2B
+          // runtime id. Do not pass the executor object here, otherwise the
+          // later Work runner delivery would look like a new sandbox and
+          // rotate the token while rclone still holds the old one.
+          const identity = typeof sandbox === "object" && sandbox !== null && "runtimeHandle" in sandbox
+            ? (sandbox as E2BSandboxExecutor).runtimeHandle().runtimeId
+            : sandbox;
+          if (input.workAuthority !== undefined) return input.workAuthority.token(identity ?? `oma-storage:${input.scope().sessionId}`);
+          const current = input.fence();
+          if (current === undefined) throw new Error("OMA gateway storage requires an active Session execution");
+          const scope = input.scope();
+          return input.relayToken({ workspaceId: scope.workspaceId, sessionId: scope.sessionId, ...current }, identity);
+        },
+      }
+    : storage.kind === "native" ? storage.objectStorage : undefined;
   const template = env.E2B_TEMPLATE!;
   const relayEndpoint = () => {
     let endpoint: URL;
@@ -242,7 +276,7 @@ export function createE2BSessionSandbox(input: {
         user: "oma-worker",
         managedBootstrap: { ...(input.workAuthority ? { disableAutoResume: true } : {}) },
         ...(storage.kind === "native"
-          ? { setup: E2B_SANDBOX_SETUP, channels: [new URL(env.R2_ENDPOINT!).hostname], objectStorage: storage.objectStorage }
+          ? { setup: gatewayStorage?.gatewayEndpoint === undefined ? E2B_SANDBOX_SETUP : E2B_OMA_SANDBOX_SETUP, channels: [new URL(gatewayStorage?.gatewayEndpoint ?? env.R2_ENDPOINT!).hostname], objectStorage: gatewayStorage }
           : { setup: E2B_MANAGED_SYNC_SETUP }),
       });
       const { ports } = createSandboxPorts(adapter, {

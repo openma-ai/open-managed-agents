@@ -125,6 +125,7 @@ export * from "./credentials/persistence";
 export * from "./credentials/validation";
 export * from "./credentials/vault-source";
 export type * from "./ports";
+export type { MemoryVersionActor } from "./ports";
 export * from "./sessions/budget";
 export * from "./work-finalization/ports";
 export * from "./work-finalization/application";

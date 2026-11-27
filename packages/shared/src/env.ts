@@ -483,6 +483,11 @@ export interface R2EventMessage {
     eTag?: string;
     version?: string;
   };
+  /** Optional producer attribution for direct queue messages. */
+  actor?: {
+    type: "api_key" | "user" | "agent_session" | "system";
+    id: string;
+  };
   eventTime: string;
   copySource?: { bucket: string; object: string };
 }

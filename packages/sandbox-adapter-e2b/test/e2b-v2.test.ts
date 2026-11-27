@@ -331,6 +331,34 @@ describe("E2B v2 storage", () => {
     expect(fake.calls.commands.at(-1)!.opts.envs).toMatchObject({ API_TOKEN: "oma_vault_x", HTTPS_PROXY: "http://127.0.0.1:18080" });
   });
 
+  it("native: OMA gateway mounts use the unified sandbox token only in the root rclone env", async () => {
+    const fake = fakeSdk();
+    const token = "oma_sbx_attempt_token";
+    let tokenReads = 0;
+    const kit = adapter(fake, {
+      objectStorage: {
+        ...objectStorage(),
+        gatewayEndpoint: "https://control.example",
+        sandboxToken: () => { tokenReads += 1; return token; },
+      },
+    });
+    const acquired = await kit.lifecycle.acquire({ scope, plan, signal });
+    if (acquired === "gone") throw new Error("unexpected");
+    const storage = kit.native!.storage!({} as never);
+    await storage.attach({ runtime: acquired.runtime, scope, fence, stores: [stores[0]!], outputs, signal });
+    const mounts = fake.calls.commands.filter((c) => c.cmd.includes("rclone-oma mount "));
+    expect(mounts).toHaveLength(2);
+    expect(tokenReads).toBe(2);
+    expect(mounts[0]!.cmd).toContain("':oma:outputs/t/ws/session-outputs/sess/'");
+    expect(mounts[1]!.cmd).toContain("':oma:memory/store_rw'");
+    for (const call of mounts) {
+      expect(call.cmd).not.toContain(token);
+      expect(call.cmd).not.toContain("OPENMA_SANDBOX_TOKEN");
+      expect(call.opts).toMatchObject({ user: "root", envs: { OMA_GATEWAY_ENDPOINT: "https://control.example", OMA_SESSION_ID: "sess", OPENMA_SANDBOX_TOKEN: token } });
+      expect(call.opts.envs).not.toHaveProperty("RCLONE_S3_ACCESS_KEY_ID");
+    }
+  });
+
   it("native: re-mints and remounts once less than half the credential lifetime is left", async () => {
     const fake = fakeSdk();
     let issued = 0;

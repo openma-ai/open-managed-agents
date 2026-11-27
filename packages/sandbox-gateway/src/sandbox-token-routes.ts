@@ -6,6 +6,7 @@
 import type { SandboxTokenSession } from "./sandbox-token-store";
 
 export const SANDBOX_PROXY_PATH = /^\/v1\/oma\/(?:mcp-proxy|inference-proxy)\/([^/]+)(?:\/|$)/u;
+export const SANDBOX_STORAGE_PATH = /^\/v1\/oma\/storage\/sessions\/([^/]+)(?:\/|$)/u;
 
 function segments(path: string): string[] {
   return path.split("/").filter(Boolean).map((part) => {
@@ -15,7 +16,7 @@ function segments(path: string): string[] {
 
 /** The Session id in an MCP / model gateway path, else null. */
 export function proxySessionId(path: string): string | null {
-  const raw = SANDBOX_PROXY_PATH.exec(path)?.[1];
+  const raw = SANDBOX_PROXY_PATH.exec(path)?.[1] ?? SANDBOX_STORAGE_PATH.exec(path)?.[1];
   if (raw === undefined) return null;
   try { return decodeURIComponent(raw); } catch { return null; }
 }
@@ -29,6 +30,14 @@ export function sandboxTokenAllows(session: SandboxTokenSession, method: string,
   }
   if (parts[1] === "oma" && parts[2] === "inference-proxy") {
     return parts.length >= 5 && parts[3] === session.sessionId && parts[4]!.length > 0 && ["GET", "POST", "DELETE", "PATCH"].includes(verb);
+  }
+  if (parts[1] === "oma" && parts[2] === "storage" && parts[3] === "sessions") {
+    // The storage gateway is deliberately a narrow object protocol. The
+    // handler performs the bucket/prefix check against this same Session
+    // record. Token routing only admits the session named in the URL and the
+    // verbs required by rclone's object lifecycle.
+    return parts.length >= 7 && parts[4] === session.sessionId && parts[5] === "objects"
+      && ["GET", "HEAD", "PUT", "PATCH", "DELETE", "POST"].includes(verb);
   }
   if (parts[1] === "skills" && verb === "GET") {
     const skill = session.skills.find((candidate) => candidate.skillId === parts[2]);

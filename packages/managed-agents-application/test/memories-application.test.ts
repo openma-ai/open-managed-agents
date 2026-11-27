@@ -283,6 +283,21 @@ describe("MemoriesApplicationService", () => {
     });
   });
 
+  it("allows a fenced Session reconciliation to attribute the version to that Session", async () => {
+    const persistence = new InMemoryMemoryPersistence();
+    const { memories } = buildServices(persistence);
+    await memories.createMemory({
+      memoryStoreId: "memstore_01",
+      content: "from sandbox",
+      path: "/notes/session.md",
+      actor: { kind: "session", sessionId: "sess_01" },
+    });
+    expect([...persistence.versions.values()].at(-1)?.version.createdBy).toEqual({
+      kind: "session",
+      sessionId: "sess_01",
+    });
+  });
+
   it("enforces content preconditions while preserving idempotent retries", async () => {
     const persistence = new InMemoryMemoryPersistence();
     const services = buildServices(persistence);
