@@ -454,22 +454,49 @@ function mysqlDuplicateDdl(error: unknown, errno: number, code: string): boolean
   const value=error as {errno?:unknown;code?:unknown};
   return value.errno===errno || value.code===code;
 }
+function mysqlTemporaryTableDenied(error: unknown): boolean {
+  return mysqlDuplicateDdl(error, 1044, "ER_DBACCESS_DENIED_ERROR") ||
+    mysqlDuplicateDdl(error, 1142, "ER_TABLEACCESS_DENIED_ERROR");
+}
 /** Ask this exact MySQL server to canonicalize our intended expression. Its
  * catalog adds parentheses/charset introducers; do not erase operators or
- * literals to make a different stored expression appear equivalent. The probe
- * is connection-local, contains no application rows, and is always removed. */
+ * literals to make a different stored expression appear equivalent. Prefer a
+ * connection-local temporary table, and fall back to an advisory-locked shared
+ * probe table when the deployment user lacks CREATE TEMPORARY TABLES. */
 async function mysqlCanonicalGeneratedExpression(sql: SqlClient, type: string, expression: string): Promise<string> {
   if (!sql.rowLockTransactions) throw new Error("MySQL generated-column validation requires a connection-bound transaction");
   return sql.rowLockTransactions.run(async tx => {
-    await tx.prepare("CREATE TEMPORARY TABLE oma_work_input_definition_probe (document LONGTEXT, session_id VARCHAR(191), sequence BIGINT, candidate " + type + " GENERATED ALWAYS AS (" + expression + ") STORED)").run();
+    const candidateDef = type + " GENERATED ALWAYS AS (" + expression + ") STORED";
+    let temporaryReady = false;
     try {
+      await tx.prepare("CREATE TEMPORARY TABLE oma_work_input_definition_probe (document LONGTEXT, session_id VARCHAR(191), sequence BIGINT, candidate " + candidateDef + ")").run();
+      temporaryReady = true;
+    } catch (error) {
+      if (!mysqlTemporaryTableDenied(error)) throw error;
+    }
+    if (temporaryReady) {
+      try {
+        const row = await tx.prepare("SHOW CREATE TABLE oma_work_input_definition_probe").first<Record<string,string>>();
+        const ddl = row?.["Create Table"];
+        const match = ddl?.match(/`candidate`[^\n]* GENERATED ALWAYS AS \((.*)\) STORED/);
+        if (!match) throw new Error("MySQL did not return the generated-column definition");
+        return match[1]!;
+      } finally {
+        await tx.prepare("DROP TEMPORARY TABLE oma_work_input_definition_probe").run();
+      }
+    }
+    const probeLock = await tx.prepare("SELECT GET_LOCK(?, 60) AS acquired").bind("openma:work-input-definition-probe").first<{ acquired: number }>();
+    if (Number(probeLock?.acquired) !== 1) throw new Error("Timed out acquiring the work input definition probe lock");
+    try {
+      await tx.prepare("CREATE TABLE IF NOT EXISTS oma_work_input_definition_probe (document LONGTEXT, session_id VARCHAR(191), sequence BIGINT, candidate " + candidateDef + ") ENGINE=InnoDB").run();
+      await tx.prepare("ALTER TABLE oma_work_input_definition_probe MODIFY candidate " + candidateDef).run();
       const row = await tx.prepare("SHOW CREATE TABLE oma_work_input_definition_probe").first<Record<string,string>>();
       const ddl = row?.["Create Table"];
       const match = ddl?.match(/`candidate`[^\n]* GENERATED ALWAYS AS \((.*)\) STORED/);
       if (!match) throw new Error("MySQL did not return the generated-column definition");
       return match[1]!;
     } finally {
-      await tx.prepare("DROP TEMPORARY TABLE oma_work_input_definition_probe").run();
+      await tx.prepare("SELECT RELEASE_LOCK(?) AS released").bind("openma:work-input-definition-probe").first().catch(() => null);
     }
   });
 }

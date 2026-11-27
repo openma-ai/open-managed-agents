@@ -73,6 +73,30 @@ describe("main-node MySQL snapshot migrations", () => {
     expect(drop).toBeGreaterThan(copy);
   });
 
+  it("retains the retired fence table when DROP is denied (least-privilege user)", async () => {
+    const sql = new MigrationSqlClient(sandboxTokenHashesSnapshot, ["tenant_id", "created_at", "id"]);
+    sql.legacyTables.set("runtime_resource_fences", 1);
+    sql.dropDenyError = Object.assign(new Error("DROP command denied to user"), {
+      code: "ER_TABLEACCESS_DENIED_ERROR",
+      errno: 1142,
+    });
+
+    await migrateNodeMysqlSchema(sql, migrations);
+
+    expect(sql.snapshotId).toBe(currentSnapshot);
+    expect(sql.statements.some((statement) => /UPDATE managed_environment_work/u.test(statement))).toBe(true);
+    expect(sql.legacyTables.has("runtime_resource_fences")).toBe(true);
+  });
+
+  it("rethrows unexpected errors when dropping the retired fence table", async () => {
+    const sql = new MigrationSqlClient(sandboxTokenHashesSnapshot, ["tenant_id", "created_at", "id"]);
+    sql.legacyTables.set("runtime_resource_fences", 1);
+    sql.dropDenyError = new Error("connection lost during drop");
+
+    await expect(migrateNodeMysqlSchema(sql, migrations)).rejects.toThrow("connection lost during drop");
+    expect(sql.snapshotId).toBe(sandboxTokenHashesSnapshot);
+  });
+
   it.each([invitationsSnapshot, previousWorkSnapshot, currentSnapshot])(
     "starts from snapshot %s without DROP permission and retains empty legacy tables",
     async (snapshot) => {
@@ -113,6 +137,7 @@ describe("main-node MySQL snapshot migrations", () => {
 
 class MigrationSqlClient implements SqlClient {
   createdAttributionIndex = false;
+  dropDenyError: Error | null = null;
   readonly createdTables: string[] = [];
   readonly legacyTables = new Map<string, number>();
   readonly statements: string[] = [];
@@ -133,8 +158,13 @@ class MigrationSqlClient implements SqlClient {
 
   async exec(sql: string): Promise<void> {
     this.statements.push(sql);
-    if (/\bDROP\s+TABLE\b/i.test(sql) && !sql.includes("runtime_resource_fences")) {
-      throw new Error("DROP command denied to migration user");
+    if (/\bDROP\s+TABLE\b/i.test(sql)) {
+      if (sql.includes("runtime_resource_fences")) {
+        if (this.dropDenyError) throw this.dropDenyError;
+        this.legacyTables.delete("runtime_resource_fences");
+      } else {
+        throw new Error("DROP command denied to migration user");
+      }
     }
     const created = /CREATE TABLE IF NOT EXISTS `([a-z_]+)`/.exec(sql);
     if (created) this.createdTables.push(created[1]!);
