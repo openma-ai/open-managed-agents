@@ -75,6 +75,14 @@ oma usage
 
 Run `oma --help` or `oma <command> --help` for the full surface.
 
+`oma sessions chat` returns when the session goes idle or is terminated, and its exit status tells a script how the turn ended:
+
+| Exit | Meaning |
+|---|---|
+| `0` | The turn ended with `stop_reason: end_turn`. |
+| `3` | The session is waiting on `requires_action`. The pending event ids are printed to stderr; answer them with `user.tool_confirmation` or `user.custom_tool_result` on `POST /v1/sessions/:id/events`, then follow the turn with `oma sessions tail`. |
+| `1` | The turn did not finish: the stream sent an `error` frame, the session was terminated, it stopped on another reason such as `retries_exhausted`, or the stream closed before the session went idle. |
+
 <Aside type="tip" title="Pipe-friendly">
   CLI subcommands accept `--json` and emit machine-readable output. Pipe into `jq` for ad-hoc analysis.
 </Aside>
