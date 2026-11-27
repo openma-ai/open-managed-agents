@@ -311,6 +311,41 @@ describe("NodeManagedSessionRuntimeAdapter", () => {
     expect(received).toEqual([]);
   });
 
+  it("closes an idle driver subscription when the reader returns while waiting", async () => {
+    let returnCalls = 0;
+    let wake: ((result: IteratorResult<unknown>) => void) | null = null;
+    const source: AsyncIterableIterator<unknown> = {
+      [Symbol.asyncIterator]() { return this; },
+      next: () => new Promise((resolve) => { wake = resolve; }),
+      return: () => {
+        returnCalls += 1;
+        wake?.({ value: undefined, done: true });
+        wake = null;
+        return Promise.resolve({ value: undefined, done: true });
+      },
+    };
+    const driver: NodeManagedSessionRuntimeDriver = {
+      start: async () => {},
+      stop: async () => {},
+      accept: async () => {},
+      archiveThread: async () => {},
+      subscribe: () => source,
+    };
+    const adapter = new NodeManagedSessionRuntimeAdapter(driver);
+    const iterator = adapter.subscribe({
+      workspaceId: "workspace_01",
+      sessionId: session.id,
+      session,
+    })[Symbol.asyncIterator]();
+    const pending = iterator.next();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    await iterator.return?.();
+
+    expect(returnCalls).toBe(1);
+    await expect(pending).resolves.toEqual({ value: undefined, done: true });
+  });
+
   it("depends on the shared session core without importing legacy routing or stores", () => {
     expect(Object.keys(runtimeAdapterSources)).toEqual([
       "../../../packages/control-plane-node/src/lib/node-managed-session-runtime.ts",

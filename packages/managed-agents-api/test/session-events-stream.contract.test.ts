@@ -162,4 +162,68 @@ describe("Managed Agents API — GET /v1/sessions/:session_id/events/stream", ()
       },
     ]);
   });
+
+  it("releases the application stream and stops reading once the client disconnects", async () => {
+    let nextCalls = 0;
+    let returnCalls = 0;
+    let wake: ((result: IteratorResult<never>) => void) | null = null;
+    const queued: unknown[] = [];
+    const push = (event: unknown) => {
+      if (wake === null) {
+        queued.push(event);
+        return;
+      }
+      const resolve = wake;
+      wake = null;
+      resolve({ value: event as never, done: false });
+    };
+    const iterator: AsyncIterator<never> = {
+      next() {
+        nextCalls += 1;
+        if (queued.length > 0) {
+          return Promise.resolve({ value: queued.shift() as never, done: false });
+        }
+        return new Promise((resolve) => {
+          wake = resolve;
+        });
+      },
+      return() {
+        returnCalls += 1;
+        return Promise.resolve({ value: undefined as never, done: true });
+      },
+    };
+    const status = (id: string) => ({
+      id,
+      type: "session.status_running" as const,
+      processedAt: "2026-08-26T02:00:00.000Z",
+    });
+    const port = makeSessionEventsPort({
+      streamSessionEvents: async () => ({
+        type: "stream",
+        events: { [Symbol.asyncIterator]: () => iterator },
+      }),
+    });
+    const api = new Hono().route(
+      "/v1/sessions",
+      buildSessionEventRoutes(port),
+    );
+    const response = await api.request(
+      `/v1/sessions/${sessionWire.id}/events/stream`,
+      { headers: { "anthropic-beta": "managed-agents-2026-04-01" } },
+    );
+    const reader = response.body!.getReader();
+    push(status("event_status_01"));
+    const first = await reader.read();
+    expect(new TextDecoder().decode(first.value)).toContain("event_status_01");
+
+    await reader.cancel();
+    await vi.waitFor(() => expect(returnCalls).toBe(1));
+    const nextCallsAtDisconnect = nextCalls;
+    push(status("event_status_02"));
+    push(status("event_status_03"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(nextCalls).toBe(nextCallsAtDisconnect);
+    expect(returnCalls).toBe(1);
+  });
 });

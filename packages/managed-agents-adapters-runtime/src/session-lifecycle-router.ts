@@ -241,12 +241,35 @@ export class EnvironmentAwareSessionEventStreamRouter
   subscribe(
     input: SubscribeSessionEvents | SubscribeSessionThreadEvents,
   ): AsyncIterable<StreamSessionEvent> {
-    return this.route(input);
+    // Hand-written rather than an async generator: a generator waiting on
+    // its inner stream queues return() until the next event, so a reader
+    // that disconnects from an idle Session would stay subscribed.
+    let inner: Promise<AsyncIterator<StreamSessionEvent>> | undefined;
+    let closed = false;
+    const open = () => inner ??= this.route(input);
+    const done = (): IteratorResult<StreamSessionEvent> => ({ value: undefined, done: true });
+    return {
+      [Symbol.asyncIterator]: () => ({
+        next: async () => {
+          if (closed) return done();
+          const iterator = await open();
+          return closed ? done() : iterator.next();
+        },
+        return: async () => {
+          closed = true;
+          if (inner !== undefined) {
+            const iterator = await inner.catch(() => undefined);
+            await iterator?.return?.();
+          }
+          return done();
+        },
+      }),
+    };
   }
 
-  private async *route(
+  private async route(
     input: SubscribeSessionEvents | SubscribeSessionThreadEvents,
-  ): AsyncIterable<StreamSessionEvent> {
+  ): Promise<AsyncIterator<StreamSessionEvent>> {
     const environment = await this.dependencies.environments.find({
       workspaceId: input.workspaceId,
       environmentId: input.session.environmentId,
@@ -259,10 +282,8 @@ export class EnvironmentAwareSessionEventStreamRouter
     const stream = environmentExecutionAuthority(environment, input.session) === "session_execution"
       ? this.dependencies.runtime
       : this.dependencies.selfHosted;
-    if ("threadId" in input) {
-      yield* stream.subscribe(input);
-    } else {
-      yield* stream.subscribe(input);
-    }
+    return "threadId" in input
+      ? stream.subscribe(input)[Symbol.asyncIterator]()
+      : stream.subscribe(input)[Symbol.asyncIterator]();
   }
 }

@@ -115,45 +115,72 @@ export function buildSessionEventRoutes(
 
     return streamSSE(c, async (stream) => {
       const iterator = result.events[Symbol.asyncIterator]();
-      let pendingEvent = iterator.next();
-      for (;;) {
-        let heartbeatTimer: ReturnType<typeof setTimeout> | undefined;
-        const next = await Promise.race([
-          pendingEvent.then((event) => ({ type: "event" as const, event })),
-          new Promise<{ type: "heartbeat" }>((resolve) => {
-            heartbeatTimer = setTimeout(
-              () => resolve({ type: "heartbeat" }),
-              SESSION_EVENT_HEARTBEAT_INTERVAL_MS,
-            );
-          }),
-        ]);
-        if (heartbeatTimer !== undefined) clearTimeout(heartbeatTimer);
-        if (next.type === "heartbeat") {
-          await stream.writeSSE({ event: "ping", data: "{}" });
-          continue;
-        }
-        if (next.event.done) break;
-        const event = next.event.value;
-        const wire = sessionStreamEventResponseSchema.safeParse(
-          toStreamSessionEventResponse(event),
-        );
-        if (!wire.success) {
-          const issue = wire.error.issues[0];
-          await stream.writeSSE({
-            event: "error",
-            data: JSON.stringify(
-              apiError(
-                `Application returned an invalid streamed ${event.type} event at ${issue?.path.join(".") || "event"}: ${issue?.message ?? "invalid value"}; ${JSON.stringify(wire.error.format()).slice(0, 1_500)}`,
+      // Hono's write() swallows errors once the client has gone, so the loop
+      // never notices a disconnect by itself. Stop on abort and release the
+      // subscription so it does not outlive the request.
+      let released = false;
+      const release = () => {
+        if (released) return;
+        released = true;
+        void Promise.resolve(iterator.return?.()).catch(() => undefined);
+      };
+      // A fresh abort promise per round: one long-lived promise would collect
+      // a reaction from every race and keep each delivered event reachable
+      // for as long as the connection stays open.
+      let wakeOnAbort = () => {};
+      stream.onAbort(() => {
+        wakeOnAbort();
+        release();
+      });
+      try {
+        let pendingEvent = iterator.next();
+        for (;;) {
+          if (stream.aborted) break;
+          let heartbeatTimer: ReturnType<typeof setTimeout> | undefined;
+          const next = await Promise.race([
+            pendingEvent.then((event) => ({ type: "event" as const, event })),
+            new Promise<{ type: "heartbeat" }>((resolve) => {
+              heartbeatTimer = setTimeout(
+                () => resolve({ type: "heartbeat" }),
+                SESSION_EVENT_HEARTBEAT_INTERVAL_MS,
+              );
+            }),
+            new Promise<{ type: "aborted" }>((resolve) => {
+              wakeOnAbort = () => resolve({ type: "aborted" });
+            }),
+          ]);
+          if (heartbeatTimer !== undefined) clearTimeout(heartbeatTimer);
+          if (next.type === "aborted" || stream.aborted) break;
+          if (next.type === "heartbeat") {
+            await stream.writeSSE({ event: "ping", data: "{}" });
+            continue;
+          }
+          if (next.event.done) break;
+          const event = next.event.value;
+          const wire = sessionStreamEventResponseSchema.safeParse(
+            toStreamSessionEventResponse(event),
+          );
+          if (!wire.success) {
+            const issue = wire.error.issues[0];
+            await stream.writeSSE({
+              event: "error",
+              data: JSON.stringify(
+                apiError(
+                  `Application returned an invalid streamed ${event.type} event at ${issue?.path.join(".") || "event"}: ${issue?.message ?? "invalid value"}; ${JSON.stringify(wire.error.format()).slice(0, 1_500)}`,
+                ),
               ),
-            ),
+            });
+            return;
+          }
+          await stream.writeSSE({
+            event: wire.data.type,
+            data: JSON.stringify(wire.data),
           });
-          return;
+          if (stream.aborted) break;
+          pendingEvent = iterator.next();
         }
-        await stream.writeSSE({
-          event: wire.data.type,
-          data: JSON.stringify(wire.data),
-        });
-        pendingEvent = iterator.next();
+      } finally {
+        release();
       }
     }, async (error, stream) => {
       await stream.writeSSE({

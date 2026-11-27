@@ -587,6 +587,7 @@ export default defineConfig({
       "packages/sandbox-orphan-store-sql/**",
       "packages/session-runtime-sql/test/**",
       "packages/managed-agents-api/test/official-environment-worker.contract.test.ts",
+      "packages/managed-agents-api/test/session-events-stream.retention.test.ts",
       "packages/sandbox/test/**",
       // Harbor task archives shell out to tar (node:child_process); run by
       // their own Node Vitest projects in test:packages.
