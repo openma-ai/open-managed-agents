@@ -15,8 +15,18 @@
     "@open-managed-agents/observability": "workspace:*",
     "@open-managed-agents/sandbox": "workspace:*"
   },
+  "peerDependencies": {
+    "ws": "^8.21.0"
+  },
+  "peerDependenciesMeta": {
+    "ws": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@types/node": "^26.6.6",
+    "@types/ws": "^8.18.1",
+    "ws": "8.21.0",
     "vitest": "^5.0.5"
   }
 }

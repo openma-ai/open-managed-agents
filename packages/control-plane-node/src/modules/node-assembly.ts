@@ -65,6 +65,17 @@ async function buildNodeControlPlane(
   disposables: Disposables,
   log: { current: Logger | null },
 ): Promise<NodeControlPlane> {
+  const build = () => buildNodeControlPlaneUnlocked(components, disposables, log);
+  return components.database.withMigrationLock
+    ? components.database.withMigrationLock(build)
+    : build();
+}
+
+async function buildNodeControlPlaneUnlocked(
+  components: NodeComponents,
+  disposables: Disposables,
+  log: { current: Logger | null },
+): Promise<NodeControlPlane> {
   const runtime = await createNodeRuntime(components, disposables, log);
   const {
     config, processMode, logger, metrics, backendDescription, platformRootSecret, sql,
